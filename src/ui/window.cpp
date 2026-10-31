@@ -11,6 +11,7 @@
 #include "core/log.h"
 #include "launch/launcher.h"
 #include "platform/autostart.h"
+#include "platform/hotkey.h"
 #include "platform/system.h"
 #include "search/merge.h"
 #include "search/usage.h"
@@ -278,6 +279,63 @@ void LauncherWindow::OpenSettings() {
     if (onHotkeyRequest_) onHotkeyRequest_(updated);
     if (onSettingsChanged_) onSettingsChanged_(updated);
   });
+}
+
+void LauncherWindow::TestHotkeyCapture(const std::wstring& combo) {
+  if (!settingsWindow_ || !settingsWindow_->visible()) {
+    Log(L"热键捕获测试: 设置窗未打开");
+    return;
+  }
+  HWND settings = settingsWindow_->hwnd();
+  HWND capture = FindWindowExW(settings, nullptr, L"eToolsHotkeyCapture", nullptr);
+  if (!capture) {
+    Log(L"热键捕获测试: 找不到捕获框");
+    return;
+  }
+  HotkeyBinding binding;
+  if (!ParseHotkey(combo, &binding)) {
+    Log(L"热键捕获测试: 无法解析 %ls", combo.c_str());
+    return;
+  }
+
+  SetForegroundWindow(settings);
+  SetFocus(capture);
+  Sleep(120);  // 等 WM_SETFOCUS 安装低级键盘钩子
+
+  std::vector<INPUT> inputs;
+  auto addKey = [&](UINT virtualKey, bool up) {
+    INPUT input{};
+    input.type = INPUT_KEYBOARD;
+    input.ki.wVk = static_cast<WORD>(virtualKey);
+    if (up) input.ki.dwFlags = KEYEVENTF_KEYUP;
+    inputs.push_back(input);
+  };
+  if (binding.modifiers & MOD_CONTROL) addKey(VK_CONTROL, false);
+  if (binding.modifiers & MOD_ALT) addKey(VK_MENU, false);
+  if (binding.modifiers & MOD_SHIFT) addKey(VK_SHIFT, false);
+  if (binding.modifiers & MOD_WIN) addKey(VK_LWIN, false);
+  addKey(binding.virtualKey, false);
+  addKey(binding.virtualKey, true);
+  if (binding.modifiers & MOD_WIN) addKey(VK_LWIN, true);
+  if (binding.modifiers & MOD_SHIFT) addKey(VK_SHIFT, true);
+  if (binding.modifiers & MOD_ALT) addKey(VK_MENU, true);
+  if (binding.modifiers & MOD_CONTROL) addKey(VK_CONTROL, true);
+  SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
+
+  // 抽送消息，让钩子投递的捕获消息被处理。
+  const DWORD deadline = GetTickCount() + 400;
+  MSG message{};
+  while (GetTickCount() < deadline) {
+    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+      TranslateMessage(&message);
+      DispatchMessageW(&message);
+    }
+    Sleep(10);
+  }
+
+  wchar_t text[128] = {};
+  GetWindowTextW(capture, text, ARRAYSIZE(text));
+  Log(L"热键捕获测试: 合成 %ls -> 捕获框 \"%ls\"", combo.c_str(), text);
 }
 
 void LauncherWindow::ApplySettings(const AppSettings& settings) {

@@ -15,6 +15,7 @@ class SettingsWindow {
 
   bool Show(HINSTANCE instance, HWND owner, const AppSettings& current, SaveCallback onSave);
   bool visible() const { return hwnd_ != nullptr; }
+  HWND hwnd() const { return hwnd_; }
 
  private:
   static LRESULT CALLBACK Thunk(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
@@ -41,6 +42,7 @@ class SettingsWindow {
   int dpi_ = 96;
   int themeIndex_ = 0;
   int accentIndex_ = 0;
+  bool hotkeyConflict_ = false;
   AppSettings settings_;
   std::vector<std::wstring> roots_;
   SaveCallback onSave_;

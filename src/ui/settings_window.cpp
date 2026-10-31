@@ -37,6 +37,92 @@ enum ControlId {
   kIdHotkeyCaptured = 110,
 };
 
+constexpr UINT kCaptureComboMessage = WM_APP + 20;
+
+HHOOK g_keyboardHook = nullptr;
+HWND g_captureHwnd = nullptr;
+UINT g_swallowKeyUp = 0;
+
+bool IsModifierVk(UINT virtualKey) {
+  return virtualKey == VK_CONTROL || virtualKey == VK_LCONTROL || virtualKey == VK_RCONTROL ||
+         virtualKey == VK_MENU || virtualKey == VK_LMENU || virtualKey == VK_RMENU ||
+         virtualKey == VK_SHIFT || virtualKey == VK_LSHIFT || virtualKey == VK_RSHIFT ||
+         virtualKey == VK_LWIN || virtualKey == VK_RWIN;
+}
+
+void ApplyCapturedCombo(HWND hwnd, UINT modifiers, UINT virtualKey) {
+  if (modifiers == 0) {
+    SetWindowTextW(hwnd, L"需要 Ctrl / Alt / Shift / Win");
+    InvalidateRect(hwnd, nullptr, TRUE);
+    return;
+  }
+  const std::wstring name = FormatHotkey(modifiers, virtualKey);
+  if (name.empty()) {
+    SetWindowTextW(hwnd, L"该按键不支持");
+    InvalidateRect(hwnd, nullptr, TRUE);
+    return;
+  }
+  SetWindowTextW(hwnd, name.c_str());
+  InvalidateRect(hwnd, nullptr, TRUE);
+  SendMessageW(GetParent(hwnd), WM_COMMAND, MAKEWPARAM(kIdHotkeyCaptured, 1),
+               reinterpret_cast<LPARAM>(hwnd));
+}
+
+void InstallKeyboardHook(HWND capture) {
+  if (g_keyboardHook) return;
+  g_captureHwnd = capture;
+  g_swallowKeyUp = 0;
+  g_keyboardHook =
+      SetWindowsHookExW(WH_KEYBOARD_LL,
+                        [](int code, WPARAM wParam, LPARAM lParam) -> LRESULT {
+                          if (code == HC_ACTION && g_captureHwnd) {
+                            const auto* info = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
+                            const UINT virtualKey = info->vkCode;
+                            if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
+                              if (!IsModifierVk(virtualKey) && virtualKey != VK_PROCESSKEY) {
+                                UINT modifiers = 0;
+                                if (GetAsyncKeyState(VK_CONTROL) & 0x8000) modifiers |= MOD_CONTROL;
+                                if (GetAsyncKeyState(VK_MENU) & 0x8000) modifiers |= MOD_ALT;
+                                if (GetAsyncKeyState(VK_SHIFT) & 0x8000) modifiers |= MOD_SHIFT;
+                                if ((GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) &
+                                    0x8000) {
+                                  modifiers |= MOD_WIN;
+                                }
+                                // 放行系统组合键，避免捕获时把 Alt+Tab / Alt+F4 / Esc 吞掉。
+                                const bool systemCombo =
+                                    virtualKey == VK_TAB || virtualKey == VK_ESCAPE ||
+                                    (virtualKey == VK_F4 && (modifiers & MOD_ALT) != 0);
+                                if (modifiers != 0 && !systemCombo) {
+                                  PostMessageW(g_captureHwnd, kCaptureComboMessage, modifiers,
+                                               virtualKey);
+                                  g_swallowKeyUp = virtualKey;
+                                  return 1;  // 吞掉这次按键，避免触发输入法/系统组合
+                                }
+                              }
+                            } else if ((wParam == WM_KEYUP || wParam == WM_SYSKEYUP) &&
+                                       g_swallowKeyUp != 0 && virtualKey == g_swallowKeyUp) {
+                              g_swallowKeyUp = 0;
+                              return 1;
+                            }
+                          }
+                          return CallNextHookEx(nullptr, code, wParam, lParam);
+                        },
+                        GetModuleHandleW(nullptr), 0);
+  if (!g_keyboardHook) {
+    Log(L"热键捕获钩子安装失败: %lu（回退到普通按键消息）", GetLastError());
+    g_captureHwnd = nullptr;
+  }
+}
+
+void UninstallKeyboardHook() {
+  if (g_keyboardHook) {
+    UnhookWindowsHookEx(g_keyboardHook);
+    g_keyboardHook = nullptr;
+  }
+  g_captureHwnd = nullptr;
+  g_swallowKeyUp = 0;
+}
+
 int ThemeIndexFromName(const std::wstring& name) {
   if (name == L"dark") return 1;
   if (name == L"light") return 2;
@@ -55,11 +141,14 @@ std::wstring AccentNameFromIndex(int index) { return index == 1 ? L"system" : L"
 
 LRESULT CALLBACK HotkeyCaptureProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
   switch (message) {
+    case kCaptureComboMessage:
+      ApplyCapturedCombo(hwnd, static_cast<UINT>(wParam), static_cast<UINT>(lParam));
+      return 0;
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN: {
       const UINT virtualKey = static_cast<UINT>(wParam);
-      if (virtualKey == VK_CONTROL || virtualKey == VK_MENU || virtualKey == VK_SHIFT ||
-          virtualKey == VK_LWIN || virtualKey == VK_RWIN || virtualKey == VK_ESCAPE) {
+      // 输入法处理按键时窗口只会收到 VK_PROCESSKEY，忽略以免拼出 "Ctrl" 这类残缺组合。
+      if (IsModifierVk(virtualKey) || virtualKey == VK_PROCESSKEY || virtualKey == VK_ESCAPE) {
         return 0;
       }
       UINT modifiers = 0;
@@ -67,27 +156,7 @@ LRESULT CALLBACK HotkeyCaptureProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
       if (GetKeyState(VK_MENU) & 0x8000) modifiers |= MOD_ALT;
       if (GetKeyState(VK_SHIFT) & 0x8000) modifiers |= MOD_SHIFT;
       if ((GetKeyState(VK_LWIN) & 0x8000) || (GetKeyState(VK_RWIN) & 0x8000)) modifiers |= MOD_WIN;
-      if (modifiers == 0) {
-        SetWindowTextW(hwnd, L"需要 Ctrl / Alt / Shift / Win");
-        InvalidateRect(hwnd, nullptr, TRUE);
-        return 0;
-      }
-      const std::wstring name = FormatHotkey(modifiers, virtualKey);
-      if (name.empty()) {
-        SetWindowTextW(hwnd, L"该按键不支持");
-        InvalidateRect(hwnd, nullptr, TRUE);
-        return 0;
-      }
-      HWND parent = GetParent(hwnd);
-      if (RegisterHotKey(parent, 0x66, modifiers | MOD_NOREPEAT, virtualKey)) {
-        UnregisterHotKey(parent, 0x66);
-        SetWindowTextW(hwnd, name.c_str());
-        SendMessageW(parent, WM_COMMAND, MAKEWPARAM(kIdHotkeyCaptured, 0),
-                     reinterpret_cast<LPARAM>(hwnd));
-      } else {
-        SetWindowTextW(hwnd, L"该组合已被占用");
-      }
-      InvalidateRect(hwnd, nullptr, TRUE);
+      ApplyCapturedCombo(hwnd, modifiers, virtualKey);
       return 0;
     }
     case WM_LBUTTONDOWN:
@@ -96,7 +165,12 @@ LRESULT CALLBACK HotkeyCaptureProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
       InvalidateRect(hwnd, nullptr, TRUE);
       return 0;
     case WM_SETFOCUS:
+      SetWindowTextW(hwnd, L"请按下组合键…");
+      InstallKeyboardHook(hwnd);
+      InvalidateRect(hwnd, nullptr, TRUE);
+      return 0;
     case WM_KILLFOCUS:
+      UninstallKeyboardHook();
       InvalidateRect(hwnd, nullptr, TRUE);
       return 0;
     case WM_SETFONT:
@@ -105,6 +179,9 @@ LRESULT CALLBACK HotkeyCaptureProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
       return 0;
     case WM_GETDLGCODE:
       return DLGC_WANTALLKEYS;
+    case WM_NCDESTROY:
+      UninstallKeyboardHook();
+      break;
     case WM_PAINT: {
       PAINTSTRUCT ps;
       HDC dc = BeginPaint(hwnd, &ps);
@@ -305,6 +382,7 @@ void SettingsWindow::Populate() {
   SetWindowTextW(accentButton_, accentIndex_ == 1 ? L"跟随系统强调色" : L"设计蓝 #6EA8FF");
 
   SetWindowTextW(hotkeyCapture_, settings_.hotkey.c_str());
+  hotkeyConflict_ = false;
   SendMessageW(autostartCheck_, BM_SETCHECK, settings_.autostart ? BST_CHECKED : BST_UNCHECKED, 0);
 
   SendMessageW(rootsList_, LB_RESETCONTENT, 0, 0);
@@ -348,6 +426,10 @@ void SettingsWindow::OnSave() {
     return;
   }
   settings_.hotkey = binding.name;
+  if (hotkeyConflict_) {
+    SetWindowTextW(status_, L"当前热键不可用，请重新捕获或换一个组合");
+    return;
+  }
   settings_.autostart = SendMessageW(autostartCheck_, BM_GETCHECK, 0, 0) == BST_CHECKED;
 
   std::vector<std::wstring> roots;
@@ -487,7 +569,33 @@ LRESULT SettingsWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         return 0;
       }
       if (id == kIdHotkeyCaptured) {
-        SetWindowTextW(status_, L"");
+        wchar_t text[128] = {};
+        GetWindowTextW(hotkeyCapture_, text, ARRAYSIZE(text));
+        HotkeyBinding binding;
+        if (!ParseHotkey(text, &binding)) {
+          SetWindowTextW(status_, L"热键无效：需要至少一个修饰键与一个按键");
+          hotkeyConflict_ = true;
+          return 0;
+        }
+        if (binding.name == settings_.hotkey) {
+          SetWindowTextW(status_, L"");
+          hotkeyConflict_ = false;
+          Log(L"热键捕获: %ls（当前值）", binding.name.c_str());
+          return 0;
+        }
+        if (RegisterHotKey(hwnd_, 0x66, binding.modifiers | MOD_NOREPEAT, binding.virtualKey)) {
+          UnregisterHotKey(hwnd_, 0x66);
+          SetWindowTextW(status_, L"");
+          hotkeyConflict_ = false;
+          Log(L"热键捕获: %ls（可用）", binding.name.c_str());
+        } else {
+          wchar_t message[160];
+          swprintf(message, ARRAYSIZE(message), L"%ls 已被其他程序占用，请换一个组合",
+                   binding.name.c_str());
+          SetWindowTextW(status_, message);
+          hotkeyConflict_ = true;
+          Log(L"热键捕获: %ls（被占用）", binding.name.c_str());
+        }
         return 0;
       }
       break;

@@ -216,6 +216,9 @@ int RunLauncher(const AppOptions& options) {
         [](const AppSettings& updated) { SettingsStore::Save(updated); });
     if (options.openSettings) {
       window.OpenSettings();
+      if (!options.testCapture.empty()) {
+        window.TestHotkeyCapture(options.testCapture);
+      }
     }
     window.SetOnTimer([&](UINT_PTR id) {
       if (id == kTimerCapture) {

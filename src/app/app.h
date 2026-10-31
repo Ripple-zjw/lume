@@ -25,6 +25,7 @@ struct AppOptions {
   bool noHotkey = false;
   bool glass = false;
   bool openSettings = false;
+  std::wstring testCapture;
 };
 
 // 常驻启动器：单实例、热键、显示/隐藏、截图模式。返回进程退出码。

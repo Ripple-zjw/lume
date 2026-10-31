@@ -150,6 +150,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 4. **自检/回归**：`--self-check` 输出 `hotkey/tray/autostart/open/settings_save` 五项 PASS/FAIL 与退出码；`tools/regression.ps1` 调用它并打印人工确认清单。真实桌面会话（2026-10-31，Win11 25H2 26200）实测**五项全部 PASS**，exit=0；沙箱内 tray/autostart/open 会 FAIL，属环境限制。
 5. **设置保存实测**：真实会话中通过设置窗保存了 `theme=light, accent=system, fileRoot=F:\, E:\`，说明保存链路与多路径回退可用；`--self-check` 会打印实际写入路径而不是首选路径，并原地重写同一份设置（不改内容）。
 6. **体积**：exe 约 1.76MB；图标 PNG 6 个共约 5KB；启动读取 PNG 后首帧恢复 15.6ms。
+7. **热键捕获修复**：设置窗捕获时窗口只收到 `VK_PROCESSKEY`（Ctrl+Space 被输入法切换占用），拼出残缺的 `Ctrl`。现于捕获框获得焦点时安装 `WH_KEYBOARD_LL` 钩子：在输入法处理前拿原始按键、命中组合时吞掉该键及其 keyup（避免触发 IME 切换），投递到 UI 线程做格式化和冲突预检；放行 Alt+Tab/Alt+F4/Esc。`--test-capture=Ctrl+Space` 通过 `SendInput` 合成按键做端到端验证：日志 `热键捕获测试: 合成 Ctrl+Space -> 捕获框 "Ctrl+Space"`。
 
 ## 13. 后续方向
 

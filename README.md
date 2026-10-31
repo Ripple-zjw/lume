@@ -79,6 +79,7 @@ Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤�
 - 图标磁盘缓存：worker 先查 `%LOCALAPPDATA%\eTools\icons\<hash>.png`（不可写时 exe 同目录），未命中才走 shell 取图并写回 PNG；`Warm()` 启动预热、异步队列走同一路径。实测冷启动 **12 次 shell 取图、首帧 29.4ms**，二次启动 **12 次磁盘命中、0 次 shell、首帧 15.6ms**。
 - 设置窗自绘深色：统一 `#202024` 背景/白色文字，主题与强调色改为自绘循环按钮（跟随系统 → 深色 → 浅色），文件目录列表与按钮全部深色，去掉原生 ComboBox 的白色箭头块。
 - 自定义热键：新增 `ParseHotkey`/`FormatHotkey`（Ctrl/Alt/Shift/Win + 字母/数字/F1–F24/方向键等），设置窗内点击热键框后直接按下组合键捕获，并用 `RegisterHotKey` 预检冲突；配置里可写任意组合（如 `Ctrl+Alt+K`）。
+- 捕获期间用 `WH_KEYBOARD_LL` 低级钩子取原始按键，**修复 Ctrl+Space 被输入法吞掉、只显示 Ctrl 的问题**；同时放行 Alt+Tab / Alt+F4 / Esc，避免捕获时卡住系统快捷键。实测 Ctrl+Space、Ctrl+Alt+K 均能正确捕获。
 - `--hotkey=<combo>` 可临时覆盖热键（不影响已保存设置），用于验证解析与注册。
 - `--self-check`：一次性检查热键注册、托盘、自启读写、文件打开、设置写入并输出 `PASS/FAIL`；配合 `tools/regression.ps1` 在**真实桌面会话**做回归。
 - 真实会话自检（2026-10-31，Windows 11 25H2 26200）：`hotkey/tray/autostart/open/settings_save` 全部 PASS；沙箱里 tray/autostart/open 会失败属环境限制。
@@ -134,6 +135,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Run
 | `--open=<path>` | 单独验证打开文件/路径 |
 | `--set-autostart=1\|0` | 设置开机自启并打印状态 |
 | `--hotkey=<combo>` | 临时覆盖热键（如 `Ctrl+Alt+K`） |
+| `--test-capture=<combo>` | 测试用：打开设置窗并合成组合键，验证捕获 |
 | `--settings` | 启动时打开设置窗 |
 | `--self-check` | 检查热键/托盘/自启/打开文件/设置写入并打印 PASS/FAIL |
 | `--no-hotkey` | 不注册全局热键 |

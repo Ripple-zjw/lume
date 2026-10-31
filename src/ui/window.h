@@ -49,6 +49,8 @@ class LauncherWindow {
   void Shutdown();
   void RenderNow();
   void OpenSettings();
+  // 测试钩子：聚焦热键捕获框并合成指定组合，验证低级键盘钩子。
+  void TestHotkeyCapture(const std::wstring& combo);
   bool visible() const { return visible_; }
   HWND hwnd() const { return hwnd_; }
   const AppSettings& settings() const { return settings_; }

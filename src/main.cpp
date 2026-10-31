@@ -105,7 +105,10 @@ CliOptions Parse(int argc, wchar_t** argv) {
       cli.openPath = ValueAfter(arg, L"--open=");
     } else if (StartsWith(arg, L"--set-autostart=")) {
       cli.setAutostart = ValueAfter(arg, L"--set-autostart=");
-    } else if (arg == L"--settings") {
+    } else if (StartsWith(arg, L"--settings")) {
+      cli.app.openSettings = true;
+    } else if (StartsWith(arg, L"--test-capture=")) {
+      cli.app.testCapture = ValueAfter(arg, L"--test-capture=");
       cli.app.openSettings = true;
     } else if (arg == L"--self-check") {
       cli.selfCheck = true;
