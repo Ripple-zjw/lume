@@ -31,7 +31,7 @@ New-Item -ItemType Directory -Force -Path $BuildDir, $ObjDir | Out-Null
 
 $common = @(
   '-std=c++20', '-municode', '-DUNICODE', '-D_UNICODE', '-DWIN32_LEAN_AND_MEAN', '-DNOMINMAX',
-  '-D_WIN32_WINNT=0x0A00', '-DWINVER=0x0A00',
+  '-D_WIN32_WINNT=0x0A00', '-DWINVER=0x0A00', '-D_WIN32_IE=0x0A00',
   '-finput-charset=UTF-8', '-fexec-charset=UTF-8',
   '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
   '-I', (Join-Path $Root 'src')

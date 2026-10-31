@@ -227,24 +227,11 @@ bool FileIndex::Start() {
   }
 
   std::vector<FileEntry> cached;
-  std::vector<std::wstring> cachedRoots;
   const ULONGLONG loadStart = GetTickCount64();
-  if (LoadSnapshot(&cached, &cachedRoots)) {
-    bool sameRoots = cachedRoots.size() == roots_.size();
-    if (sameRoots) {
-      for (size_t i = 0; i < roots_.size(); ++i) {
-        if (ToLower(roots_[i]) != ToLower(cachedRoots[i])) {
-          sameRoots = false;
-          break;
-        }
-      }
-    }
-    if (sameRoots) {
-      std::lock_guard<std::mutex> lock(entriesMutex_);
-      entries_ = std::move(cached);
-      Log(L"文件索引: 快照加载 %zu 条 (%llu ms)", entries_.size(),
-          GetTickCount64() - loadStart);
-    }
+  if (LoadSnapshot(&cached)) {
+    std::lock_guard<std::mutex> lock(entriesMutex_);
+    entries_ = std::move(cached);
+    Log(L"文件索引: 快照加载 %zu 条 (%llu ms)", entries_.size(), GetTickCount64() - loadStart);
   }
 
   stop_.store(false);
@@ -296,46 +283,54 @@ std::vector<std::wstring> FileIndex::SnapshotPaths() const {
   return paths;
 }
 
-bool FileIndex::LoadSnapshot(std::vector<FileEntry>* entries,
-                             std::vector<std::wstring>* roots) const {
-  std::string data;
-  bool loaded = false;
+bool FileIndex::LoadSnapshot(std::vector<FileEntry>* entries) const {
   for (const std::wstring& path : SnapshotPaths()) {
-    if (ReadWholeFile(path, &data)) {
-      loaded = true;
-      break;
+    std::string data;
+    if (!ReadWholeFile(path, &data)) continue;
+    if (data.size() < sizeof(kMagic) || std::memcmp(data.data(), kMagic, sizeof(kMagic)) != 0) {
+      continue;
     }
+    size_t offset = sizeof(kMagic);
+    uint32_t version = 0;
+    if (!ReadPod(data, &offset, &version) || version != kSnapshotVersion) continue;
+    uint32_t rootCount = 0;
+    if (!ReadPod(data, &offset, &rootCount) || rootCount != roots_.size()) continue;
+
+    bool rootsMatch = true;
+    for (uint32_t i = 0; i < rootCount; ++i) {
+      std::wstring snapshotRoot;
+      if (!ReadWide(data, &offset, &snapshotRoot)) {
+        rootsMatch = false;
+        break;
+      }
+      if (ToLower(snapshotRoot) != ToLower(roots_[i])) rootsMatch = false;
+    }
+    if (!rootsMatch) continue;
+
+    uint32_t count = 0;
+    if (!ReadPod(data, &offset, &count) || count > kMaxEntries) continue;
+    entries->clear();
+    entries->reserve(count);
+    bool valid = true;
+    for (uint32_t i = 0; i < count; ++i) {
+      std::wstring entryPath;
+      uint8_t isDirectory = 0;
+      if (!ReadWide(data, &offset, &entryPath) || !ReadPod(data, &offset, &isDirectory)) {
+        valid = false;
+        break;
+      }
+      FileEntry entry;
+      entry.lowerPath = ToLower(entryPath);
+      const size_t slash = entry.lowerPath.find_last_of(L'\\');
+      entry.nameOffset = static_cast<uint32_t>(slash == std::wstring::npos ? 0 : slash + 1);
+      entry.path = std::move(entryPath);
+      entry.isDirectory = isDirectory != 0;
+      entries->push_back(std::move(entry));
+    }
+    if (valid && !entries->empty()) return true;
+    entries->clear();
   }
-  if (!loaded) return false;
-  if (data.size() < sizeof(kMagic) || std::memcmp(data.data(), kMagic, sizeof(kMagic)) != 0) {
-    return false;
-  }
-  size_t offset = sizeof(kMagic);
-  uint32_t version = 0;
-  if (!ReadPod(data, &offset, &version) || version != kSnapshotVersion) return false;
-  uint32_t rootCount = 0;
-  if (!ReadPod(data, &offset, &rootCount) || rootCount > 16) return false;
-  for (uint32_t i = 0; i < rootCount; ++i) {
-    std::wstring root;
-    if (!ReadWide(data, &offset, &root)) return false;
-    roots->push_back(std::move(root));
-  }
-  uint32_t count = 0;
-  if (!ReadPod(data, &offset, &count) || count > kMaxEntries) return false;
-  entries->reserve(count);
-  for (uint32_t i = 0; i < count; ++i) {
-    std::wstring path;
-    uint8_t isDirectory = 0;
-    if (!ReadWide(data, &offset, &path) || !ReadPod(data, &offset, &isDirectory)) return false;
-    FileEntry entry;
-    entry.lowerPath = ToLower(path);
-    const size_t slash = entry.lowerPath.find_last_of(L'\\');
-    entry.nameOffset = static_cast<uint32_t>(slash == std::wstring::npos ? 0 : slash + 1);
-    entry.path = std::move(path);
-    entry.isDirectory = isDirectory != 0;
-    entries->push_back(std::move(entry));
-  }
-  return !entries->empty();
+  return false;
 }
 
 void FileIndex::SaveSnapshot(const std::vector<FileEntry>& entries) {
@@ -521,12 +516,7 @@ bool FileIndex::LoadCachedSnapshot() {
   EnsureRoots();
   if (roots_.empty()) return false;
   std::vector<FileEntry> cached;
-  std::vector<std::wstring> cachedRoots;
-  if (!LoadSnapshot(&cached, &cachedRoots)) return false;
-  if (cachedRoots.size() != roots_.size()) return false;
-  for (size_t i = 0; i < roots_.size(); ++i) {
-    if (ToLower(roots_[i]) != ToLower(cachedRoots[i])) return false;
-  }
+  if (!LoadSnapshot(&cached)) return false;
   std::lock_guard<std::mutex> lock(entriesMutex_);
   entries_ = std::move(cached);
   version_.fetch_add(1);

@@ -4,30 +4,40 @@
 
 namespace {
 
-struct Combo {
-  UINT modifiers;
-  UINT virtualKey;
-  const wchar_t* name;
-};
-
-const Combo kCombos[] = {
-    {MOD_ALT, VK_SPACE, L"Alt+Space"},
-    {MOD_CONTROL | MOD_ALT, VK_SPACE, L"Ctrl+Alt+Space"},
-    {MOD_CONTROL | MOD_SHIFT, VK_SPACE, L"Ctrl+Shift+Space"},
+const HotkeyBinding kBindings[] = {
+    {L"Alt+Space", MOD_ALT, VK_SPACE},
+    {L"Ctrl+Alt+Space", MOD_CONTROL | MOD_ALT, VK_SPACE},
+    {L"Ctrl+Shift+Space", MOD_CONTROL | MOD_SHIFT, VK_SPACE},
 };
 
 }  // namespace
 
-bool RegisterDefaultHotkey(HWND hwnd, int id, std::wstring* outName) {
-  for (const Combo& combo : kCombos) {
-    if (RegisterHotKey(hwnd, id, combo.modifiers | MOD_NOREPEAT, combo.virtualKey)) {
-      if (outName) *outName = combo.name;
-      Log(L"热键已注册: %ls", combo.name);
-      return true;
-    }
-    Log(L"热键注册失败 (%ls): %lu", combo.name, GetLastError());
+size_t HotkeyBindingCount() { return ARRAYSIZE(kBindings); }
+
+const HotkeyBinding* DefaultHotkeyBinding(size_t index) {
+  if (index >= ARRAYSIZE(kBindings)) return nullptr;
+  return &kBindings[index];
+}
+
+const HotkeyBinding* FindHotkeyBinding(const std::wstring& name) {
+  for (const HotkeyBinding& binding : kBindings) {
+    if (name == binding.name) return &binding;
   }
-  if (outName) outName->clear();
+  return nullptr;
+}
+
+bool RegisterHotkeyBinding(HWND hwnd, int id, const HotkeyBinding& binding, std::wstring* error) {
+  if (RegisterHotKey(hwnd, id, binding.modifiers | MOD_NOREPEAT, binding.virtualKey)) {
+    Log(L"热键已注册: %ls", binding.name);
+    return true;
+  }
+  const DWORD lastError = GetLastError();
+  Log(L"热键注册失败 (%ls): %lu", binding.name, lastError);
+  if (error) {
+    wchar_t buffer[96];
+    swprintf(buffer, ARRAYSIZE(buffer), L"热键 %ls 注册失败 (Win32 %lu)", binding.name, lastError);
+    *error = buffer;
+  }
   return false;
 }
 

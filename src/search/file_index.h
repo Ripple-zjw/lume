@@ -60,7 +60,7 @@ class FileIndex {
   void AddEntryLocked(const std::wstring& path, bool isDirectory);
   void RemoveEntryLocked(const std::wstring& path);
 
-  bool LoadSnapshot(std::vector<FileEntry>* entries, std::vector<std::wstring>* roots) const;
+  bool LoadSnapshot(std::vector<FileEntry>* entries) const;
   void SaveSnapshot(const std::vector<FileEntry>& entries);
   std::vector<std::wstring> SnapshotPaths() const;
 

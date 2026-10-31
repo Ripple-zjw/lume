@@ -5,6 +5,7 @@
 #include <utility>
 #include <vector>
 
+#include "app/settings.h"
 #include "core/com_ptr.h"
 #include "core/log.h"
 #include "platform/hotkey.h"
@@ -32,8 +33,26 @@ UINT PanelCanvasHeight(const Theme& theme, int visibleRows, float scale) {
       std::lround((PanelHeight(theme, visibleRows) + theme.shadowMargin * 2.0f) * scale));
 }
 
-WPARAM KeyTokenToVk(const std::wstring& token) {
-  if (token == L"up") return VK_UP;
+bool RegisterConfiguredHotkey(HWND hwnd, const AppSettings& settings, int id,
+                              std::wstring* usedName) {
+  const HotkeyBinding* binding = FindHotkeyBinding(settings.hotkey);
+  if (binding && RegisterHotkeyBinding(hwnd, id, *binding, nullptr)) {
+    if (usedName) *usedName = binding->name;
+    return true;
+  }
+  for (size_t i = 0; i < HotkeyBindingCount(); ++i) {
+    const HotkeyBinding* fallback = DefaultHotkeyBinding(i);
+    if (binding && fallback == binding) continue;
+    if (RegisterHotkeyBinding(hwnd, id, *fallback, nullptr)) {
+      if (usedName) *usedName = fallback->name;
+      Log(L"已回退到热键: %ls", fallback->name);
+      return true;
+    }
+  }
+  return false;
+}
+
+WPARAM KeyTokenToVk(const std::wstring& token) {  if (token == L"up") return VK_UP;
   if (token == L"down") return VK_DOWN;
   if (token == L"left") return VK_LEFT;
   if (token == L"right") return VK_RIGHT;
@@ -69,8 +88,8 @@ int RunScreenshot(const AppOptions& options, const std::wstring& path, float sca
   FileIndex files;
   if (!options.fileRoot.empty()) files.SetRoots({options.fileRoot});
   files.LoadCachedSnapshot();
-  std::vector<ResultRow> rows = BuildMergedRows(apps, &files, options.query);
-  const int visibleRows = Scene::kMaxVisibleRows;
+  std::vector<ResultRow> rows = BuildMergedRows(apps, &files, nullptr, options.query);
+  const int visibleRows = std::clamp(static_cast<int>(rows.size()), 1, Scene::kMaxVisibleRows);
   if (!renderer.AttachOffscreen(PanelCanvasWidth(theme, scale),
                                 PanelCanvasHeight(theme, visibleRows, scale))) {
     Log(L"离屏目标创建失败");
@@ -138,13 +157,21 @@ int RunLauncher(const AppOptions& options) {
     return 0;
   }
 
+  AppSettings settings;
+  SettingsStore::Load(&settings);
+  if (options.themeSpecified) settings.theme = ThemeModeName(options.themeMode);
+  if (options.accentSpecified) settings.accent = options.accent;
+  Log(L"设置: theme=%ls accent=\"%ls\" hotkey=%ls autostart=%d roots=%zu", settings.theme.c_str(),
+      settings.accent.c_str(), settings.hotkey.c_str(), settings.autostart ? 1 : 0,
+      settings.fileRoots.size());
+
   Renderer renderer;
   IconCache icons;
   Scene scene;
   LauncherWindow window;
   int exitCode = 0;
 
-  Theme theme = MakeTheme(options.themeMode, ParseAccent(options.accent));
+  Theme theme = MakeTheme(ParseThemeMode(settings.theme), ParseAccent(settings.accent));
   if (!renderer.Init()) {
     Log(L"渲染器初始化失败");
     exitCode = 2;
@@ -154,24 +181,37 @@ int RunLauncher(const AppOptions& options) {
   } else if (!scene.Init(renderer, theme, &icons)) {
     Log(L"场景初始化失败");
     exitCode = 2;
-  } else if (!window.Create(GetModuleHandleW(nullptr), &renderer, &scene, &icons,
+  } else if (!window.Create(GetModuleHandleW(nullptr), &renderer, &scene, &icons, settings,
                             options.fileRoot)) {
     Log(L"窗口创建失败");
     exitCode = 2;
   }
 
   if (exitCode == 0) {
-    window.SetTheme(theme);
     window.SetGlass(options.glass);
     window.SetQuery(options.query);
     window.RenderNow();  // 隐藏预热：把首次绘制的着色器/布局成本挪到启动阶段
 
     std::wstring hotkeyName;
-    if (!options.noHotkey && !RegisterDefaultHotkey(window.hwnd(), kHotkeyId, &hotkeyName)) {
+    if (!options.noHotkey &&
+        !RegisterConfiguredHotkey(window.hwnd(), settings, kHotkeyId, &hotkeyName)) {
       Log(L"没有可用的全局热键，仅能通过 --show 测试");
     }
 
     window.SetOnHotkey([&window]() { window.Toggle(); });
+    window.SetOnHotkeyRequest([&](const AppSettings& updated) {
+      if (options.noHotkey) return;
+      UnregisterHotkey(window.hwnd(), kHotkeyId);
+      std::wstring used;
+      if (!RegisterConfiguredHotkey(window.hwnd(), updated, kHotkeyId, &used)) {
+        Log(L"新热键注册失败");
+      }
+    });
+    window.SetOnSettingsChanged(
+        [](const AppSettings& updated) { SettingsStore::Save(updated); });
+    if (options.openSettings) {
+      window.OpenSettings();
+    }
     window.SetOnTimer([&](UINT_PTR id) {
       if (id == kTimerCapture) {
         KillTimer(window.hwnd(), kTimerCapture);

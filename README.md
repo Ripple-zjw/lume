@@ -2,11 +2,11 @@
 
 Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤出、输入即搜、回车启动应用与文件。C++20 + Win32 + Direct2D/DirectWrite + DirectComposition，免安装、免管理员、单 exe。
 
-**当前进度：P4（文件/文件夹搜索、watcher、路径直通、异步图标）已完成，下一步 P5 打磨。**
+**当前进度：P5（托盘、设置、自启、动态高度、MRU）已完成。**
 
-![文件搜索结果（真实窗口，125% DPI）](docs/images/p4/window-search.png)
+![动态面板高度（3 条结果）](docs/images/p5/window-small.png)
 
-![watcher 增量更新（新建文件 1s 内出现）](docs/images/p4/watch-new.png)
+![六行面板（150%）](docs/images/p5/height-six.png)
 
 ## 系统要求
 
@@ -63,6 +63,17 @@ Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤�
 - 异步图标：worker 取 shell 位图、UI 线程转 D2D，先画首字色块兜底；查询延迟从 56.7ms 降到 0.6ms。
 - `--list-files` / `--file-stats` / `--file-root` 可检查索引；`--open` 可单独验证打开路径。
 
+**P5：托盘、设置、自启、动态高度、MRU**
+
+- 托盘图标 + 右键菜单（显示 / 开机自启 / 设置… / 退出），左键切换窗口；资源管理器重启后通过 `TaskbarCreated` 自动重挂。
+- 设置窗（原生控件）：主题（跟随系统/深色/浅色）、强调色（设计蓝/系统）、热键预设（Alt+Space / Ctrl+Alt+Space / Ctrl+Shift+Space）、开机自启、文件索引目录增删（文件夹选择器）。
+- 设置持久化 `settings.conf`（UTF-8 key=value，AppData 不可写时退回 exe 同目录）；改动即时应用：主题/强调色重绘、热键重新注册、文件索引按新根目录重建。
+- 开机自启写 `HKCU\...\Run`（命令 `"eTools.exe" --autostart`）。
+- 动态面板高度：结果 1–6 行时窗口高度跟随收缩/展开，不再固定留白。
+- MRU：`usage.conf` 记录目标的使用次数与最近时间；空查询按常用/最近排序，非空查询叠加 0–200 分。
+- 修复：多份索引快照并存时，按“根目录匹配”逐个尝试，而不是读到第一份就放弃。
+- 说明：本 agent 沙箱内 `Shell_NotifyIcon` 与 `HKCU\...\Run` 写入被系统拒绝（托盘/自启代码路径需在真实会话验证）；设置窗仍是原生浅色控件，深色主题留作 P5.1。
+
 ## 构建
 
 ```powershell
@@ -112,6 +123,8 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Run
 | `--file-stats` | 重建文件索引并只打印统计 |
 | `--file-root=<dir>` | 覆盖文件索引根目录（测试用） |
 | `--open=<path>` | 单独验证打开文件/路径 |
+| `--set-autostart=1\|0` | 设置开机自启并打印状态 |
+| `--settings` | 启动时打开设置窗 |
 | `--no-hotkey` | 不注册全局热键 |
 | `--log=<path>` | 指定日志文件（默认 `%LOCALAPPDATA%\eTools\logs`，不可写时退回 exe 同目录） |
 
@@ -120,18 +133,23 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Run
 ```
 src/main.cpp               CLI 解析与入口分发
 src/app/                   常驻应用：单实例、热键、显示/隐藏、截图模式、测试注入
-src/ui/window.cpp          窗口、云母/圆角、定位/激活、输入与 IME、键盘、动效、预热
+src/app/settings.cpp       设置读写（settings.conf，多路径回退）
+src/ui/window.cpp          窗口、托盘、设置入口、定位/激活、输入与 IME、键盘、动效、动态高度
+src/ui/settings_window.cpp 设置窗（主题/强调色/热键/自启/索引目录）
 src/ui/input.cpp           单行输入状态（码点移动、粘贴、组字）
 src/ui/renderer.cpp        D3D11/DXGI/DirectComposition/D2D/DWrite/WIC 与出图
 src/ui/scene.cpp           面板绘制（阴影、输入、虚拟化列表、组字下划线、动画 Alpha）
 src/ui/theme.cpp           暗/亮主题 token、强调色解析
 src/platform/system.cpp    系统版本门禁、DPI、工作区、暗色/强调色读取
-src/platform/hotkey.cpp    全局热键注册与候选组合
+src/platform/hotkey.cpp    全局热键注册与预设组合
+src/platform/autostart.cpp 开机自启注册表读写
+src/platform/tray.cpp      托盘图标与右键菜单
 src/search/app_entry.h     应用条目模型与索引/过滤接口
 src/search/app_index.cpp   开始菜单/AppsFolder/App Paths 收集、去重、磁盘缓存
 src/search/scorer.cpp      模糊评分与过滤
 src/search/file_index.cpp  文件枚举、快照、watcher、文件检索
 src/search/merge.cpp       应用/文件/路径直通合并排序
+src/search/usage.cpp       使用频次/最近性（usage.conf）
 src/search/result.h        显示层结果行
 src/ui/icon_cache.cpp      异步 shell 图标加载（worker 取图 + UI 转 D2D）
 src/launch/launcher.cpp    ShellExecuteEx / UWP 激活 / 定位 / 管理员运行 / 打开路径
@@ -144,6 +162,7 @@ docs/DESIGN.md             架构决策、实测数据、视觉 token
 docs/images/p2/            P2 设计基线与交互状态截图
 docs/images/p3/            P3 真实索引/图标/选中态截图
 docs/images/p4/            P4 文件搜索/watcher/窗口截图
+docs/images/p5/            P5 动态高度截图
 ```
 
 ## 已知事项
@@ -156,8 +175,9 @@ docs/images/p4/            P4 文件搜索/watcher/窗口截图
 - **UWP 启动无法在本 agent 沙箱内验证**：`ActivateApplication` 与 `shell:AppsFolder\<AUMID>` 都被系统拒绝（Win32 5），连 PowerShell `Start-Process` 同样失败，属环境限制；普通 exe/.lnk 启动已实测成功。请在真实会话里用「记事本/计算器」确认。
 - **用 shell 打开文件/文件夹在沙箱里同样受限**：`.txt` 返回 Win32 5、`.exe` 返回 1223（取消），但 `--open` 单独调用能成功拉起进程；这是沙箱对 shell 关联/激活的限制，桌面会话应正常，需要你实测确认。
 - 文件索引只覆盖桌面/文档/下载（可 `--file-root` 覆盖），不是全盘；全盘秒搜需要 USN 日志/服务（管理员），与免安装定位冲突，后续可选接 Everything。
-- 面板高度固定 6 行（结果少时留白），动态高度属 P5 打磨。
-- 空查询按名称列出全部应用（最近/常用排序待 P5）；图标磁盘缓存尚未做。
+- **托盘与开机自启在 agent 沙箱内被系统拒绝**：`Shell_NotifyIcon(NIM_ADD)` 返回失败、`HKCU\...\Run` 不可写；代码路径已就绪，需在真实会话验证（托盘右键可退出程序）。
+- 设置窗使用原生控件、浅色外观；深色主题与自绘外观留作 P5.1。设置保存路径优先 `%APPDATA%\eTools\settings.conf`，不可写时退回 exe 同目录。
+- 动态面板高度已实现（1–6 行）；图标磁盘缓存、全盘/更多根目录的设置项、文件内容搜索仍未做。
 - 唤出淡入通过场景整体 alpha 实现（mingw 的 `dcomp.h` 漏声明 `IDCompositionVisual::SetOpacity`，未用 ABI hack）。
 
 ## 路线
@@ -169,4 +189,5 @@ docs/images/p4/            P4 文件搜索/watcher/窗口截图
 | P2 ✅ | 自绘输入 + IME、虚拟列表、键盘/滚动、唤出与选中动效、布局缓存 |
 | P3 ✅ | 应用索引（开始菜单/AppsFolder/App Paths）、评分、真实启动、shell 图标、索引缓存 |
 | P4 ✅ | 文件/文件夹索引、快照、watcher 增量、路径直通、异步图标 |
-| P5 | 设置窗、托盘、自启、动态高度、图标磁盘缓存、MRU、打磨与文档 |
+| P5 ✅ | 托盘/设置窗/自启、动态高度、MRU 排序、快照多路径修复 |
+| P5.1 | 图标磁盘缓存、设置窗深色化、热键自定义录入、通用文件搜索（Everything 可选适配器） |

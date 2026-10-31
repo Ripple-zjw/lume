@@ -6,7 +6,10 @@
 
 struct AppOptions {
   ThemeMode themeMode = ThemeMode::System;
+  bool themeSpecified = false;
   std::wstring accent;  // 空 = 设计默认蓝；system = 跟随系统；RRGGBB = 指定
+  bool accentSpecified = false;
+  bool autostartLaunch = false;
   std::wstring query;
   std::wstring logPath;
   std::wstring fileRoot;  // 测试用：覆盖文件索引根目录
@@ -20,6 +23,7 @@ struct AppOptions {
   int selected = 0;  // 截图用：预选中行
   bool noHotkey = false;
   bool glass = false;
+  bool openSettings = false;
 };
 
 // 常驻启动器：单实例、热键、显示/隐藏、截图模式。返回进程退出码。

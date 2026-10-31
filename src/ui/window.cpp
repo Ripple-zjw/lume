@@ -2,6 +2,7 @@
 
 #include <dwmapi.h>
 #include <imm.h>
+#include <shellapi.h>
 
 #include <algorithm>
 #include <cmath>
@@ -9,8 +10,10 @@
 
 #include "core/log.h"
 #include "launch/launcher.h"
+#include "platform/autostart.h"
 #include "platform/system.h"
 #include "search/merge.h"
+#include "search/usage.h"
 #include "ui/renderer.h"
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
@@ -40,6 +43,11 @@ constexpr UINT kCaretBlinkMs = 530;
 constexpr double kShowAnimMs = 90.0;
 constexpr double kSelectionAnimMs = 120.0;
 constexpr double kContentAnimMs = 80.0;
+
+UINT TaskbarCreatedMessage() {
+  static UINT message = RegisterWindowMessageW(L"TaskbarCreated");
+  return message;
+}
 
 double ElapsedMs(const LARGE_INTEGER& start) {
   LARGE_INTEGER now{};
@@ -73,15 +81,22 @@ LauncherWindow::~LauncherWindow() {
 }
 
 bool LauncherWindow::Create(HINSTANCE instance, Renderer* renderer, Scene* scene,
-                            IconCache* icons, const std::wstring& fileRoot) {
+                            IconCache* icons, const AppSettings& settings,
+                            const std::wstring& fileRoot) {
   instance_ = instance;
   renderer_ = renderer;
   scene_ = scene;
   icons_ = icons;
-  theme_ = MakeTheme(ThemeMode::Dark);
+  settings_ = settings;
+  theme_ = MakeTheme(ParseThemeMode(settings_.theme), ParseAccent(settings_.accent));
   visibleRows_ = Scene::kMaxVisibleRows;
   input_.SetText(L"");
-  if (!fileRoot.empty()) files_.SetRoots({fileRoot});
+  usage_.Load();
+  if (!fileRoot.empty()) {
+    files_.SetRoots({fileRoot});
+  } else if (!settings_.fileRoots.empty()) {
+    files_.SetRoots(settings_.fileRoots);
+  }
 
   LARGE_INTEGER indexStart{};
   QueryPerformanceCounter(&indexStart);
@@ -123,6 +138,9 @@ bool LauncherWindow::Create(HINSTANCE instance, Renderer* renderer, Scene* scene
   }
   ApplyBackdrop();
   SetTimer(hwnd_, kTimerFileRefresh, 1000, nullptr);
+  if (settings_.tray && !tray_.Create(hwnd_)) {
+    Log(L"托盘初始化失败（继续运行）");
+  }
   return true;
 }
 
@@ -133,6 +151,9 @@ void LauncherWindow::Shutdown() {
     KillTimer(hwnd_, kTimerFileRefresh);
     KillTimer(hwnd_, kTimerIcons);
   }
+  usage_.Save();
+  settingsWindow_.reset();
+  tray_.Destroy();
   files_.Stop();
 }
 
@@ -232,11 +253,89 @@ void LauncherWindow::PreloadIcons(bool warm) {
   }
 }
 
+void LauncherWindow::UpdateLayoutForRows() {
+  const int wanted = std::clamp(static_cast<int>(rows_.size()), 1, Scene::kMaxVisibleRows);
+  if (wanted == visibleRows_) return;
+  visibleRows_ = wanted;
+  const float scale = static_cast<float>(dpi_) / 96.0f;
+  heightPx_ = static_cast<UINT>(
+      std::lround((PanelHeight(theme_, visibleRows_) + theme_.shadowMargin * 2.0f) * scale));
+  if (renderer_ && renderer_->kind() != RenderTargetKind::None) {
+    renderer_->Resize(widthPx_, heightPx_);
+  }
+  if (hwnd_) {
+    RECT rect{};
+    GetWindowRect(hwnd_, &rect);
+    SetWindowPos(hwnd_, HWND_TOPMOST, rect.left, rect.top, static_cast<int>(widthPx_),
+                 static_cast<int>(heightPx_), SWP_NOACTIVATE);
+  }
+}
+
+void LauncherWindow::OpenSettings() {
+  if (!settingsWindow_) settingsWindow_ = std::make_unique<SettingsWindow>();
+  settingsWindow_->Show(instance_, hwnd_, settings_, [this](const AppSettings& updated) {
+    ApplySettings(updated);
+    if (onHotkeyRequest_) onHotkeyRequest_(updated);
+    if (onSettingsChanged_) onSettingsChanged_(updated);
+  });
+}
+
+void LauncherWindow::ApplySettings(const AppSettings& settings) {
+  settings_ = settings;
+  SetTheme(MakeTheme(ParseThemeMode(settings_.theme), ParseAccent(settings_.accent)));
+  std::wstring error;
+  if (!SetAutostart(settings_.autostart, &error)) {
+    Log(L"应用自启设置失败: %ls", error.c_str());
+  }
+  files_.Stop();
+  files_.SetRoots(settings_.fileRoots);
+  files_.Start();
+  fileVersionSeen_ = files_.version();
+  RebuildRows();
+  StartContentFade();
+  if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void LauncherWindow::HandleTrayCommand(UINT command) {
+  switch (command) {
+    case kTrayShow:
+      ShowAndFocus();
+      break;
+    case kTrayAutostart: {
+      settings_.autostart = !settings_.autostart;
+      std::wstring error;
+      if (!SetAutostart(settings_.autostart, &error)) {
+        Log(L"切换自启失败: %ls", error.c_str());
+      }
+      if (onSettingsChanged_) onSettingsChanged_(settings_);
+      break;
+    }
+    case kTraySettings:
+      OpenSettings();
+      break;
+    case kTrayExit:
+      Log(L"托盘退出");
+      PostQuitMessage(0);
+      break;
+    default:
+      break;
+  }
+}
+
+void LauncherWindow::SetOnSettingsChanged(std::function<void(const AppSettings&)> callback) {
+  onSettingsChanged_ = std::move(callback);
+}
+
+void LauncherWindow::SetOnHotkeyRequest(std::function<void(const AppSettings&)> callback) {
+  onHotkeyRequest_ = std::move(callback);
+}
+
 void LauncherWindow::RebuildRows() {
-  rows_ = BuildMergedRows(apps_, &files_, input_.text());
+  rows_ = BuildMergedRows(apps_, &files_, &usage_, input_.text());
   selected_ = 0;
   scroll_ = 0;
   selectionRow_ = 0.0f;
+  UpdateLayoutForRows();
   EnsureSelectionVisible();
   PreloadIcons(false);
   UpdateSceneState();
@@ -510,7 +609,10 @@ bool LauncherWindow::HandleKeyDown(WPARAM key) {
           Log(L"打开失败: %ls -> %ls", row.target.c_str(), error.c_str());
         }
       }
-      if (ok) Hide();
+      if (ok) {
+        usage_.Record(row.target);
+        Hide();
+      }
       return true;
     }
     case VK_BACK:
@@ -653,9 +755,23 @@ LRESULT CALLBACK LauncherWindow::Thunk(HWND hwnd, UINT message, WPARAM wParam, L
 }
 
 LRESULT LauncherWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
+  if (message == TaskbarCreatedMessage() && message != 0) {
+    tray_.ReAdd();
+    return 0;
+  }
   switch (message) {
     case WM_ERASEBKGND:
       return 1;
+    case kTrayMessage: {
+      const UINT event = LOWORD(lParam);
+      if (event == WM_LBUTTONUP || event == NIN_SELECT || event == NIN_KEYSELECT) {
+        Toggle();
+      } else if (event == WM_RBUTTONUP || event == WM_CONTEXTMENU) {
+        const UINT command = tray_.ShowMenu(settings_.autostart);
+        if (command) HandleTrayCommand(command);
+      }
+      return 0;
+    }
     case WM_PAINT: {
       PAINTSTRUCT ps;
       BeginPaint(hwnd_, &ps);

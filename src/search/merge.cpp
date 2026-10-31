@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "search/file_index.h"
+#include "search/usage.h"
 
 namespace {
 
@@ -64,7 +65,7 @@ ResultRow MakePathRow(const std::wstring& path, bool isDirectory) {
 }  // namespace
 
 std::vector<ResultRow> BuildMergedRows(const std::vector<AppEntry>& apps, FileIndex* files,
-                                       const std::wstring& query, size_t limit,
+                                       UsageStore* usage, const std::wstring& query, size_t limit,
                                        bool withPlaceholder) {
   std::vector<ResultRow> rows;
 
@@ -77,15 +78,18 @@ std::vector<ResultRow> BuildMergedRows(const std::vector<AppEntry>& apps, FileIn
 
   if (query.empty()) {
     for (const AppEntry* entry : FilterEntries(apps, L"")) {
-      rows.push_back(MakeAppRow(*entry, 1));
+      const size_t bonus = usage ? usage->Bonus(entry->launchTarget) : 0;
+      rows.push_back(MakeAppRow(*entry, bonus));
     }
   } else {
     for (const AppEntry* entry : FilterEntries(apps, query)) {
-      rows.push_back(MakeAppRow(*entry, ScoreEntry(*entry, query)));
+      const size_t bonus = usage ? usage->Bonus(entry->launchTarget) : 0;
+      rows.push_back(MakeAppRow(*entry, ScoreEntry(*entry, query) + bonus));
     }
     if (files) {
       for (const FileHit& hit : files->Search(query, kMaxFileHits)) {
-        rows.push_back(MakeFileRow(hit.entry, hit.score));
+        const size_t bonus = usage ? usage->Bonus(hit.entry.path) : 0;
+        rows.push_back(MakeFileRow(hit.entry, hit.score + bonus));
       }
     }
   }

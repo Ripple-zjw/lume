@@ -7,6 +7,7 @@
 #include "app/app.h"
 #include "core/log.h"
 #include "launch/launcher.h"
+#include "platform/autostart.h"
 #include "platform/system.h"
 #include "search/app_entry.h"
 #include "search/file_index.h"
@@ -23,6 +24,7 @@ struct CliOptions {
   bool listFiles = false;
   bool fileStats = false;
   std::wstring openPath;
+  std::wstring setAutostart;
 };
 
 void PrintUsage() {
@@ -51,6 +53,9 @@ void PrintUsage() {
       "  --list-apps                      Print the collected app index and exit\n"
       "  --list-files                     Rebuild the file index, print stats and sample paths\n"
       "  --file-stats                     Rebuild the file index and print stats only\n"
+      "  --open=<path>                    Verify opening a file/path directly\n"
+      "  --set-autostart=1|0              Enable/disable autostart and print state\n"
+      "  --settings                       Open the settings window at startup\n"
       "  --file-root=<dir>                Override file index roots (testing)\n"
       "  --no-hotkey                      Do not register global hotkey\n",
       stdout);
@@ -78,14 +83,22 @@ CliOptions Parse(int argc, wchar_t** argv) {
       cli.app.query = ValueAfter(arg, L"--query=");
     } else if (StartsWith(arg, L"--theme=")) {
       cli.app.themeMode = ParseThemeMode(ValueAfter(arg, L"--theme="));
+      cli.app.themeSpecified = true;
     } else if (StartsWith(arg, L"--accent=")) {
       cli.app.accent = ValueAfter(arg, L"--accent=");
+      cli.app.accentSpecified = true;
+    } else if (arg == L"--autostart") {
+      cli.app.autostartLaunch = true;
     } else if (StartsWith(arg, L"--log=")) {
       cli.app.logPath = ValueAfter(arg, L"--log=");
     } else if (StartsWith(arg, L"--file-root=")) {
       cli.app.fileRoot = ValueAfter(arg, L"--file-root=");
     } else if (StartsWith(arg, L"--open=")) {
       cli.openPath = ValueAfter(arg, L"--open=");
+    } else if (StartsWith(arg, L"--set-autostart=")) {
+      cli.setAutostart = ValueAfter(arg, L"--set-autostart=");
+    } else if (arg == L"--settings") {
+      cli.app.openSettings = true;
     } else if (StartsWith(arg, L"--scale=")) {
       cli.scale = static_cast<float>(wcstod(ValueAfter(arg, L"--scale=").c_str(), nullptr));
       if (cli.scale < 0.5f || cli.scale > 4.0f) cli.scale = 0.0f;
@@ -170,6 +183,16 @@ int wmain(int argc, wchar_t** argv) {
     fflush(stdout);
     CoUninitialize();
     return 0;
+  }
+  if (!cli.setAutostart.empty()) {
+    const bool enabled = cli.setAutostart == L"1" || cli.setAutostart == L"on" ||
+                         cli.setAutostart == L"true";
+    std::wstring error;
+    const bool ok = SetAutostart(enabled, &error);
+    printf("autostart=%d ok=%d%s%s\n", IsAutostartEnabled() ? 1 : 0, ok ? 1 : 0,
+           ok ? "" : " error=", ok ? "" : WideToUtf8(error).c_str());
+    CoUninitialize();
+    return ok ? 0 : 2;
   }
   if (!cli.openPath.empty()) {
     LogInit(cli.app.logPath);
