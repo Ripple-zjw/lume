@@ -11,14 +11,27 @@
 
 namespace {
 
+std::wstring ParentDirectory(const std::wstring& path) {
+  const size_t slash = path.find_last_of(L"\\/");
+  if (slash == std::wstring::npos || slash == 0) return {};
+  return path.substr(0, slash);
+}
+
+bool EndsWithNoCase(const std::wstring& text, const wchar_t* suffix) {
+  const size_t length = wcslen(suffix);
+  if (text.size() < length) return false;
+  return _wcsicmp(text.c_str() + text.size() - length, suffix) == 0;
+}
+
 bool RunShellExecute(const std::wstring& file, const wchar_t* verb, const std::wstring& parameters,
-                  std::wstring* error) {
+                     std::wstring* error, const std::wstring& directory = std::wstring()) {
   SHELLEXECUTEINFOW info{};
   info.cbSize = sizeof(info);
   info.fMask = SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC;
   info.lpVerb = verb;
   info.lpFile = file.c_str();
   info.lpParameters = parameters.empty() ? nullptr : parameters.c_str();
+  info.lpDirectory = directory.empty() ? nullptr : directory.c_str();
   info.nShow = SW_SHOWNORMAL;
   if (!ShellExecuteExW(&info)) {
     const DWORD lastError = GetLastError();
@@ -28,6 +41,9 @@ bool RunShellExecute(const std::wstring& file, const wchar_t* verb, const std::w
       *error = buffer;
     }
     return false;
+  }
+  if (!directory.empty()) {
+    Log(L"已启动: %ls (工作目录 %ls)", file.c_str(), directory.c_str());
   }
   return true;
 }
@@ -86,7 +102,15 @@ bool LaunchEntry(const AppEntry& entry, LaunchMode mode, std::wstring* error) { 
   }
 
   const wchar_t* verb = (mode == LaunchMode::Elevated) ? L"runas" : L"open";
-  return RunShellExecute(entry.launchTarget, verb, L"", error);
+  std::wstring directory;
+  if (!EndsWithNoCase(entry.launchTarget, L".lnk")) {
+    const DWORD attributes = GetFileAttributesW(entry.launchTarget.c_str());
+    if (attributes != INVALID_FILE_ATTRIBUTES &&
+        (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+      directory = ParentDirectory(entry.launchTarget);
+    }
+  }
+  return RunShellExecute(entry.launchTarget, verb, L"", error, directory);
 }
 
 bool OpenPath(const std::wstring& path, std::wstring* error) {
@@ -95,7 +119,14 @@ bool OpenPath(const std::wstring& path, std::wstring* error) {
     if (error) *error = L"路径为空";
     return false;
   }
-  return RunShellExecute(path, L"open", L"", error);
+  std::wstring directory;
+  const DWORD attributes = GetFileAttributesW(path.c_str());
+  if (attributes != INVALID_FILE_ATTRIBUTES &&
+      (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+    // 很多游戏/程序按自身目录找 data，必须继承文件所在目录而不是启动器的 cwd。
+    directory = ParentDirectory(path);
+  }
+  return RunShellExecute(path, L"open", L"", error, directory);
 }
 
 bool RevealPath(const std::wstring& path, std::wstring* error) {
