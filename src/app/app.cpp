@@ -35,17 +35,21 @@ UINT PanelCanvasHeight(const Theme& theme, int visibleRows, float scale) {
 
 bool RegisterConfiguredHotkey(HWND hwnd, const AppSettings& settings, int id,
                               std::wstring* usedName) {
-  const HotkeyBinding* binding = FindHotkeyBinding(settings.hotkey);
-  if (binding && RegisterHotkeyBinding(hwnd, id, *binding, nullptr)) {
-    if (usedName) *usedName = binding->name;
+  HotkeyBinding desired;
+  const bool parsed = ParseHotkey(settings.hotkey, &desired);
+  if (parsed && RegisterHotkeyBinding(hwnd, id, desired, nullptr)) {
+    if (usedName) *usedName = desired.name;
     return true;
   }
   for (size_t i = 0; i < HotkeyBindingCount(); ++i) {
     const HotkeyBinding* fallback = DefaultHotkeyBinding(i);
-    if (binding && fallback == binding) continue;
+    if (parsed && fallback->modifiers == desired.modifiers &&
+        fallback->virtualKey == desired.virtualKey) {
+      continue;
+    }
     if (RegisterHotkeyBinding(hwnd, id, *fallback, nullptr)) {
       if (usedName) *usedName = fallback->name;
-      Log(L"已回退到热键: %ls", fallback->name);
+      Log(L"已回退到热键: %ls", fallback->name.c_str());
       return true;
     }
   }
@@ -161,6 +165,7 @@ int RunLauncher(const AppOptions& options) {
   SettingsStore::Load(&settings);
   if (options.themeSpecified) settings.theme = ThemeModeName(options.themeMode);
   if (options.accentSpecified) settings.accent = options.accent;
+  if (!options.hotkeyOverride.empty()) settings.hotkey = options.hotkeyOverride;
   Log(L"设置: theme=%ls accent=\"%ls\" hotkey=%ls autostart=%d roots=%zu", settings.theme.c_str(),
       settings.accent.c_str(), settings.hotkey.c_str(), settings.autostart ? 1 : 0,
       settings.fileRoots.size());

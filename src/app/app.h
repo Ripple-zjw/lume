@@ -7,6 +7,7 @@
 struct AppOptions {
   ThemeMode themeMode = ThemeMode::System;
   bool themeSpecified = false;
+  std::wstring hotkeyOverride;
   std::wstring accent;  // 空 = 设计默认蓝；system = 跟随系统；RRGGBB = 指定
   bool accentSpecified = false;
   bool autostartLaunch = false;

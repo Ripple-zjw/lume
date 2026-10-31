@@ -2,6 +2,7 @@
 
 #include <d2d1_3.h>
 #include <windows.h>
+#include <wincodec.h>
 
 #include <atomic>
 #include <condition_variable>
@@ -19,8 +20,9 @@
 class Renderer;
 
 // shell 图标缓存：
-//  - Warm() 同步加载（启动预热用，不在按键路径上）
-//  - Get() 非阻塞：未命中时入队并返回空，由 worker 取图，UI 线程 DrainCompleted() 转成 D2D 位图
+//  - 磁盘 PNG 缓存（%LOCALAPPDATA%\eTools\icons），二次启动直接解码
+//  - Get() 非阻塞：未命中入队，worker 取图/解码后由 UI 线程转 D2D
+//  - Warm() 同步加载（启动预热首屏）
 class IconCache {
  public:
   ~IconCache();
@@ -29,24 +31,37 @@ class IconCache {
 
   ID2D1Bitmap1* Get(const std::wstring& parsingName, UINT size = 32);
   bool Warm(const std::wstring& parsingName, UINT size = 32);
-  // 在 UI 线程调用：把 worker 完成的 HBITMAP 转成 D2D 位图。
   void DrainCompleted();
   uint64_t version() const { return version_.load(); }
 
  private:
+  struct Pixels {
+    UINT width = 0;
+    UINT height = 0;
+    UINT stride = 0;
+    std::vector<BYTE> data;
+  };
   struct Completed {
     std::wstring key;
-    HBITMAP bitmap = nullptr;
+    Pixels pixels;
+    bool valid = false;
   };
+
   void WorkerLoop();
-  bool LoadBitmap(const std::wstring& key, HBITMAP* bitmap);
-  ID2D1Bitmap1* CreateD2DBitmap(HBITMAP bitmap);
+  bool LoadPixels(IWICImagingFactory* wic, const std::wstring& key, UINT size, Pixels* pixels);
+  bool LoadFromDisk(IWICImagingFactory* wic, const std::wstring& path, Pixels* pixels);
+  bool LoadFromShell(IWICImagingFactory* wic, const std::wstring& key, UINT size, Pixels* pixels);
+  void SaveToDisk(IWICImagingFactory* wic, const std::wstring& key, const Pixels& pixels);
+  ID2D1Bitmap1* CreateD2DBitmap(const Pixels& pixels);
+  std::vector<std::wstring> CachePaths(const std::wstring& key) const;
 
   Renderer* renderer_ = nullptr;
   std::unordered_map<std::wstring, ComPtr<ID2D1Bitmap1>> cache_;
   std::unordered_set<std::wstring> queued_;
   std::vector<Completed> completed_;
   std::atomic<uint64_t> version_{0};
+  std::atomic<int> diskHits_{0};
+  std::atomic<int> shellLoads_{0};
 
   std::thread worker_;
   std::mutex mutex_;

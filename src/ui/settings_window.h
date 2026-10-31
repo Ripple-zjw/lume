@@ -24,18 +24,23 @@ class SettingsWindow {
   void OnSave();
   void AddRootViaDialog();
   void RemoveSelectedRoot();
+  void DrawButton(const DRAWITEMSTRUCT* item);
   int Scale(int value) const;
 
   HWND hwnd_ = nullptr;
   HWND owner_ = nullptr;
-  HWND themeCombo_ = nullptr;
-  HWND accentCombo_ = nullptr;
-  HWND hotkeyCombo_ = nullptr;
+  HWND themeButton_ = nullptr;
+  HWND accentButton_ = nullptr;
+  HWND hotkeyCapture_ = nullptr;
   HWND autostartCheck_ = nullptr;
   HWND rootsList_ = nullptr;
   HWND status_ = nullptr;
   HFONT font_ = nullptr;
+  HBRUSH backgroundBrush_ = nullptr;
+  HBRUSH controlBrush_ = nullptr;
   int dpi_ = 96;
+  int themeIndex_ = 0;
+  int accentIndex_ = 0;
   AppSettings settings_;
   std::vector<std::wstring> roots_;
   SaveCallback onSave_;

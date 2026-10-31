@@ -142,8 +142,17 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 8. **体积/回归**：21 个编译单元，exe 约 1.72MB；设置加载后首帧仍 ~13ms；查询 0.3–2ms（含图标命中差异）。
 9. **P5.1 待办**：图标磁盘缓存（PNG）、设置窗深色/自绘外观、热键自定义录入、索引目录选择器内联校验、端口内存与 CPU 基线。
 
-## 12. 后续方向
+## 12. P5.1 实测结论
+
+1. **图标磁盘缓存**：路径 `%LOCALAPPDATA%\eTools\icons\<fnv1a64(parsingName)>.png`（不可写时 exe 同目录 `icons\`）。worker 先解码 PNG（WIC→PBGRA 像素缓冲），未命中再 `IShellItemImageFactory` 取 HBITMAP，统一转 PBGRA 后写 PNG；UI 线程用 `ID2D1DeviceContext::CreateBitmap` 直接建位图，避免跨线程 D2D。实测冷启动 12 次 shell 取图、首帧 **29.4ms**；二次启动 12 次磁盘命中、0 次 shell、首帧 **15.6ms**，与无缓存基线一致。缓存按解析名哈希，图标尺寸固定 32。
+2. **自绘深色设置窗**：背景 `#202024`、控件 `#2A2A30`、文字 `#F0F0F2`、强调 `#6EA8FF`；主题/强调色为自绘循环按钮（去掉 ComboBox 的白色箭头区），热键为自绘捕获框，按钮/复选框 `WM_DRAWITEM` 自绘，列表与文字 `WM_CTLCOLOR*` 深色。窗口按 `DpiForPoint` 缩放（125% → 675×625）。
+3. **自定义热键**：`ParseHotkey` 支持 Ctrl/Alt/Shift/Win + 字母、数字、F1–F24、Space、方向键、Home/End/PgUp/PgDn 等；`FormatHotkey` 规范化为 `Ctrl+Alt+K` 形式。设置窗捕获时用 `RegisterHotKey` 预检冲突，冲突显示「该组合已被占用」并阻止保存；启动时 `RegisterConfiguredHotkey` 失败会按预设回退并记日志。实测 `--hotkey=Ctrl+Alt+K`：日志 `热键已注册: Ctrl+Alt+K`。
+4. **自检/回归**：`--self-check` 输出 `hotkey/tray/autostart/open/settings_save` 五项 PASS/FAIL 与退出码；`tools/regression.ps1` 调用它并打印人工确认清单。沙箱结果：hotkey PASS、settings_save PASS（回退 exe 目录）、tray/autostart/open FAIL——与已知沙箱限制一致；真实会话需运行脚本确认。
+5. **设置保存实测**：用户在真实会话通过设置窗保存了 `theme=light, accent=system, fileRoot=F:\, E:\`，说明保存链路与多路径回退可用；`--self-check` 会打印实际写入路径而不是首选路径。
+6. **体积**：exe 约 1.76MB；图标 PNG 6 个共约 5KB；启动读取 PNG 后首帧恢复 15.6ms。
+
+## 13. 后续方向
 
 - 文件搜索接 Everything 可选适配器（检测到本机安装则优先全盘结果）。
-- 自绘设置面板替换原生控件，与主面板统一视觉。
-- 打包：图标资源、便携模式、可选自签证书；开机自启与托盘在真实会话回归测试。
+- 全盘索引（USN）或按需挂载更多根目录；文件内容搜索。
+- 打包：图标资源、便携模式、可选自签证书；在真实会话跑 `tools\regression.ps1` 完成托盘/自启/打开文件回归。

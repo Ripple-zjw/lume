@@ -2,11 +2,11 @@
 
 Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤出、输入即搜、回车启动应用与文件。C++20 + Win32 + Direct2D/DirectWrite + DirectComposition，免安装、免管理员、单 exe。
 
-**当前进度：P5（托盘、设置、自启、动态高度、MRU）已完成。**
+**当前进度：P5.1 完成（图标磁盘缓存、自绘深色设置窗、自定义热键、真实会话自检）。**
 
-![动态面板高度（3 条结果）](docs/images/p5/window-small.png)
+![自绘深色设置窗](docs/images/p5/settings-dark.png)
 
-![六行面板（150%）](docs/images/p5/height-six.png)
+![磁盘缓存图标与动态高度](docs/images/p5/icons-cached.png)
 
 ## 系统要求
 
@@ -74,6 +74,15 @@ Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤�
 - 修复：多份索引快照并存时，按“根目录匹配”逐个尝试，而不是读到第一份就放弃。
 - 说明：本 agent 沙箱内 `Shell_NotifyIcon` 与 `HKCU\...\Run` 写入被系统拒绝（托盘/自启代码路径需在真实会话验证）；设置窗仍是原生浅色控件，深色主题留作 P5.1。
 
+**P5.1：图标磁盘缓存 / 深色设置窗 / 自定义热键 / 自检**
+
+- 图标磁盘缓存：worker 先查 `%LOCALAPPDATA%\eTools\icons\<hash>.png`（不可写时 exe 同目录），未命中才走 shell 取图并写回 PNG；`Warm()` 启动预热、异步队列走同一路径。实测冷启动 **12 次 shell 取图、首帧 29.4ms**，二次启动 **12 次磁盘命中、0 次 shell、首帧 15.6ms**。
+- 设置窗自绘深色：统一 `#202024` 背景/白色文字，主题与强调色改为自绘循环按钮（跟随系统 → 深色 → 浅色），文件目录列表与按钮全部深色，去掉原生 ComboBox 的白色箭头块。
+- 自定义热键：新增 `ParseHotkey`/`FormatHotkey`（Ctrl/Alt/Shift/Win + 字母/数字/F1–F24/方向键等），设置窗内点击热键框后直接按下组合键捕获，并用 `RegisterHotKey` 预检冲突；配置里可写任意组合（如 `Ctrl+Alt+K`）。
+- `--hotkey=<combo>` 可临时覆盖热键（不影响已保存设置），用于验证解析与注册。
+- `--self-check`：一次性检查热键注册、托盘、自启读写、文件打开、设置写入并输出 `PASS/FAIL`；配合 `tools/regression.ps1` 在**真实桌面会话**做回归。
+- 沙箱自检结果（预期）：热键 PASS、设置写入 PASS（回退到 exe 目录）、托盘/自启/文件打开 FAIL，需在真实会话运行脚本确认。
+
 ## 构建
 
 ```powershell
@@ -124,7 +133,9 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Run
 | `--file-root=<dir>` | 覆盖文件索引根目录（测试用） |
 | `--open=<path>` | 单独验证打开文件/路径 |
 | `--set-autostart=1\|0` | 设置开机自启并打印状态 |
+| `--hotkey=<combo>` | 临时覆盖热键（如 `Ctrl+Alt+K`） |
 | `--settings` | 启动时打开设置窗 |
+| `--self-check` | 检查热键/托盘/自启/打开文件/设置写入并打印 PASS/FAIL |
 | `--no-hotkey` | 不注册全局热键 |
 | `--log=<path>` | 指定日志文件（默认 `%LOCALAPPDATA%\eTools\logs`，不可写时退回 exe 同目录） |
 
@@ -157,6 +168,7 @@ src/core/log.*             日志（文件/调试器/控制台，UTF-8）与通�
 assets/app.rc              版本/清单资源
 assets/app.manifest        Per-Monitor V2、长路径、UTF-8、asInvoker
 tools/fetch-toolchain.mjs  工具链获取与校验（锁定版本）
+tools/regression.ps1       真实桌面会话回归（托盘/自启/热键/文件打开）
 build.ps1                  增量构建脚本
 docs/DESIGN.md             架构决策、实测数据、视觉 token
 docs/images/p2/            P2 设计基线与交互状态截图
@@ -176,8 +188,10 @@ docs/images/p5/            P5 动态高度截图
 - **用 shell 打开文件/文件夹在沙箱里同样受限**：`.txt` 返回 Win32 5、`.exe` 返回 1223（取消），但 `--open` 单独调用能成功拉起进程；这是沙箱对 shell 关联/激活的限制，桌面会话应正常，需要你实测确认。
 - 文件索引只覆盖桌面/文档/下载（可 `--file-root` 覆盖），不是全盘；全盘秒搜需要 USN 日志/服务（管理员），与免安装定位冲突，后续可选接 Everything。
 - **托盘与开机自启在 agent 沙箱内被系统拒绝**：`Shell_NotifyIcon(NIM_ADD)` 返回失败、`HKCU\...\Run` 不可写；代码路径已就绪，需在真实会话验证（托盘右键可退出程序）。
-- 设置窗使用原生控件、浅色外观；深色主题与自绘外观留作 P5.1。设置保存路径优先 `%APPDATA%\eTools\settings.conf`，不可写时退回 exe 同目录。
-- 动态面板高度已实现（1–6 行）；图标磁盘缓存、全盘/更多根目录的设置项、文件内容搜索仍未做。
+- 设置窗已改为自绘深色（主题/强调色循环按钮、热键捕获、深色列表与按钮）；设置保存路径优先 `%APPDATA%\eTools\settings.conf`，不可写时退回 exe 同目录。
+- 图标缓存位于 `%LOCALAPPDATA%\eTools\icons`（沙箱等不可写环境退回 exe 同目录 `icons\`），按解析名哈希存 PNG；删掉目录会重新取图。
+- 动态面板高度已实现（1–6 行）；全盘/更多根目录的设置项、文件内容搜索、Everything 适配器仍未做。
+- **真实会话回归**：在普通桌面会话运行 `powershell -ExecutionPolicy Bypass -File tools\regression.ps1`（内部调用 `--self-check`），按提示人工确认托盘菜单、热键、自启与设置持久化。
 - 唤出淡入通过场景整体 alpha 实现（mingw 的 `dcomp.h` 漏声明 `IDCompositionVisual::SetOpacity`，未用 ABI hack）。
 
 ## 路线
@@ -190,4 +204,5 @@ docs/images/p5/            P5 动态高度截图
 | P3 ✅ | 应用索引（开始菜单/AppsFolder/App Paths）、评分、真实启动、shell 图标、索引缓存 |
 | P4 ✅ | 文件/文件夹索引、快照、watcher 增量、路径直通、异步图标 |
 | P5 ✅ | 托盘/设置窗/自启、动态高度、MRU 排序、快照多路径修复 |
-| P5.1 | 图标磁盘缓存、设置窗深色化、热键自定义录入、通用文件搜索（Everything 可选适配器） |
+| P5.1 ✅ | 图标磁盘缓存、深色自绘设置窗、自定义热键、真实会话自检脚本 |
+| P6 | 全盘搜索（Everything 可选适配器）、文件内容搜索、打包与签名 |

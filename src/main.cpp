@@ -5,10 +5,13 @@
 #include <string>
 
 #include "app/app.h"
+#include "app/settings.h"
 #include "core/log.h"
 #include "launch/launcher.h"
 #include "platform/autostart.h"
+#include "platform/hotkey.h"
 #include "platform/system.h"
+#include "platform/tray.h"
 #include "search/app_entry.h"
 #include "search/file_index.h"
 #include "ui/theme.h"
@@ -23,6 +26,7 @@ struct CliOptions {
   bool listApps = false;
   bool listFiles = false;
   bool fileStats = false;
+  bool selfCheck = false;
   std::wstring openPath;
   std::wstring setAutostart;
 };
@@ -55,7 +59,9 @@ void PrintUsage() {
       "  --file-stats                     Rebuild the file index and print stats only\n"
       "  --open=<path>                    Verify opening a file/path directly\n"
       "  --set-autostart=1|0              Enable/disable autostart and print state\n"
+      "  --hotkey=<combo>                 Override hotkey for this run (e.g. Ctrl+Alt+K)\n"
       "  --settings                       Open the settings window at startup\n"
+      "  --self-check                     Check hotkey/tray/autostart/file-open and print PASS/FAIL\n"
       "  --file-root=<dir>                Override file index roots (testing)\n"
       "  --no-hotkey                      Do not register global hotkey\n",
       stdout);
@@ -87,6 +93,8 @@ CliOptions Parse(int argc, wchar_t** argv) {
     } else if (StartsWith(arg, L"--accent=")) {
       cli.app.accent = ValueAfter(arg, L"--accent=");
       cli.app.accentSpecified = true;
+    } else if (StartsWith(arg, L"--hotkey=")) {
+      cli.app.hotkeyOverride = ValueAfter(arg, L"--hotkey=");
     } else if (arg == L"--autostart") {
       cli.app.autostartLaunch = true;
     } else if (StartsWith(arg, L"--log=")) {
@@ -99,6 +107,8 @@ CliOptions Parse(int argc, wchar_t** argv) {
       cli.setAutostart = ValueAfter(arg, L"--set-autostart=");
     } else if (arg == L"--settings") {
       cli.app.openSettings = true;
+    } else if (arg == L"--self-check") {
+      cli.selfCheck = true;
     } else if (StartsWith(arg, L"--scale=")) {
       cli.scale = static_cast<float>(wcstod(ValueAfter(arg, L"--scale=").c_str(), nullptr));
       if (cli.scale < 0.5f || cli.scale > 4.0f) cli.scale = 0.0f;
@@ -138,6 +148,76 @@ CliOptions Parse(int argc, wchar_t** argv) {
     }
   }
   return cli;
+}
+
+}  // namespace
+
+namespace {
+
+int RunSelfCheck() {
+  LogInit(L"");
+  int failures = 0;
+  printf("eTools self-check\n");
+
+  HWND hwnd = CreateWindowExW(0, L"STATIC", L"eToolsSelfCheck", WS_POPUP, 0, 0, 0, 0, nullptr,
+                              nullptr, GetModuleHandleW(nullptr), nullptr);
+  if (!hwnd) {
+    printf("window=FAIL\n");
+    return 2;
+  }
+
+  AppSettings settings;
+  SettingsStore::Load(&settings);
+
+  HotkeyBinding binding;
+  const bool parsed = ParseHotkey(settings.hotkey, &binding);
+  const bool hotkeyOk = parsed && RegisterHotkeyBinding(hwnd, 0x51, binding, nullptr);
+  printf("hotkey=%s (%ls)\n", hotkeyOk ? "PASS" : "FAIL", settings.hotkey.c_str());
+  if (!hotkeyOk) ++failures;
+  if (hotkeyOk) UnregisterHotkey(hwnd, 0x51);
+
+  TrayIcon tray;
+  const bool trayOk = tray.Create(hwnd);
+  printf("tray=%s\n", trayOk ? "PASS" : "FAIL");
+  if (!trayOk) ++failures;
+  tray.Destroy();
+
+  const bool wasAutostart = IsAutostartEnabled();
+  std::wstring error;
+  const bool setOk = SetAutostart(true, &error);
+  const bool readOk = IsAutostartEnabled();
+  const bool restoreOk = SetAutostart(wasAutostart, nullptr);
+  const bool autostartOk = setOk && readOk && restoreOk;
+  printf("autostart=%s (set=%d read=%d restore=%d)\n", autostartOk ? "PASS" : "FAIL", setOk ? 1 : 0,
+         readOk ? 1 : 0, restoreOk ? 1 : 0);
+  if (!autostartOk) ++failures;
+
+  wchar_t tempDir[MAX_PATH] = {};
+  GetTempPathW(ARRAYSIZE(tempDir), tempDir);
+  const std::wstring samplePath = std::wstring(tempDir) + L"etools-selfcheck-opened.txt";
+  HANDLE sample = CreateFileW(samplePath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (sample != INVALID_HANDLE_VALUE) {
+    const char content[] = "eTools self-check sample\n";
+    DWORD written = 0;
+    WriteFile(sample, content, sizeof(content) - 1, &written, nullptr);
+    CloseHandle(sample);
+  }
+  error.clear();
+  const bool openOk = OpenPath(samplePath, &error);
+  printf("open=%s (%ls)\n", openOk ? "PASS" : "FAIL", samplePath.c_str());
+  if (!openOk) ++failures;
+
+  std::wstring savedPath;
+  const bool saveOk = SettingsStore::Save(settings, &savedPath);
+  if (savedPath.empty()) savedPath = SettingsStore::Path();
+  printf("settings_save=%s (%ls)\n", saveOk ? "PASS" : "FAIL", savedPath.c_str());
+  if (!saveOk) ++failures;
+
+  DestroyWindow(hwnd);
+  printf("result=%s\n", failures == 0 ? "PASS" : "FAIL");
+  LogShutdown();
+  return failures == 0 ? 0 : 2;
 }
 
 }  // namespace
@@ -183,6 +263,11 @@ int wmain(int argc, wchar_t** argv) {
     fflush(stdout);
     CoUninitialize();
     return 0;
+  }
+  if (cli.selfCheck) {
+    const int code = RunSelfCheck();
+    CoUninitialize();
+    return code;
   }
   if (!cli.setAutostart.empty()) {
     const bool enabled = cli.setAutostart == L"1" || cli.setAutostart == L"on" ||

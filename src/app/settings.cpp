@@ -123,7 +123,7 @@ bool SettingsStore::Load(AppSettings* settings) {
   return true;
 }
 
-bool SettingsStore::Save(const AppSettings& settings) {
+bool SettingsStore::Save(const AppSettings& settings, std::wstring* savedPath) {
   std::wstring text;
   text += L"# eTools settings\n";
   text += L"theme=" + settings.theme + L"\n";
@@ -137,6 +137,7 @@ bool SettingsStore::Save(const AppSettings& settings) {
   for (const std::wstring& path : Paths()) {
     if (WriteWholeFile(path, WideToUtf8(text))) {
       Log(L"设置已保存: %ls", path.c_str());
+      if (savedPath) *savedPath = path;
       return true;
     }
   }

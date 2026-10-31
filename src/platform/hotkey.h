@@ -5,15 +5,17 @@
 #include <string>
 
 struct HotkeyBinding {
-  const wchar_t* name;
-  UINT modifiers;
-  UINT virtualKey;
+  std::wstring name;
+  UINT modifiers = 0;
+  UINT virtualKey = 0;
 };
 
 const HotkeyBinding* FindHotkeyBinding(const std::wstring& name);
-// 默认候选（Alt+Space / Ctrl+Alt+Space / Ctrl+Shift+Space）
 const HotkeyBinding* DefaultHotkeyBinding(size_t index);
 size_t HotkeyBindingCount();
+
+bool ParseHotkey(const std::wstring& text, HotkeyBinding* binding);
+std::wstring FormatHotkey(UINT modifiers, UINT virtualKey);
 
 bool RegisterHotkeyBinding(HWND hwnd, int id, const HotkeyBinding& binding, std::wstring* error);
 void UnregisterHotkey(HWND hwnd, int id);

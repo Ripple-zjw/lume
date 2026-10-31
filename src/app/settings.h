@@ -17,5 +17,5 @@ class SettingsStore {
  public:
   static std::wstring Path();
   static bool Load(AppSettings* settings);
-  static bool Save(const AppSettings& settings);
+  static bool Save(const AppSettings& settings, std::wstring* savedPath = nullptr);
 };
