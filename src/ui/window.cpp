@@ -121,6 +121,12 @@ bool LauncherWindow::Create(HINSTANCE instance, Renderer* renderer, Scene* scene
   wc.hInstance = instance;
   wc.lpszClassName = kClassName;
   wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+  wc.hIcon = static_cast<HICON>(LoadImageW(instance, MAKEINTRESOURCEW(1), IMAGE_ICON,
+                                          GetSystemMetrics(SM_CXICON),
+                                          GetSystemMetrics(SM_CYICON), LR_DEFAULTCOLOR));
+  wc.hIconSm = static_cast<HICON>(LoadImageW(instance, MAKEINTRESOURCEW(1), IMAGE_ICON,
+                                            GetSystemMetrics(SM_CXSMICON),
+                                            GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
   wc.style = CS_HREDRAW | CS_VREDRAW;
   if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
     Log(L"RegisterClassExW 失败: %lu", GetLastError());

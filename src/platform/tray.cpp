@@ -4,8 +4,13 @@
 
 namespace {
 
-// 先用系统应用图标占位；自定义 .ico 资源留到打包阶段。
-HICON CreateAppIcon() { return LoadIconW(nullptr, IDI_APPLICATION); }
+HICON CreateAppIcon() {
+  const int width = GetSystemMetrics(SM_CXSMICON);
+  const int height = GetSystemMetrics(SM_CYSMICON);
+  HICON icon = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1),
+                                            IMAGE_ICON, width, height, LR_DEFAULTCOLOR));
+  return icon ? icon : LoadIconW(nullptr, IDI_APPLICATION);
+}
 
 }  // namespace
 
