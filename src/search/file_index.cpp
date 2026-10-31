@@ -225,6 +225,12 @@ void AppendWide(std::string* data, const std::wstring& value) {
   data->append(reinterpret_cast<const char*>(value.data()), value.size() * sizeof(wchar_t));
 }
 
+uint32_t AppendChars(std::vector<wchar_t>* arena, std::wstring_view text) {
+  const uint32_t offset = static_cast<uint32_t>(arena->size());
+  arena->insert(arena->end(), text.begin(), text.end());
+  return offset;
+}
+
 }  // namespace
 
 FileIndex::~FileIndex() { Stop(); }
@@ -254,14 +260,37 @@ void FileIndex::EnsureRoots() {
 }
 
 std::wstring FileIndex::FullPathOf(const Entry& entry) const {
-  if (storage_.directories.empty()) return entry.name;
-  return storage_.directories[entry.directory].path + L"\\" + entry.name;
+  const std::wstring_view name = NameOf(entry);
+  if (storage_.directories.empty()) return std::wstring(name);
+  return storage_.directories[entry.directory].path + L"\\" + std::wstring(name);
+}
+
+std::wstring_view FileIndex::NameOf(const Entry& entry) const {
+  if (entry.nameLength == 0) return {};
+  return std::wstring_view(storage_.names.data() + entry.nameOffset, entry.nameLength);
+}
+
+std::wstring_view FileIndex::LowerNameOf(const Entry& entry) const {
+  if (entry.lowerLength == 0) return {};
+  return std::wstring_view(storage_.names.data() + entry.lowerOffset, entry.lowerLength);
+}
+
+uint32_t FileIndex::LookupDirectory(
+    const std::unordered_multimap<uint64_t, uint32_t>& index,
+    const std::vector<Directory>& directories, const std::wstring& lowerPath) {
+  const uint64_t hash = Fnv1a(lowerPath);
+  auto range = index.equal_range(hash);
+  for (auto it = range.first; it != range.second; ++it) {
+    if (directories[it->second].lowerPath == lowerPath) return it->second;
+  }
+  return 0xFFFFFFFFu;
 }
 
 uint32_t FileIndex::EnsureDirectoryLocked(const std::wstring& path) {
   const std::wstring lower = ToLower(path);
-  auto found = storage_.directoryIndex.find(lower);
-  if (found != storage_.directoryIndex.end()) return found->second;
+  const uint32_t existing =
+      LookupDirectory(storage_.directoryIndex, storage_.directories, lower);
+  if (existing != 0xFFFFFFFFu) return existing;
 
   const size_t slash = path.find_last_of(L'\\');
   if (slash != std::wstring::npos && slash > 0) {
@@ -272,7 +301,7 @@ uint32_t FileIndex::EnsureDirectoryLocked(const std::wstring& path) {
   directory.lowerPath = lower;
   const uint32_t index = static_cast<uint32_t>(storage_.directories.size());
   storage_.directories.push_back(std::move(directory));
-  storage_.directoryIndex.emplace(lower, index);
+  storage_.directoryIndex.emplace(Fnv1a(lower), index);
   return index;
 }
 
@@ -285,7 +314,7 @@ void FileIndex::EnumerateRoot(const std::wstring& root, size_t quota, RootData* 
   rootDirectory.lowerPath = rootLower;
   const uint32_t rootIndex = static_cast<uint32_t>(data->directories.size());
   data->directories.push_back(std::move(rootDirectory));
-  data->directoryIndex.emplace(rootLower, rootIndex);
+  data->directoryIndex.emplace(Fnv1a(rootLower), rootIndex);
 
   std::vector<uint32_t> pending{rootIndex};
   while (!pending.empty()) {
@@ -323,22 +352,30 @@ void FileIndex::EnumerateRoot(const std::wstring& root, size_t quota, RootData* 
 
       Entry entry;
       entry.directory = directoryIndex;
-      entry.name = name;
-      entry.lowerName = lowerName;
+      entry.nameOffset = AppendChars(&data->names, name);
+      entry.nameLength = static_cast<uint16_t>(name.size());
+      if (name == lowerName) {
+        entry.lowerOffset = entry.nameOffset;
+        entry.lowerLength = entry.nameLength;
+      } else {
+        entry.lowerOffset = AppendChars(&data->names, lowerName);
+        entry.lowerLength = static_cast<uint16_t>(lowerName.size());
+      }
       entry.charMask = NameMask(lowerName);
-      entry.pathHash = Fnv1a(fullLower);
+      entry.pathHash = static_cast<uint32_t>(Fnv1a(fullLower));
       entry.isDirectory = isDirectory;
       data->entries.push_back(std::move(entry));
 
       if (isDirectory) {
-        auto existing = data->directoryIndex.find(fullLower);
-        if (existing == data->directoryIndex.end()) {
+        const uint32_t existing =
+            LookupDirectory(data->directoryIndex, data->directories, fullLower);
+        if (existing == 0xFFFFFFFFu) {
           Directory child;
           child.path = fullPath;
           child.lowerPath = fullLower;
           const uint32_t childIndex = static_cast<uint32_t>(data->directories.size());
           data->directories.push_back(std::move(child));
-          data->directoryIndex.emplace(fullLower, childIndex);
+          data->directoryIndex.emplace(Fnv1a(fullLower), childIndex);
           pending.push_back(childIndex);
         }
       }
@@ -423,14 +460,29 @@ void FileIndex::RebuildAndSwap() {
   for (RootData& data : partial) {
     const uint32_t base = static_cast<uint32_t>(fresh.directories.size());
     for (Directory& directory : data.directories) {
-      fresh.directoryIndex.emplace(directory.lowerPath, base + static_cast<uint32_t>(
-                                                            fresh.directories.size()));
       fresh.directories.push_back(std::move(directory));
+    }
+    const uint32_t nameBase = static_cast<uint32_t>(fresh.names.size());
+    if (!data.names.empty()) {
+      fresh.names.insert(fresh.names.end(), data.names.begin(), data.names.end());
     }
     for (Entry& entry : data.entries) {
       entry.directory += base;
+      entry.nameOffset += nameBase;
+      entry.lowerOffset += nameBase;
       fresh.entries.push_back(std::move(entry));
     }
+    // 逐个根释放枚举缓冲，降低合并阶段峰值。
+    std::vector<Directory>().swap(data.directories);
+    std::vector<Entry>().swap(data.entries);
+    std::vector<wchar_t>().swap(data.names);
+    data.directoryIndex.clear();
+    data.directoryIndex.rehash(0);
+  }
+  fresh.directoryIndex.reserve(fresh.directories.size());
+  for (size_t i = 0; i < fresh.directories.size(); ++i) {
+    fresh.directoryIndex.emplace(Fnv1a(fresh.directories[i].lowerPath),
+                                 static_cast<uint32_t>(i));
   }
   {
     std::lock_guard<std::mutex> lock(entriesMutex_);
@@ -447,6 +499,26 @@ void FileIndex::RebuildAndSwap() {
     Log(L"文件索引内存: 当前 %.0f MB, 峰值 %.0f MB",
         static_cast<double>(memory.WorkingSetSize) / (1024.0 * 1024.0),
         static_cast<double>(memory.PeakWorkingSetSize) / (1024.0 * 1024.0));
+  }
+  {
+    size_t nameChars = 0;
+    size_t lowerChars = 0;
+    size_t sameNames = 0;
+    size_t dirChars = 0;
+    size_t dirLowerChars = 0;
+    for (const Entry& entry : storage_.entries) {
+      nameChars += entry.nameLength;
+      lowerChars += entry.lowerLength;
+      if (entry.nameOffset == entry.lowerOffset) ++sameNames;
+    }
+    for (const Directory& directory : storage_.directories) {
+      dirChars += directory.path.size();
+      dirLowerChars += directory.lowerPath.size();
+    }
+    Log(L"索引统计: 条目 %zu, 目录 %zu, 名称字符 %zu, 小写名 %zu, 同形 %zu, "
+        L"目录路径 %zu, 小写目录 %zu, sizeof(Entry)=%zu, sizeof(Dir)=%zu",
+        storage_.entries.size(), storage_.directories.size(), nameChars, lowerChars, sameNames,
+        dirChars, dirLowerChars, sizeof(Entry), sizeof(Directory));
   }
   Log(L"文件索引: 重建完成 %zu 条", size());
 }
@@ -562,15 +634,22 @@ void FileIndex::AddEntryLocked(const std::wstring& path, bool isDirectory) {
   const std::wstring name = path.substr(slash + 1);
   const std::wstring lowerName = ToLower(name);
   const std::wstring lowerFull = ToLower(parentPath) + L"\\" + lowerName;
-  const uint64_t hash = Fnv1a(lowerFull);
+  const uint32_t hash = static_cast<uint32_t>(Fnv1a(lowerFull));
   for (const Entry& existing : storage_.entries) {
     if (existing.pathHash == hash && FullPathOf(existing) == path) return;
   }
   const uint32_t directory = EnsureDirectoryLocked(parentPath);
   Entry entry;
   entry.directory = directory;
-  entry.name = name;
-  entry.lowerName = lowerName;
+  entry.nameOffset = AppendChars(&storage_.names, name);
+  entry.nameLength = static_cast<uint16_t>(name.size());
+  if (name == lowerName) {
+    entry.lowerOffset = entry.nameOffset;
+    entry.lowerLength = entry.nameLength;
+  } else {
+    entry.lowerOffset = AppendChars(&storage_.names, lowerName);
+    entry.lowerLength = static_cast<uint16_t>(lowerName.size());
+  }
   entry.charMask = NameMask(lowerName);
   entry.pathHash = hash;
   entry.isDirectory = isDirectory;
@@ -579,7 +658,7 @@ void FileIndex::AddEntryLocked(const std::wstring& path, bool isDirectory) {
 
 void FileIndex::RemoveEntryLocked(const std::wstring& path) {
   const std::wstring lowerFull = ToLower(path);
-  const uint64_t hash = Fnv1a(lowerFull);
+  const uint32_t hash = static_cast<uint32_t>(Fnv1a(lowerFull));
   for (size_t i = 0; i < storage_.entries.size(); ++i) {
     const Entry& entry = storage_.entries[i];
     if (entry.pathHash != hash) continue;
@@ -651,26 +730,30 @@ bool FileIndex::LoadSnapshot() {
       if (slash == std::wstring::npos || slash + 1 >= fullPath.size()) continue;
       const std::wstring parentPath = fullPath.substr(0, slash);
       const std::wstring parentLower = ToLower(parentPath);
-      auto found = fresh.directoryIndex.find(parentLower);
-      uint32_t directory = 0;
-      if (found == fresh.directoryIndex.end()) {
+      uint32_t directory = LookupDirectory(fresh.directoryIndex, fresh.directories, parentLower);
+      if (directory == 0xFFFFFFFFu) {
         Directory dir;
         dir.path = parentPath;
         dir.lowerPath = parentLower;
         directory = static_cast<uint32_t>(fresh.directories.size());
         fresh.directories.push_back(std::move(dir));
-        fresh.directoryIndex.emplace(parentLower, directory);
-      } else {
-        directory = found->second;
+        fresh.directoryIndex.emplace(Fnv1a(parentLower), directory);
       }
       const std::wstring name = fullPath.substr(slash + 1);
       const std::wstring lowerName = ToLower(name);
       Entry entry;
       entry.directory = directory;
-      entry.name = name;
-      entry.lowerName = lowerName;
+      entry.nameOffset = AppendChars(&fresh.names, name);
+      entry.nameLength = static_cast<uint16_t>(name.size());
+      if (name == lowerName) {
+        entry.lowerOffset = entry.nameOffset;
+        entry.lowerLength = entry.nameLength;
+      } else {
+        entry.lowerOffset = AppendChars(&fresh.names, lowerName);
+        entry.lowerLength = static_cast<uint16_t>(lowerName.size());
+      }
       entry.charMask = NameMask(lowerName);
-      entry.pathHash = Fnv1a(parentLower + L"\\" + lowerName);
+      entry.pathHash = static_cast<uint32_t>(Fnv1a(parentLower + L"\\" + lowerName));
       entry.isDirectory = isDirectory != 0;
       fresh.entries.push_back(std::move(entry));
     }
@@ -695,7 +778,8 @@ bool FileIndex::SaveSnapshot() const {
   uint32_t count = static_cast<uint32_t>(storage_.entries.size());
   AppendPod(&out, count);
   for (const Entry& entry : storage_.entries) {
-    const std::wstring path = storage_.directories[entry.directory].path + L"\\" + entry.name;
+    const std::wstring path =
+        storage_.directories[entry.directory].path + L"\\" + std::wstring(NameOf(entry));
     AppendWide(&out, path);
     const uint8_t isDirectory = entry.isDirectory ? 1 : 0;
     AppendPod(&out, isDirectory);
@@ -721,7 +805,8 @@ std::vector<std::wstring> FileIndex::SamplePaths(size_t limit) const {
   std::lock_guard<std::mutex> lock(entriesMutex_);
   for (const Entry& entry : storage_.entries) {
     if (paths.size() >= limit) break;
-    paths.push_back(storage_.directories[entry.directory].path + L"\\" + entry.name);
+    paths.push_back(storage_.directories[entry.directory].path + L"\\" +
+                    std::wstring(NameOf(entry)));
   }
   return paths;
 }
@@ -739,24 +824,24 @@ std::vector<FileHit> FileIndex::Search(const std::wstring& query, size_t limit) 
     uint8_t quality;
   };
   auto pathOf = [this](const Entry& entry) {
-    return storage_.directories[entry.directory].path + L"\\" + entry.name;
+    return storage_.directories[entry.directory].path + L"\\" + std::wstring(NameOf(entry));
   };
   auto better = [this](const Scored& a, const Scored& b) {
     if (a.quality != b.quality) return a.quality > b.quality;
     if (a.score != b.score) return a.score > b.score;
     const Entry& ea = storage_.entries[a.index];
     const Entry& eb = storage_.entries[b.index];
-    if (ea.lowerName.size() != eb.lowerName.size()) {
-      return ea.lowerName.size() < eb.lowerName.size();
-    }
+    if (ea.lowerLength != eb.lowerLength) return ea.lowerLength < eb.lowerLength;
     if (ea.isDirectory != eb.isDirectory) return !ea.isDirectory;
     const size_t pathA = storage_.directories[ea.directory].lowerPath.size() + 1 +
-                         ea.lowerName.size();
+                         ea.lowerLength;
     const size_t pathB = storage_.directories[eb.directory].lowerPath.size() + 1 +
-                         eb.lowerName.size();
+                         eb.lowerLength;
     if (pathA != pathB) return pathA < pathB;
-    return std::tie(storage_.directories[ea.directory].lowerPath, ea.lowerName) <
-           std::tie(storage_.directories[eb.directory].lowerPath, eb.lowerName);
+    const std::wstring_view nameA = LowerNameOf(ea);
+    const std::wstring_view nameB = LowerNameOf(eb);
+    return std::tie(storage_.directories[ea.directory].lowerPath, nameA) <
+           std::tie(storage_.directories[eb.directory].lowerPath, nameB);
   };
 
   std::vector<Scored> scored;
@@ -764,7 +849,7 @@ std::vector<FileHit> FileIndex::Search(const std::wstring& query, size_t limit) 
   const uint64_t required = QueryMask(needle);
   for (size_t i = 0; i < storage_.entries.size(); ++i) {
     const Entry& entry = storage_.entries[i];
-    const std::wstring_view name = entry.lowerName;
+    const std::wstring_view name = LowerNameOf(entry);
     size_t score = 0;
     if (required == 0 || (entry.charMask & required) == required) {
       if (needle.size() < 3) {

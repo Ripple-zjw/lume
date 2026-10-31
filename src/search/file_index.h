@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -62,21 +63,25 @@ class FileIndex {
   };
   struct Entry {
     uint32_t directory = 0;  // 父目录在 directories_ 中的下标
-    std::wstring name;
-    std::wstring lowerName;
+    uint32_t nameOffset = 0;
+    uint32_t lowerOffset = 0;  // 全小写名称本来就和原名相同时复用 nameOffset
+    uint16_t nameLength = 0;
+    uint16_t lowerLength = 0;
     uint64_t charMask = 0;
-    uint64_t pathHash = 0;  // 小写完整路径的 FNV1a，供删除/去重快速筛选
+    uint32_t pathHash = 0;  // 小写完整路径 FNV1a 低 32 位，供删除/去重快速筛选
     bool isDirectory = false;
   };
   struct Storage {
     std::vector<Directory> directories;
     std::vector<Entry> entries;
-    std::unordered_map<std::wstring, uint32_t> directoryIndex;  // lower dir path -> index
+    std::vector<wchar_t> names;  // 原名/小写名共用的连续字符 arena
+    std::unordered_multimap<uint64_t, uint32_t> directoryIndex;  // FNV(lower dir) -> index
   };
   struct RootData {
     std::vector<Directory> directories;
     std::vector<Entry> entries;
-    std::unordered_map<std::wstring, uint32_t> directoryIndex;
+    std::vector<wchar_t> names;
+    std::unordered_multimap<uint64_t, uint32_t> directoryIndex;
   };
 
   void EnsureRoots();
@@ -89,6 +94,11 @@ class FileIndex {
   void RemoveEntryLocked(const std::wstring& path);
   uint32_t EnsureDirectoryLocked(const std::wstring& path);
   std::wstring FullPathOf(const Entry& entry) const;
+  std::wstring_view NameOf(const Entry& entry) const;
+  std::wstring_view LowerNameOf(const Entry& entry) const;
+  static uint32_t LookupDirectory(
+      const std::unordered_multimap<uint64_t, uint32_t>& index,
+      const std::vector<Directory>& directories, const std::wstring& lowerPath);
 
   bool LoadSnapshot();
   bool SaveSnapshot() const;
