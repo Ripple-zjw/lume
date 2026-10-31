@@ -1,12 +1,12 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  构建 eTools（免安装 MinGW-w64 工具链）。
+  Build eTools with the portable MinGW-w64 toolchain.
 .EXAMPLE
-  .\build.ps1                 # Release 构建
+  .\build.ps1                          # Release build
   .\build.ps1 -Config Debug -Run
-  .\build.ps1 -Config Test    # 构建并运行单元测试
-  .\build.ps1 -Recompile      # 忽略增量缓存，全量重编
+  .\build.ps1 -Config Test             # build and run unit tests
+  .\build.ps1 -Recompile               # ignore incremental cache
 #>
 [CmdletBinding()]
 param(
@@ -25,7 +25,7 @@ $BuildDir = Join-Path $Root 'build'
 $ObjDir = Join-Path $BuildDir ("obj\{0}" -f $Config.ToLowerInvariant())
 
 if (-not (Test-Path -LiteralPath $Gpp)) {
-  throw "未找到工具链: $Gpp`n请先执行: node tools/fetch-toolchain.mjs"
+  throw "Toolchain missing: $Gpp`nRun first: node tools/fetch-toolchain.mjs"
 }
 New-Item -ItemType Directory -Force -Path $BuildDir, $ObjDir | Out-Null
 
@@ -62,8 +62,8 @@ function Get-NewestWriteTime([string]$dir) {
 
 function Invoke-NativeTool {
   param([string]$Tool, [string[]]$Arguments, [string]$Label)
-  # PowerShell 5.1 在 ErrorActionPreference=Stop 下会把原生程序写到 stderr 的无害诊断
-  # 当成终止性错误；这里临时降级为 Continue，并保留真实退出码。
+  # PowerShell 5.1 treats stderr output of native tools as a terminating error when
+  # ErrorActionPreference is Stop; run with Continue and inspect the real exit code.
   $previous = $ErrorActionPreference
   $ErrorActionPreference = 'Continue'
   try {
@@ -74,7 +74,7 @@ function Invoke-NativeTool {
   }
   if ($code -ne 0) {
     $output | ForEach-Object { Write-Host ("    {0}" -f $_) -ForegroundColor Red }
-    throw "$Label 失败 (exit $code)"
+    throw "$Label failed (exit $code)"
   }
   $manifestNote = $false
   foreach ($line in $output) {
@@ -84,7 +84,7 @@ function Invoke-NativeTool {
     }
   }
   if ($manifestNote) {
-    Write-Host '    提示: binutils 2.47 的 ".rsrc merge failure" 是非致命诊断，清单已嵌入（已用 permonitorv2 校验）' -ForegroundColor DarkGray
+    Write-Host '    note: binutils 2.47 ".rsrc merge failure" is a non-fatal diagnostic; manifest is embedded (verified via permonitorv2 string)' -ForegroundColor DarkGray
   }
 }
 
@@ -95,7 +95,7 @@ function Invoke-BuildTarget {
     [string]$ExePath,
     [string[]]$ExtraFlags = @()
   )
-  if ($Sources.Count -eq 0) { throw "没有找到 $Name 的源文件" }
+  if ($Sources.Count -eq 0) { throw "No sources found for $Name" }
   $newestHeader = Get-NewestWriteTime (Join-Path $Root 'src')
   $objects = @()
   $compiled = 0
@@ -110,7 +110,7 @@ function Invoke-BuildTarget {
     }
     if ($rebuild) {
       Write-Host ("  CC  {0}" -f $rel) -ForegroundColor DarkGray
-      Invoke-NativeTool -Tool $Gpp -Arguments (@($common) + $ExtraFlags + @('-c', $src.FullName, '-o', $obj)) -Label "编译 $rel"
+      Invoke-NativeTool -Tool $Gpp -Arguments (@($common) + $ExtraFlags + @('-c', $src.FullName, '-o', $obj)) -Label "compile $rel"
       $compiled++
     }
   }
@@ -122,17 +122,17 @@ function Invoke-BuildTarget {
         ((-not (Test-Path -LiteralPath $res)) -or (Get-Item $rc).LastWriteTime -gt (Get-Item $res).LastWriteTime -or $Recompile)) {
       Write-Host '  RC  assets/app.rc' -ForegroundColor DarkGray
       $rcPath = Join-Path $Root 'assets\app.rc'
-      Invoke-NativeTool -Tool $Windres -Arguments @('-I', (Join-Path $Root 'assets'), '-O', 'coff', '-o', $res, $rcPath) -Label '资源编译'
+      Invoke-NativeTool -Tool $Windres -Arguments @('-I', (Join-Path $Root 'assets'), '-O', 'coff', '-o', $res, $rcPath) -Label 'windres'
     }
     if (Test-Path -LiteralPath $res) { $objects += $res }
   }
 
-  Write-Host ("  LD  {0}  ({1} 个源文件, 本次编译 {2} 个)" -f $Name, $Sources.Count, $compiled) -ForegroundColor DarkGray
+  Write-Host ("  LD  {0}  ({1} sources, {2} compiled)" -f $Name, $Sources.Count, $compiled) -ForegroundColor DarkGray
   $sw = [Diagnostics.Stopwatch]::StartNew()
-  Invoke-NativeTool -Tool $Gpp -Arguments (@($common) + $objects + @('-o', $ExePath) + $staticLink + $libs + $ExtraFlags) -Label "链接 $Name"
+  Invoke-NativeTool -Tool $Gpp -Arguments (@($common) + $objects + @('-o', $ExePath) + $staticLink + $libs + $ExtraFlags) -Label "link $Name"
   $sw.Stop()
   $size = [math]::Round((Get-Item -LiteralPath $ExePath).Length / 1KB, 1)
-  Write-Host ("构建完成: {0}  ({1} KB, 链接 {2}ms)" -f $ExePath, $size, $sw.ElapsedMilliseconds) -ForegroundColor Green
+  Write-Host ("Built: {0}  ({1} KB, link {2}ms)" -f $ExePath, $size, $sw.ElapsedMilliseconds) -ForegroundColor Green
   return $ExePath
 }
 
@@ -146,6 +146,6 @@ if ($Config -eq 'Test') {
 $appSources = Get-Sources (Join-Path $Root 'src')
 $appExe = Invoke-BuildTarget -Name 'eTools' -Sources $appSources -ExePath (Join-Path $BuildDir 'eTools.exe')
 if ($Run) {
-  Write-Host ("启动 {0}" -f $appExe) -ForegroundColor Cyan
+  Write-Host ("Launching {0}" -f $appExe) -ForegroundColor Cyan
   Start-Process -FilePath $appExe -WorkingDirectory $BuildDir
 }

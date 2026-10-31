@@ -24,7 +24,7 @@ Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤�
 # 仅首次：下载并校验 MinGW-w64（264MB，解压约 1.5GB 到 .toolchain/，不写入系统 PATH）
 node tools/fetch-toolchain.mjs
 
-# 构建（脚本含 UTF-8 BOM；执行策略受限时用下面的形式）
+# 构建（执行策略受限时用 Bypass 形式；脚本输出为 ASCII，避免 PS 5.1 编码问题）
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 
 # 调试构建 / 测试 / 构建后启动
