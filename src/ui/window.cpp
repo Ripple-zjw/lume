@@ -40,6 +40,7 @@ constexpr UINT_PTR kTimerCaret = 0x20;
 constexpr UINT_PTR kTimerAnim = 0x21;
 constexpr UINT_PTR kTimerFileRefresh = 0x22;
 constexpr UINT_PTR kTimerIcons = 0x23;
+constexpr UINT_PTR kTimerTrayRetry = 0x24;
 constexpr UINT kCaretBlinkMs = 530;
 constexpr double kShowAnimMs = 90.0;
 constexpr double kSelectionAnimMs = 120.0;
@@ -148,7 +149,9 @@ bool LauncherWindow::Create(HINSTANCE instance, Renderer* renderer, Scene* scene
   ApplyBackdrop();
   SetTimer(hwnd_, kTimerFileRefresh, 1000, nullptr);
   if (settings_.tray && !tray_.Create(hwnd_)) {
-    Log(L"托盘初始化失败（继续运行）");
+    Log(L"托盘初始化失败（继续运行），2 秒后重试");
+    trayRetries_ = 0;
+    SetTimer(hwnd_, kTimerTrayRetry, 2000, nullptr);
   }
   return true;
 }
@@ -159,6 +162,7 @@ void LauncherWindow::Shutdown() {
     KillTimer(hwnd_, kTimerAnim);
     KillTimer(hwnd_, kTimerFileRefresh);
     KillTimer(hwnd_, kTimerIcons);
+    KillTimer(hwnd_, kTimerTrayRetry);
   }
   usage_.Save();
   settingsWindow_.reset();
@@ -835,7 +839,11 @@ LRESULT CALLBACK LauncherWindow::Thunk(HWND hwnd, UINT message, WPARAM wParam, L
 
 LRESULT LauncherWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
   if (message == TaskbarCreatedMessage() && message != 0) {
-    tray_.ReAdd();
+    if (tray_.added()) {
+      tray_.ReAdd();
+    } else if (settings_.tray) {
+      tray_.Create(hwnd_);
+    }
     return 0;
   }
   switch (message) {
@@ -887,6 +895,16 @@ LRESULT LauncherWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
       }
       return 0;
     case WM_TIMER:
+      if (wParam == kTimerTrayRetry) {
+        if (tray_.Create(hwnd_)) {
+          KillTimer(hwnd_, kTimerTrayRetry);
+          trayRetries_ = 0;
+        } else if (++trayRetries_ >= 5) {
+          KillTimer(hwnd_, kTimerTrayRetry);
+          Log(L"托盘初始化放弃（已重试 5 次）");
+        }
+        return 0;
+      }
       if (wParam == kTimerCaret) {
         caretVisible_ = !caretVisible_;
         UpdateSceneState();

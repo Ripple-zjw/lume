@@ -134,7 +134,13 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Recompile
 # 产物：dist\Lume-0.1.0-win64.zip
 ```
 
-压缩包内容：`Lume.exe`（单文件、静态链接）+ `README.txt`（系统要求、快捷键、首次索引、卸载）。解压即用，不需要安装。
+压缩包内容：`Lume.exe`（单文件、静态链接）+ `Install.cmd` + `README.txt`（系统要求、快捷键、首次索引、卸载）。解压即用，不需要安装。
+
+### 低完整性环境（DSH/受限工作区）
+
+如果直接从 `D:\projects\eTools` 这类被标记为 **Low Integrity** 的工作区运行，Windows 的 UIPI 会阻止 `Shell_NotifyIcon`，表现为没有托盘、日志里 `托盘图标创建失败 (Win32 5)`，且日志落在 exe 同目录而不是 `%LOCALAPPDATA%\Lume\logs`。
+
+解决办法：双击发布包里的 **`Install.cmd`**，它会复制到 `%LOCALAPPDATA%\Programs\Lume` 并从普通目录启动；或手动把 `Lume.exe` 复制到桌面/`C:\Apps\Lume` 再运行。普通用户目录下不会有这个问题。
 
 ## 运行
 

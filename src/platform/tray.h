@@ -18,6 +18,7 @@ class TrayIcon {
   ~TrayIcon();
   bool Create(HWND owner);
   void Destroy();
+  bool added() const { return added_; }
   void SetTooltip(const std::wstring& text);
   void ReAdd();
   // 返回用户选择的命令（0 表示取消）。
@@ -26,5 +27,7 @@ class TrayIcon {
  private:
   NOTIFYICONDATAW data_{};
   HICON icon_ = nullptr;
+  HWND owner_ = nullptr;
+  HWND host_ = nullptr;
   bool added_ = false;
 };

@@ -112,6 +112,7 @@ class LauncherWindow {
   float contentAlpha_ = 1.0f;
   float showAlpha_ = 1.0f;
   bool caretVisible_ = true;
+  int trayRetries_ = 0;
   bool glass_ = false;
   bool visible_ = false;
   UINT dpi_ = 96;
