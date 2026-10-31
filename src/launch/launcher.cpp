@@ -119,10 +119,14 @@ bool OpenPath(const std::wstring& path, std::wstring* error) {
     if (error) *error = L"路径为空";
     return false;
   }
-  std::wstring directory;
   const DWORD attributes = GetFileAttributesW(path.c_str());
-  if (attributes != INVALID_FILE_ATTRIBUTES &&
-      (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+  if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+    // 直接 ShellExecute 目录有时只激活资源管理器不导航，显式让 explorer 打开该目录。
+    Log(L"打开目录: %ls", path.c_str());
+    return RunShellExecute(L"explorer.exe", L"open", L"\"" + path + L"\"", error);
+  }
+  std::wstring directory;
+  if (attributes != INVALID_FILE_ATTRIBUTES) {
     // 很多游戏/程序按自身目录找 data，必须继承文件所在目录而不是启动器的 cwd。
     directory = ParentDirectory(path);
   }
