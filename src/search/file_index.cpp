@@ -9,6 +9,7 @@
 #include <cstring>
 #include <cwchar>
 #include <cwctype>
+#include <functional>
 #include <iterator>
 #include <string_view>
 #include <tuple>
@@ -19,8 +20,8 @@
 namespace {
 
 constexpr size_t kHardMaxEntries = 50000000;
-constexpr char kMagic[4] = {'E', 'T', 'F', '3'};
-constexpr uint32_t kSnapshotVersion = 3;
+constexpr char kMagic[4] = {'E', 'T', 'F', '4'};
+constexpr uint32_t kSnapshotVersion = 4;
 
 std::wstring ToLower(std::wstring text) {
   for (wchar_t& ch : text) ch = static_cast<wchar_t>(std::towlower(static_cast<wint_t>(ch)));
@@ -554,7 +555,8 @@ void FileIndex::RebuildAndSwap() {
       dirLowerChars += directory.lowerPath.size();
     }
     Log(L"索引统计: 条目 %zu, 目录 %zu, 名称字符 %zu, 小写名 %zu, 同形 %zu, "
-        L"目录路径 %zu, 小写目录 %zu, 预计快照 %.1f MB, sizeof(Entry)=%zu, sizeof(Dir)=%zu",
+        L"目录路径 %zu, 小写目录 %zu, 预算累计(按完整路径保守估算) %.1f MB, "
+        L"sizeof(Entry)=%zu, sizeof(Dir)=%zu",
         storage_.entries.size(), storage_.directories.size(), nameChars, lowerChars, sameNames,
         dirChars, dirLowerChars,
         static_cast<double>(storage_.serializedBytes) / (1024.0 * 1024.0), sizeof(Entry),
@@ -763,10 +765,9 @@ bool FileIndex::LoadSnapshot() {
   };
   std::sort(candidates.begin(), candidates.end(),
             [&](const std::wstring& a, const std::wstring& b) {
-              const ULARGE_INTEGER ta = modifiedTime(a);
-              const ULARGE_INTEGER tb = modifiedTime(b);
-              return ta.QuadPart > tb.QuadPart;
+              return modifiedTime(a).QuadPart > modifiedTime(b).QuadPart;
             });
+
   for (const std::wstring& path : candidates) {
     std::string data;
     if (!ReadWholeFile(path, &data)) continue;
@@ -778,7 +779,6 @@ bool FileIndex::LoadSnapshot() {
     if (!ReadPod(data, &offset, &version) || version != kSnapshotVersion) continue;
     uint32_t rootCount = 0;
     if (!ReadPod(data, &offset, &rootCount) || rootCount != roots_.size()) continue;
-
     bool rootsMatch = true;
     for (uint32_t i = 0; i < rootCount; ++i) {
       std::wstring snapshotRoot;
@@ -790,51 +790,99 @@ bool FileIndex::LoadSnapshot() {
     }
     if (!rootsMatch) continue;
 
-    uint32_t count = 0;
-    if (!ReadPod(data, &offset, &count) || count > kHardMaxEntries) continue;
-
-    Storage fresh;
+    uint32_t dirCount = 0;
+    if (!ReadPod(data, &offset, &dirCount) || dirCount > 5000000) continue;
+    struct DirRecord {
+      uint32_t parent = 0xFFFFFFFFu;
+      std::wstring component;
+    };
+    std::vector<DirRecord> dirRecords(dirCount);
     bool valid = true;
-    for (uint32_t i = 0; i < count; ++i) {
-      std::wstring fullPath;
-      uint8_t isDirectory = 0;
-      if (!ReadWide(data, &offset, &fullPath) || !ReadPod(data, &offset, &isDirectory)) {
+    for (uint32_t i = 0; i < dirCount; ++i) {
+      if (!ReadPod(data, &offset, &dirRecords[i].parent) ||
+          !ReadWide(data, &offset, &dirRecords[i].component)) {
         valid = false;
         break;
       }
-      const size_t slash = fullPath.find_last_of(L'\\');
-      if (slash == std::wstring::npos || slash + 1 >= fullPath.size()) continue;
-      const std::wstring parentPath = fullPath.substr(0, slash);
-      const std::wstring parentLower = ToLower(parentPath);
-      uint32_t directory = LookupDirectory(fresh.directoryIndex, fresh.directories, parentLower);
-      if (directory == 0xFFFFFFFFu) {
-        Directory dir;
-        dir.path = parentPath;
-        dir.lowerPath = parentLower;
-        directory = static_cast<uint32_t>(fresh.directories.size());
-        fresh.directories.push_back(std::move(dir));
-        fresh.directoryIndex.emplace(Fnv1a(parentLower), directory);
-      }
-      const std::wstring name = fullPath.substr(slash + 1);
-      const std::wstring lowerName = ToLower(name);
+    }
+    if (!valid) continue;
+
+    uint32_t nameCount = 0;
+    if (!ReadPod(data, &offset, &nameCount) || nameCount > 200000000) continue;
+    const size_t nameBytes = static_cast<size_t>(nameCount) * sizeof(wchar_t);
+    if (offset + nameBytes > data.size()) continue;
+    std::vector<wchar_t> names(nameCount);
+    if (nameBytes > 0) std::memcpy(names.data(), data.data() + offset, nameBytes);
+    offset += nameBytes;
+
+    uint32_t count = 0;
+    if (!ReadPod(data, &offset, &count) || count > kHardMaxEntries) continue;
+    Storage fresh;
+    fresh.names = std::move(names);
+    for (uint32_t i = 0; i < count; ++i) {
       Entry entry;
-      entry.directory = directory;
-      entry.nameOffset = AppendChars(&fresh.names, name);
-      entry.nameLength = static_cast<uint16_t>(name.size());
-      if (name == lowerName) {
-        entry.lowerOffset = entry.nameOffset;
-        entry.lowerLength = entry.nameLength;
-      } else {
-        entry.lowerOffset = AppendChars(&fresh.names, lowerName);
-        entry.lowerLength = static_cast<uint16_t>(lowerName.size());
+      uint8_t isDirectory = 0;
+      if (!ReadPod(data, &offset, &entry.directory) ||
+          !ReadPod(data, &offset, &entry.nameOffset) ||
+          !ReadPod(data, &offset, &entry.lowerOffset) ||
+          !ReadPod(data, &offset, &entry.nameLength) ||
+          !ReadPod(data, &offset, &entry.lowerLength) ||
+          !ReadPod(data, &offset, &entry.charMask) ||
+          !ReadPod(data, &offset, &entry.pathHash) ||
+          !ReadPod(data, &offset, &isDirectory)) {
+        valid = false;
+        break;
       }
-      entry.charMask = NameMask(lowerName);
-      entry.pathHash = static_cast<uint32_t>(Fnv1a(parentLower + L"\\" + lowerName));
+      if (entry.directory >= dirCount ||
+          static_cast<size_t>(entry.nameOffset) + entry.nameLength > fresh.names.size() ||
+          static_cast<size_t>(entry.lowerOffset) + entry.lowerLength > fresh.names.size()) {
+        valid = false;
+        break;
+      }
       entry.isDirectory = isDirectory != 0;
       fresh.entries.push_back(std::move(entry));
-      fresh.serializedBytes += SerializedEntryBytes(fullPath);
     }
     if (!valid || fresh.entries.empty()) continue;
+
+    std::vector<Directory> directories(dirCount);
+    std::vector<uint8_t> state(dirCount, 0);
+    std::function<bool(uint32_t)> build = [&](uint32_t id) -> bool {
+      if (id >= dirCount) return false;
+      if (state[id] == 2) return true;
+      if (state[id] == 1) return false;
+      state[id] = 1;
+      const DirRecord& record = dirRecords[id];
+      if (record.parent == 0xFFFFFFFFu || record.parent >= dirCount) {
+        directories[id].path = record.component;
+      } else {
+        if (!build(record.parent)) return false;
+        directories[id].path = directories[record.parent].path + L"\\" + record.component;
+      }
+      directories[id].lowerPath = ToLower(directories[id].path);
+      state[id] = 2;
+      return true;
+    };
+    for (uint32_t i = 0; i < dirCount; ++i) {
+      if (!build(i)) {
+        valid = false;
+        break;
+      }
+    }
+    if (!valid) continue;
+
+    fresh.directories = std::move(directories);
+    fresh.directoryIndex.reserve(fresh.directories.size());
+    for (size_t i = 0; i < fresh.directories.size(); ++i) {
+      fresh.directoryIndex.emplace(Fnv1a(fresh.directories[i].lowerPath),
+                                   static_cast<uint32_t>(i));
+    }
+    for (const Entry& entry : fresh.entries) {
+      const std::wstring fullPath =
+          fresh.directories[entry.directory].path + L"\\" +
+          std::wstring(fresh.names.data() + entry.nameOffset, entry.nameLength);
+      fresh.serializedBytes += SerializedEntryBytes(fullPath);
+    }
+
     std::lock_guard<std::mutex> lock(entriesMutex_);
     storage_ = std::move(fresh);
     version_.fetch_add(1);
@@ -871,15 +919,58 @@ bool FileIndex::SaveSnapshot() const {
     };
     auto wide = [&](const std::wstring& value) {
       pod(static_cast<uint32_t>(value.size()));
-      buffer.append(reinterpret_cast<const char*>(value.data()),
-                    value.size() * sizeof(wchar_t));
+      buffer.append(reinterpret_cast<const char*>(value.data()), value.size() * sizeof(wchar_t));
       if (buffer.size() >= (1 << 20)) ok = ok && flush();
+    };
+    auto raw = [&](const void* data, size_t bytes) {
+      const char* cursor = static_cast<const char*>(data);
+      size_t remaining = bytes;
+      while (remaining > 0) {
+        const size_t chunk = std::min<size_t>(remaining, 1 << 20);
+        buffer.append(cursor, chunk);
+        cursor += chunk;
+        remaining -= chunk;
+        if (buffer.size() >= (1 << 20)) ok = ok && flush();
+      }
     };
 
     buffer.append(kMagic, sizeof(kMagic));
     pod(kSnapshotVersion);
     pod(static_cast<uint32_t>(roots_.size()));
     for (const std::wstring& root : roots_) wide(root);
+
+    pod(static_cast<uint32_t>(storage_.directories.size()));
+    for (const Directory& directory : storage_.directories) {
+      bool isRoot = false;
+      for (const std::wstring& root : roots_) {
+        if (_wcsicmp(directory.path.c_str(), root.c_str()) == 0) {
+          isRoot = true;
+          break;
+        }
+      }
+      uint32_t parent = 0xFFFFFFFFu;
+      std::wstring component = directory.path;
+      if (!isRoot) {
+        const size_t slash = directory.path.find_last_of(L'\\');
+        if (slash != std::wstring::npos && slash > 0) {
+          const std::wstring parentPath = directory.path.substr(0, slash);
+          parent = LookupDirectory(storage_.directoryIndex, storage_.directories,
+                                   ToLower(parentPath));
+          if (parent != 0xFFFFFFFFu) component = directory.path.substr(slash + 1);
+        }
+      }
+      pod(parent);
+      wide(component);
+      if (!ok) break;
+    }
+    if (!ok) {
+      CloseHandle(file);
+      DeleteFileW(temp.c_str());
+      return false;
+    }
+
+    pod(static_cast<uint32_t>(storage_.names.size()));
+    raw(storage_.names.data(), storage_.names.size() * sizeof(wchar_t));
     pod(static_cast<uint32_t>(storage_.entries.size()));
     size_t index = 0;
     for (const Entry& entry : storage_.entries) {
@@ -887,9 +978,13 @@ bool FileIndex::SaveSnapshot() const {
         ok = false;
         break;
       }
-      const std::wstring fullPath =
-          storage_.directories[entry.directory].path + L"\\" + std::wstring(NameOf(entry));
-      wide(fullPath);
+      pod(entry.directory);
+      pod(entry.nameOffset);
+      pod(entry.lowerOffset);
+      pod(entry.nameLength);
+      pod(entry.lowerLength);
+      pod(entry.charMask);
+      pod(entry.pathHash);
       pod(static_cast<uint8_t>(entry.isDirectory ? 1 : 0));
     }
     ok = ok && flush();
