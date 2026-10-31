@@ -164,6 +164,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 8. **排序（质量优先 + 类型层级）**：`quality` 为主键——5 直接路径，4 字面完全一致（`name == query`），3 忽略扩展名一致（`game.exe` 对 `game`），2 前缀，1 子串，0 模糊/仅路径；同 quality 再看 `tier`（0 应用/可执行文件、1 其他文件、2 目录、3 仅路径），最后比分数。`game` 先出 20 个 `Game` 目录（同层按路径长度），`AlanWake2.exe` 字面精确置顶。
 9. **启动即重建 + 上限（2026-10-31）**：`Start` 删除所有候选 `files.idx`、清空内存索引后全量重建；常驻模式 `persistSnapshot=false`。默认上限 **1,000,000**，设置窗可直接改（20,000–1,000,000），也支持 `fileCap=`/`--file-cap`；旧配置的 20/30/52 万默认值自动迁移到 100 万。快照读取上限 512MB（44 万条约 102MB）。实测 3 个根（F:/E:/D:）47.2 万条：重建 2.9s、索引 176MB、进程 216MB 常驻 / 266MB 峰值。
 10. **紧凑索引**：目录表 `{path, lowerPath}` 每目录一份；条目 `{父目录 id, name, lowerName, charMask, pathHash, isDirectory}`，删除/去重先用 `pathHash` 过滤再校验路径。并行枚举各根用本地 `RootData`，合并时重映射目录 id 并释放 `RootData`；实测内存从 424MB 降到 216MB（47 万条）。`--search-live` 可验证 30 万上限时缺失、100 万时命中 `AlanWake2.exe`。
+11. **“C 盘内容”解释**：应用索引与文件索引分离——`apps.idx` 收集开始菜单/AppsFolder/App Paths（含 C 盘系统应用），应用行副标题现在前缀 `应用 · ` 并显示启动路径；`files.idx` 只扫设置根目录（F/E/D），`--search-live=notepad.exe` 的 `exact_name=0` 可证明。启动时逐条打印 `文件索引根: …`。`--file-stats/--list-files` 未指定根时仍用默认桌面/文档/下载（C 盘），属诊断命令默认值。
 
 ## 14. 后续方向
 

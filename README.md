@@ -92,6 +92,10 @@ Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤�
 
 ![设置窗里的索引上限（默认 100 万）](docs/images/p6/settings-cap.png)
 
+![应用索引里的 Notepad（C 盘）与文件索引（F:/E:）](docs/images/p6/app-index-c-drive.png)
+
+- **应用索引与文件索引是两套**：`apps.idx` 来自开始菜单/AppsFolder/App Paths，天然包含 C 盘的系统应用；`files.idx` 只扫设置里的根目录（当前 F:/E:/D:）。所以搜 `notepad` 第一条是 Notepad 应用，副标题显示 `应用 · C:\Program Files\WindowsApps\...`，下面的 `panorama_text_pango.dll` 等才是文件索引结果。启动日志会逐条打印 `文件索引根: F:\ / E:\ / D:\`。
+- 注意：`--file-stats` / `--list-files` 在未指定 `--file-root` 时使用默认的桌面/文档/下载（C 盘），这是诊断命令的默认值，不是常驻应用实际使用的根目录；要验证应用索引请用 `--search-live=<query>` 或 `--file-root=`。
 - **紧凑索引**：内存里改成“目录表 + 文件名”——每个目录只存一份完整路径，条目只存文件名（原名 + 小写名）和父目录 id。47.2 万条实测：索引本身 **176MB**、应用进程 **216MB 常驻 / 266MB 峰值**（改造前约 424MB / 516MB），重建 **2.9s**。
 - **上限可改，默认 100 万**：设置窗新增“索引上限”输入框（20,000–1,000,000），也可写 `settings.conf` 的 `fileCap=` 或 `--file-cap`。老配置里 20/30/52 万的旧默认值会自动迁移到 100 万。
 - **匹配质量优先**：排序先看 `quality`（5 直接路径 / 4 字面完全一致 / 3 忽略扩展名一致 / 2 前缀 / 1 子串 / 0 模糊或仅路径），再看类型 tier（应用、可执行文件 → 其他文件 → 目录 → 仅路径），最后比分数。输入 `game` 先出 20 个 `Game` 目录（短路径优先）；`AlanWake2.exe` 精确命中 `F:\Games\Alan Wake 2\AlanWake2.exe`。

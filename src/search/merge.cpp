@@ -45,6 +45,12 @@ ResultRow MakeAppRow(const AppEntry& entry, size_t score, uint8_t tier, uint8_t 
   ResultRow row;
   row.title = entry.title;
   row.subtitle = entry.detail;
+  if (row.subtitle.empty()) {
+    row.subtitle = L"应用";
+  } else if (row.subtitle.find(L":\\") != std::wstring::npos) {
+    // 应用启动路径也常在 C 盘，前缀标明它来自应用索引，避免误以为文件索引收了 C 盘。
+    row.subtitle = L"应用 · " + row.subtitle;
+  }
   row.glyph = entry.glyph;
   row.iconKey = entry.iconKey;
   row.color = entry.color;

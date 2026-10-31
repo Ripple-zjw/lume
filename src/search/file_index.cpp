@@ -367,6 +367,9 @@ bool FileIndex::Start() {
 
   stop_.store(false);
   rebuildRequested_.store(true);
+  for (const std::wstring& root : roots_) {
+    Log(L"文件索引根: %ls", root.c_str());
+  }
   worker_ = std::thread([this]() { WorkerLoop(); });
   for (const std::wstring& root : roots_) {
     watchers_.emplace_back([this, root]() { WatchLoop(root); });
