@@ -40,8 +40,8 @@ class FileIndex {
   // 测试/CLI 指定根目录（需在 Start 前调用；空表示使用默认桌面/文档/下载）。
   void SetRoots(std::vector<std::wstring> roots);
 
-  // 索引条目总上限（默认 1000000，设置里可改）。
-  void SetMaxEntries(size_t value);
+  // 索引快照允许的最大字节数（默认 512MB，最大 256GB）。
+  void SetMaxIndexBytes(size_t value);
   // 是否把重建结果写回 files.idx（常驻模式启动即重建，不需要落盘）。
   void SetPersistSnapshot(bool value) { persistSnapshot_ = value; }
 
@@ -79,16 +79,19 @@ class FileIndex {
     std::vector<Entry> entries;
     std::vector<wchar_t> names;  // 原名/小写名共用的连续字符 arena
     std::unordered_multimap<uint64_t, uint32_t> directoryIndex;  // FNV(lower dir) -> index
+    uint64_t serializedBytes = 0;
   };
   struct RootData {
     std::vector<Directory> directories;
     std::vector<Entry> entries;
     std::vector<wchar_t> names;
     std::unordered_multimap<uint64_t, uint32_t> directoryIndex;
+    uint64_t serializedBytes = 0;
   };
 
   void EnsureRoots();
-  void EnumerateRoot(const std::wstring& root, size_t quota, RootData* data, char* truncated);
+  void EnumerateRoot(const std::wstring& root, uint64_t byteQuota, RootData* data,
+                     char* truncated);
   void WorkerLoop();
   void RebuildAndSwap();
   void WatchLoop(std::wstring root);
@@ -110,7 +113,7 @@ class FileIndex {
   mutable std::mutex entriesMutex_;
   Storage storage_;
   std::vector<std::wstring> roots_;
-  size_t maxEntries_ = 1000000;
+  size_t maxIndexBytes_ = 512ull * 1024 * 1024;
   bool persistSnapshot_ = true;
 
   std::vector<std::thread> watchers_;

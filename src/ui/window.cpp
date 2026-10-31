@@ -93,7 +93,8 @@ bool LauncherWindow::Create(HINSTANCE instance, Renderer* renderer, Scene* scene
   visibleRows_ = Scene::kMaxVisibleRows;
   input_.SetText(L"");
   usage_.Load();
-  files_.SetMaxEntries(static_cast<size_t>(std::clamp(settings_.fileCap, 20000, 1000000)));
+  files_.SetMaxIndexBytes(static_cast<size_t>(std::clamp(settings_.indexSizeMB, 64, 262144)) *
+                          1024ull * 1024ull);
   if (!fileRoot.empty()) {
     files_.SetRoots({fileRoot});
   } else if (!settings_.fileRoots.empty()) {
@@ -358,7 +359,8 @@ void LauncherWindow::ApplySettings(const AppSettings& settings) {
     Log(L"应用自启设置失败: %ls", error.c_str());
   }
   files_.Stop();
-  files_.SetMaxEntries(static_cast<size_t>(std::clamp(settings_.fileCap, 20000, 1000000)));
+  files_.SetMaxIndexBytes(static_cast<size_t>(std::clamp(settings_.indexSizeMB, 64, 262144)) *
+                          1024ull * 1024ull);
   files_.SetRoots(settings_.fileRoots);
   files_.Start();
   fileVersionSeen_ = files_.version();

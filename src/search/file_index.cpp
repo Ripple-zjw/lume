@@ -18,7 +18,7 @@
 
 namespace {
 
-constexpr size_t kHardMaxEntries = 2000000;
+constexpr size_t kHardMaxEntries = 50000000;
 constexpr char kMagic[4] = {'E', 'T', 'F', '3'};
 constexpr uint32_t kSnapshotVersion = 3;
 
@@ -232,6 +232,11 @@ uint32_t AppendChars(std::vector<wchar_t>* arena, std::wstring_view text) {
   return offset;
 }
 
+// 与快照序列化一致：4 字节长度 + UTF-16 路径 + 1 字节 isDirectory。
+uint64_t SerializedEntryBytes(const std::wstring& path) {
+  return 4 + static_cast<uint64_t>(path.size()) * sizeof(wchar_t) + 1;
+}
+
 }  // namespace
 
 FileIndex::~FileIndex() { Stop(); }
@@ -245,8 +250,9 @@ void FileIndex::SetRoots(std::vector<std::wstring> roots) {
   }
 }
 
-void FileIndex::SetMaxEntries(size_t value) {
-  maxEntries_ = std::clamp<size_t>(value, 20000, kHardMaxEntries);
+void FileIndex::SetMaxIndexBytes(size_t value) {
+  maxIndexBytes_ = std::clamp<size_t>(value, 64ull * 1024 * 1024,
+                                      256ull * 1024 * 1024 * 1024);
 }
 
 std::vector<std::wstring> FileIndex::roots() const { return roots_; }
@@ -306,9 +312,9 @@ uint32_t FileIndex::EnsureDirectoryLocked(const std::wstring& path) {
   return index;
 }
 
-void FileIndex::EnumerateRoot(const std::wstring& root, size_t quota, RootData* data,
+void FileIndex::EnumerateRoot(const std::wstring& root, uint64_t byteQuota, RootData* data,
                               char* truncated) {
-  if (quota == 0) return;
+  if (byteQuota == 0) return;
   const std::wstring rootLower = ToLower(root);
   Directory rootDirectory;
   rootDirectory.path = root;
@@ -320,7 +326,7 @@ void FileIndex::EnumerateRoot(const std::wstring& root, size_t quota, RootData* 
   std::vector<uint32_t> pending{rootIndex};
   while (!pending.empty()) {
     if (stop_.load()) return;
-    if (data->entries.size() >= quota) {
+    if (data->serializedBytes >= byteQuota) {
       *truncated = 1;
       return;
     }
@@ -346,15 +352,16 @@ void FileIndex::EnumerateRoot(const std::wstring& root, size_t quota, RootData* 
       if (findData.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
       const bool isDirectory = (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
       if (isDirectory && ShouldSkipDirectory(findData.cFileName)) continue;
-      if (data->entries.size() >= quota) {
-        *truncated = 1;
-        break;
-      }
 
       const std::wstring name = findData.cFileName;
       const std::wstring lowerName = ToLower(name);
       const std::wstring fullPath = directoryPath + L"\\" + name;
       const std::wstring fullLower = directoryLower + L"\\" + lowerName;
+      const uint64_t entryBytes = SerializedEntryBytes(fullPath);
+      if (data->serializedBytes + entryBytes > byteQuota) {
+        *truncated = 1;
+        break;
+      }
 
       Entry entry;
       entry.directory = directoryIndex;
@@ -371,6 +378,7 @@ void FileIndex::EnumerateRoot(const std::wstring& root, size_t quota, RootData* 
       entry.pathHash = static_cast<uint32_t>(Fnv1a(fullLower));
       entry.isDirectory = isDirectory;
       data->entries.push_back(std::move(entry));
+      data->serializedBytes += entryBytes;
 
       if (isDirectory) {
         const uint32_t existing =
@@ -460,16 +468,17 @@ void FileIndex::Stop() {
 }
 
 void FileIndex::RebuildAndSwap() {
-  const size_t rootCount = roots_.size();  const size_t perRootQuota =
-      rootCount ? std::max<size_t>(1, maxEntries_ / rootCount) : 0;
-  Log(L"文件索引: 根目录 %zu 个, 每根上限 %zu 条", rootCount, perRootQuota);
+  const size_t rootCount = roots_.size();
+  const uint64_t perRootBytes = rootCount ? maxIndexBytes_ / rootCount : 0;
+  Log(L"文件索引: 根目录 %zu 个, 每根预算 %.0f MB", rootCount,
+      static_cast<double>(perRootBytes) / (1024.0 * 1024.0));
 
   std::vector<RootData> partial(roots_.size());
   std::vector<char> truncated(roots_.size(), 0);
   std::vector<std::thread> threads;
   for (size_t i = 0; i < roots_.size(); ++i) {
     threads.emplace_back([&, i]() {
-      EnumerateRoot(roots_[i], perRootQuota, &partial[i], &truncated[i]);
+      EnumerateRoot(roots_[i], perRootBytes, &partial[i], &truncated[i]);
     });
   }
   for (std::thread& thread : threads) thread.join();
@@ -479,7 +488,8 @@ void FileIndex::RebuildAndSwap() {
   }
   for (size_t i = 0; i < roots_.size(); ++i) {
     if (truncated[i]) {
-      Log(L"文件索引: %ls 达到上限 %zu 条，已截断", roots_[i].c_str(), perRootQuota);
+      Log(L"文件索引: %ls 达到预算 %.0f MB，已截断", roots_[i].c_str(),
+          static_cast<double>(perRootBytes) / (1024.0 * 1024.0));
     }
   }
 
@@ -499,6 +509,7 @@ void FileIndex::RebuildAndSwap() {
       entry.lowerOffset += nameBase;
       fresh.entries.push_back(std::move(entry));
     }
+    fresh.serializedBytes += data.serializedBytes;
     // 逐个根释放枚举缓冲，降低合并阶段峰值。
     std::vector<Directory>().swap(data.directories);
     std::vector<Entry>().swap(data.entries);
@@ -543,9 +554,11 @@ void FileIndex::RebuildAndSwap() {
       dirLowerChars += directory.lowerPath.size();
     }
     Log(L"索引统计: 条目 %zu, 目录 %zu, 名称字符 %zu, 小写名 %zu, 同形 %zu, "
-        L"目录路径 %zu, 小写目录 %zu, sizeof(Entry)=%zu, sizeof(Dir)=%zu",
+        L"目录路径 %zu, 小写目录 %zu, 预计快照 %.1f MB, sizeof(Entry)=%zu, sizeof(Dir)=%zu",
         storage_.entries.size(), storage_.directories.size(), nameChars, lowerChars, sameNames,
-        dirChars, dirLowerChars, sizeof(Entry), sizeof(Directory));
+        dirChars, dirLowerChars,
+        static_cast<double>(storage_.serializedBytes) / (1024.0 * 1024.0), sizeof(Entry),
+        sizeof(Directory));
   }
   Log(L"文件索引: 重建完成 %zu 条", size());
 }
@@ -670,7 +683,8 @@ void FileIndex::HandleNotifications(const std::wstring& root, const char* buffer
 }
 
 void FileIndex::AddEntryLocked(const std::wstring& path, bool isDirectory) {
-  if (storage_.entries.size() >= maxEntries_) return;
+  const uint64_t entryBytes = SerializedEntryBytes(path);
+  if (storage_.serializedBytes + entryBytes > maxIndexBytes_) return;
   const size_t slash = path.find_last_of(L'\\');
   if (slash == std::wstring::npos || slash + 1 >= path.size()) return;
   const std::wstring parentPath = path.substr(0, slash);
@@ -697,6 +711,7 @@ void FileIndex::AddEntryLocked(const std::wstring& path, bool isDirectory) {
   entry.pathHash = hash;
   entry.isDirectory = isDirectory;
   storage_.entries.push_back(std::move(entry));
+  storage_.serializedBytes += entryBytes;
 }
 
 void FileIndex::RemoveEntryLocked(const std::wstring& path) {
@@ -711,7 +726,10 @@ void FileIndex::RemoveEntryLocked(const std::wstring& path) {
       rebuildRequested_.store(true);
       return;
     }
+    const uint64_t bytes = SerializedEntryBytes(path);
     storage_.entries.erase(storage_.entries.begin() + static_cast<std::ptrdiff_t>(i));
+    storage_.serializedBytes =
+        storage_.serializedBytes > bytes ? storage_.serializedBytes - bytes : 0;
     return;
   }
 }
@@ -734,7 +752,22 @@ std::vector<std::wstring> FileIndex::SnapshotPaths() const {
 }
 
 bool FileIndex::LoadSnapshot() {
-  for (const std::wstring& path : SnapshotPaths()) {
+  std::vector<std::wstring> candidates = SnapshotPaths();
+  auto modifiedTime = [](const std::wstring& path) {
+    WIN32_FILE_ATTRIBUTE_DATA data{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data)) return ULARGE_INTEGER{};
+    ULARGE_INTEGER value{};
+    value.LowPart = data.ftLastWriteTime.dwLowDateTime;
+    value.HighPart = data.ftLastWriteTime.dwHighDateTime;
+    return value;
+  };
+  std::sort(candidates.begin(), candidates.end(),
+            [&](const std::wstring& a, const std::wstring& b) {
+              const ULARGE_INTEGER ta = modifiedTime(a);
+              const ULARGE_INTEGER tb = modifiedTime(b);
+              return ta.QuadPart > tb.QuadPart;
+            });
+  for (const std::wstring& path : candidates) {
     std::string data;
     if (!ReadWholeFile(path, &data)) continue;
     if (data.size() < sizeof(kMagic) || std::memcmp(data.data(), kMagic, sizeof(kMagic)) != 0) {
@@ -799,6 +832,7 @@ bool FileIndex::LoadSnapshot() {
       entry.pathHash = static_cast<uint32_t>(Fnv1a(parentLower + L"\\" + lowerName));
       entry.isDirectory = isDirectory != 0;
       fresh.entries.push_back(std::move(entry));
+      fresh.serializedBytes += SerializedEntryBytes(fullPath);
     }
     if (!valid || fresh.entries.empty()) continue;
     std::lock_guard<std::mutex> lock(entriesMutex_);

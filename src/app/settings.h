@@ -9,7 +9,7 @@ struct AppSettings {
   std::wstring hotkey = L"Alt+Space";
   bool autostart = false;
   bool tray = true;
-  int fileCap = 1000000;              // 文件索引总条目上限（20k–1M）
+  int indexSizeMB = 512;              // 索引快照最大大小（MB，64–262144）
   std::vector<std::wstring> fileRoots;  // 空 = 桌面/文档/下载
 };
 

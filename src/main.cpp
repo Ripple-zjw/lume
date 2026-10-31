@@ -43,7 +43,7 @@ struct CliOptions {
   std::wstring searchFiles;
   std::wstring searchRows;
   std::wstring searchLive;
-  size_t fileCap = 0;
+  size_t indexSizeMB = 0;
 };
 
 void PrintUsage() {
@@ -72,7 +72,7 @@ void PrintUsage() {
       "  --list-apps                      Print the collected app index and exit\n"
       "  --list-files                     Rebuild the file index, print stats and sample paths\n"
       "  --file-stats                     Rebuild the file index and print stats only\n"
-      "  --file-cap=<n>                   Override max index entries (testing)\n"
+      "  --index-size-mb=<n>              Override max index file size in MB (64–262144)\n"
       "  --search-files=<query>           Search the file index and print top results with scores\n"
       "  --search-rows=<query>            Print merged app/file rows with tier and score\n"
       "  --search-live=<query>            Rebuild index now and search it (diagnostics)\n"
@@ -80,6 +80,7 @@ void PrintUsage() {
       "  --set-autostart=1|0              Enable/disable autostart and print state\n"
       "  --hotkey=<combo>                 Override hotkey for this run (e.g. Ctrl+Alt+K)\n"
       "  --settings                       Open the settings window at startup\n"
+      "  --clear-index                    Delete snapshots and rebuild at startup\n"
       "  --self-check                     Check hotkey/tray/autostart/file-open and print PASS/FAIL\n"
       "  --file-root=<dir>                Override file index roots (testing)\n"
       "  --no-hotkey                      Do not register global hotkey\n",
@@ -126,6 +127,8 @@ CliOptions Parse(int argc, wchar_t** argv) {
       cli.setAutostart = ValueAfter(arg, L"--set-autostart=");
     } else if (StartsWith(arg, L"--settings")) {
       cli.app.openSettings = true;
+    } else if (arg == L"--clear-index") {
+      cli.app.clearIndexOnStart = true;
     } else if (StartsWith(arg, L"--test-capture=")) {
       cli.app.testCapture = ValueAfter(arg, L"--test-capture=");
       cli.app.openSettings = true;
@@ -135,10 +138,10 @@ CliOptions Parse(int argc, wchar_t** argv) {
       cli.searchRows = ValueAfter(arg, L"--search-rows=");
     } else if (StartsWith(arg, L"--search-live=")) {
       cli.searchLive = ValueAfter(arg, L"--search-live=");
-    } else if (StartsWith(arg, L"--file-cap=")) {
-      cli.fileCap = static_cast<size_t>(_wcstoui64(ValueAfter(arg, L"--file-cap=").c_str(),
-                                                  nullptr, 10));
-      cli.app.fileCap = cli.fileCap;
+    } else if (StartsWith(arg, L"--index-size-mb=")) {
+      cli.indexSizeMB = static_cast<size_t>(_wcstoui64(
+          ValueAfter(arg, L"--index-size-mb=").c_str(), nullptr, 10));
+      cli.app.indexSizeMB = cli.indexSizeMB;
     } else if (arg == L"--self-check") {
       cli.selfCheck = true;
     } else if (StartsWith(arg, L"--scale=")) {
@@ -274,7 +277,7 @@ int wmain(int argc, wchar_t** argv) {
   }
   if (cli.listFiles || cli.fileStats) {
     FileIndex files;
-    if (cli.fileCap > 0) files.SetMaxEntries(cli.fileCap);
+    if (cli.indexSizeMB > 0) files.SetMaxIndexBytes(cli.indexSizeMB * 1024ull * 1024ull);
     if (!cli.app.fileRoot.empty()) files.SetRoots({cli.app.fileRoot});
     const ULONGLONG start = GetTickCount64();
     const size_t count = files.RebuildSynchronously();
@@ -301,17 +304,18 @@ int wmain(int argc, wchar_t** argv) {
     LogInit(cli.app.logPath);
     AppSettings settings;
     SettingsStore::Load(&settings);
-    const size_t cap = cli.fileCap > 0 ? cli.fileCap : static_cast<size_t>(settings.fileCap);
+    const size_t sizeMB = cli.indexSizeMB > 0 ? cli.indexSizeMB
+                                               : static_cast<size_t>(settings.indexSizeMB);
     FileIndex index;
-    index.SetMaxEntries(cap);
+    index.SetMaxIndexBytes(sizeMB * 1024ull * 1024ull);
     index.SetPersistSnapshot(false);
     std::vector<std::wstring> roots = settings.fileRoots;
     if (!cli.app.fileRoot.empty()) roots = {cli.app.fileRoot};
     if (!roots.empty()) index.SetRoots(roots);
     const ULONGLONG start = GetTickCount64();
     const size_t count = index.RebuildSynchronously();
-    printf("roots=%zu files=%zu cap=%zu rebuild=%llu ms\n", index.roots().size(), count, cap,
-           static_cast<unsigned long long>(GetTickCount64() - start));
+    printf("roots=%zu files=%zu size=%zu MB rebuild=%llu ms\n", index.roots().size(), count,
+           sizeMB, static_cast<unsigned long long>(GetTickCount64() - start));
     LARGE_INTEGER frequency{};
     LARGE_INTEGER searchStart{};
     LARGE_INTEGER searchEnd{};
@@ -348,7 +352,7 @@ int wmain(int argc, wchar_t** argv) {
     AppSettings settings;
     SettingsStore::Load(&settings);
     FileIndex index;
-    if (cli.fileCap > 0) index.SetMaxEntries(cli.fileCap);
+    if (cli.indexSizeMB > 0) index.SetMaxIndexBytes(cli.indexSizeMB * 1024ull * 1024ull);
     std::vector<std::wstring> roots = settings.fileRoots;
     if (!cli.app.fileRoot.empty()) roots = {cli.app.fileRoot};
     if (!roots.empty()) index.SetRoots(roots);
@@ -372,7 +376,7 @@ int wmain(int argc, wchar_t** argv) {
   if (!cli.searchFiles.empty()) {
     LogInit(cli.app.logPath);
     FileIndex index;
-    if (cli.fileCap > 0) index.SetMaxEntries(cli.fileCap);
+    if (cli.indexSizeMB > 0) index.SetMaxIndexBytes(cli.indexSizeMB * 1024ull * 1024ull);
     AppSettings settings;
     SettingsStore::Load(&settings);
     std::vector<std::wstring> roots = settings.fileRoots;

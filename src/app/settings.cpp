@@ -95,7 +95,6 @@ bool SettingsStore::Load(AppSettings* settings) {
   }
   if (!loaded) return false;
   const std::wstring text = Utf8ToWide(data);
-  bool hasVersion = false;
   size_t start = 0;
   while (start < text.size()) {
     size_t end = text.find(L'\n', start);
@@ -108,7 +107,7 @@ bool SettingsStore::Load(AppSettings* settings) {
     const std::wstring key = Trim(line.substr(0, equals));
     const std::wstring value = Trim(line.substr(equals + 1));
     if (key == L"version") {
-      hasVersion = true;
+      // 预留版本字段，当前忽略。
     } else if (key == L"theme") {
       settings->theme = value;
     } else if (key == L"accent") {
@@ -119,18 +118,12 @@ bool SettingsStore::Load(AppSettings* settings) {
       settings->autostart = (value == L"1" || value == L"true");
     } else if (key == L"tray") {
       settings->tray = (value == L"1" || value == L"true");
-    } else if (key == L"fileCap") {
-      const int cap = _wtoi(value.c_str());
-      if (cap >= 20000 && cap <= 2000000) settings->fileCap = cap;
+    } else if (key == L"indexSizeMB") {
+      const int megabytes = _wtoi(value.c_str());
+      if (megabytes >= 64 && megabytes <= 262144) settings->indexSizeMB = megabytes;
     } else if (key == L"fileRoot" && !value.empty()) {
       settings->fileRoots.push_back(value);
     }
-  }
-  // 老配置没有 version：把历史上的默认上限迁移到新默认 100 万。
-  if (!hasVersion && (settings->fileCap == 200000 || settings->fileCap == 300000 ||
-                      settings->fileCap == 520000)) {
-    settings->fileCap = 1000000;
-    Log(L"设置迁移: 索引上限提升到 %d", settings->fileCap);
   }
   return true;
 }
@@ -144,7 +137,7 @@ bool SettingsStore::Save(const AppSettings& settings, std::wstring* savedPath) {
   text += L"hotkey=" + settings.hotkey + L"\n";
   text += std::wstring(L"autostart=") + (settings.autostart ? L"1" : L"0") + L"\n";
   text += std::wstring(L"tray=") + (settings.tray ? L"1" : L"0") + L"\n";
-  text += L"fileCap=" + std::to_wstring(settings.fileCap) + L"\n";
+  text += L"indexSizeMB=" + std::to_wstring(settings.indexSizeMB) + L"\n";
   for (const std::wstring& root : settings.fileRoots) {
     text += L"fileRoot=" + root + L"\n";
   }

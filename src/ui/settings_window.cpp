@@ -352,15 +352,15 @@ void SettingsWindow::CreateControls() {
                                     nullptr, nullptr);
   applyFont(autostartCheck_);
 
-  label(L"索引上限", 20, 172, 80);
+  label(L"索引大小", 20, 172, 80);
   capEdit_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
                              WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_NUMBER | ES_AUTOHSCROLL,
                              Scale(110), Scale(168), Scale(140), Scale(26), hwnd_,
                              reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdCap)), nullptr,
                              nullptr);
   applyFont(capEdit_);
-  SendMessageW(capEdit_, EM_SETLIMITTEXT, 7, 0);
-  label(L"条（20,000–1,000,000）", 258, 174, 260);
+  SendMessageW(capEdit_, EM_SETLIMITTEXT, 6, 0);
+  label(L"MB（64–262144，默认 512）", 258, 174, 300);
 
   label(L"文件索引目录（留空 = 桌面 / 文档 / 下载）", 20, 208, 460);
   rootsList_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", nullptr,
@@ -397,7 +397,7 @@ void SettingsWindow::Populate() {
 
   SetWindowTextW(hotkeyCapture_, settings_.hotkey.c_str());
   hotkeyConflict_ = false;
-  SetWindowTextW(capEdit_, std::to_wstring(settings_.fileCap).c_str());
+  SetWindowTextW(capEdit_, std::to_wstring(settings_.indexSizeMB).c_str());
   SendMessageW(autostartCheck_, BM_SETCHECK, settings_.autostart ? BST_CHECKED : BST_UNCHECKED, 0);
 
   SendMessageW(rootsList_, LB_RESETCONTENT, 0, 0);
@@ -448,11 +448,11 @@ void SettingsWindow::OnSave() {
   wchar_t capText[32] = {};
   GetWindowTextW(capEdit_, capText, ARRAYSIZE(capText));
   const long cap = wcstol(capText, nullptr, 10);
-  if (cap < 20000 || cap > 1000000) {
-    SetWindowTextW(status_, L"索引上限需在 20,000–1,000,000 之间");
+  if (cap < 64 || cap > 262144) {
+    SetWindowTextW(status_, L"索引大小需在 64–262144 MB（最大 256GB）之间");
     return;
   }
-  settings_.fileCap = static_cast<int>(cap);
+  settings_.indexSizeMB = static_cast<int>(cap);
   settings_.autostart = SendMessageW(autostartCheck_, BM_GETCHECK, 0, 0) == BST_CHECKED;
 
   std::vector<std::wstring> roots;
