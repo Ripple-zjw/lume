@@ -166,6 +166,7 @@ int RunLauncher(const AppOptions& options) {
   if (options.themeSpecified) settings.theme = ThemeModeName(options.themeMode);
   if (options.accentSpecified) settings.accent = options.accent;
   if (!options.hotkeyOverride.empty()) settings.hotkey = options.hotkeyOverride;
+  if (options.fileCap > 0) settings.fileCap = static_cast<int>(options.fileCap);
   Log(L"设置: theme=%ls accent=\"%ls\" hotkey=%ls autostart=%d roots=%zu", settings.theme.c_str(),
       settings.accent.c_str(), settings.hotkey.c_str(), settings.autostart ? 1 : 0,
       settings.fileRoots.size());

@@ -93,6 +93,8 @@ bool LauncherWindow::Create(HINSTANCE instance, Renderer* renderer, Scene* scene
   visibleRows_ = Scene::kMaxVisibleRows;
   input_.SetText(L"");
   usage_.Load();
+  files_.SetMaxEntries(static_cast<size_t>(std::clamp(settings_.fileCap, 20000, 1000000)));
+  files_.SetPersistSnapshot(false);  // 常驻模式启动即重建，不再每轮写几十 MB 快照
   if (!fileRoot.empty()) {
     files_.SetRoots({fileRoot});
   } else if (!settings_.fileRoots.empty()) {

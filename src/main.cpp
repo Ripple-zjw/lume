@@ -17,7 +17,17 @@
 #include "search/merge.h"
 #include "ui/theme.h"
 
+#include <psapi.h>
+
 namespace {
+
+double PeakWorkingSetMb() {
+  PROCESS_MEMORY_COUNTERS counters{};
+  if (K32GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters))) {
+    return static_cast<double>(counters.PeakWorkingSetSize) / (1024.0 * 1024.0);
+  }
+  return 0.0;
+}
 
 struct CliOptions {
   AppOptions app;
@@ -32,6 +42,7 @@ struct CliOptions {
   std::wstring setAutostart;
   std::wstring searchFiles;
   std::wstring searchRows;
+  size_t fileCap = 0;
 };
 
 void PrintUsage() {
@@ -60,6 +71,7 @@ void PrintUsage() {
       "  --list-apps                      Print the collected app index and exit\n"
       "  --list-files                     Rebuild the file index, print stats and sample paths\n"
       "  --file-stats                     Rebuild the file index and print stats only\n"
+      "  --file-cap=<n>                   Override max index entries (testing)\n"
       "  --search-files=<query>           Search the file index and print top results with scores\n"
       "  --search-rows=<query>            Print merged app/file rows with tier and score\n"
       "  --open=<path>                    Verify opening a file/path directly\n"
@@ -119,6 +131,10 @@ CliOptions Parse(int argc, wchar_t** argv) {
       cli.searchFiles = ValueAfter(arg, L"--search-files=");
     } else if (StartsWith(arg, L"--search-rows=")) {
       cli.searchRows = ValueAfter(arg, L"--search-rows=");
+    } else if (StartsWith(arg, L"--file-cap=")) {
+      cli.fileCap = static_cast<size_t>(_wcstoui64(ValueAfter(arg, L"--file-cap=").c_str(),
+                                                  nullptr, 10));
+      cli.app.fileCap = cli.fileCap;
     } else if (arg == L"--self-check") {
       cli.selfCheck = true;
     } else if (StartsWith(arg, L"--scale=")) {
@@ -254,6 +270,7 @@ int wmain(int argc, wchar_t** argv) {
   }
   if (cli.listFiles || cli.fileStats) {
     FileIndex files;
+    if (cli.fileCap > 0) files.SetMaxEntries(cli.fileCap);
     if (!cli.app.fileRoot.empty()) files.SetRoots({cli.app.fileRoot});
     const ULONGLONG start = GetTickCount64();
     const size_t count = files.RebuildSynchronously();
@@ -262,9 +279,9 @@ int wmain(int argc, wchar_t** argv) {
       const std::string line = "root: " + WideToUtf8(root) + "\n";
       fputs(line.c_str(), stdout);
     }
-    char summary[160];
-    snprintf(summary, sizeof(summary), "files: %zu, rebuild: %llu ms\n", count,
-             static_cast<unsigned long long>(elapsed));
+    char summary[192];
+    snprintf(summary, sizeof(summary), "files: %zu, rebuild: %llu ms, peak_ws: %.0f MB\n", count,
+             static_cast<unsigned long long>(elapsed), PeakWorkingSetMb());
     fputs(summary, stdout);
     if (cli.listFiles) {
       for (const std::wstring& path : files.SamplePaths(20)) {
@@ -281,6 +298,7 @@ int wmain(int argc, wchar_t** argv) {
     AppSettings settings;
     SettingsStore::Load(&settings);
     FileIndex index;
+    if (cli.fileCap > 0) index.SetMaxEntries(cli.fileCap);
     std::vector<std::wstring> roots = settings.fileRoots;
     if (!cli.app.fileRoot.empty()) roots = {cli.app.fileRoot};
     if (!roots.empty()) index.SetRoots(roots);
@@ -304,6 +322,7 @@ int wmain(int argc, wchar_t** argv) {
   if (!cli.searchFiles.empty()) {
     LogInit(cli.app.logPath);
     FileIndex index;
+    if (cli.fileCap > 0) index.SetMaxEntries(cli.fileCap);
     AppSettings settings;
     SettingsStore::Load(&settings);
     std::vector<std::wstring> roots = settings.fileRoots;

@@ -25,6 +25,7 @@ struct AppOptions {
   bool noHotkey = false;
   bool glass = false;
   bool openSettings = false;
+  size_t fileCap = 0;  // 0 = 使用设置里的上限
   std::wstring testCapture;
 };
 

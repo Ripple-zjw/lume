@@ -1,5 +1,6 @@
 #include "search/file_index.h"
 
+#include <psapi.h>
 #include <shlobj.h>
 
 #include <algorithm>
@@ -17,7 +18,7 @@
 
 namespace {
 
-constexpr size_t kMaxEntries = 200000;
+constexpr size_t kHardMaxEntries = 2000000;  // 快照/索引的硬上限，防止异常文件撑爆内存
 constexpr char kMagic[4] = {'E', 'T', 'F', '3'};
 constexpr uint32_t kSnapshotVersion = 3;
 
@@ -197,7 +198,7 @@ bool ReadWholeFile(const std::wstring& path, std::string* data) {
   if (file == INVALID_HANDLE_VALUE) return false;
   LARGE_INTEGER size{};
   const bool haveSize = GetFileSizeEx(file, &size) != 0;
-  if (!haveSize || size.QuadPart <= 0 || size.QuadPart > 64 * 1024 * 1024) {
+  if (!haveSize || size.QuadPart <= 0 || size.QuadPart > 512ll * 1024 * 1024) {
     CloseHandle(file);
     return false;
   }
@@ -264,6 +265,10 @@ void FileIndex::SetRoots(std::vector<std::wstring> roots) {
   }
 }
 
+void FileIndex::SetMaxEntries(size_t value) {
+  maxEntries_ = std::clamp<size_t>(value, 1000, 2000000);
+}
+
 bool FileIndex::Start() {
   EnsureRoots();
   if (roots_.empty()) {
@@ -271,12 +276,16 @@ bool FileIndex::Start() {
     return false;
   }
 
-  std::vector<FileEntry> cached;
-  const ULONGLONG loadStart = GetTickCount64();
-  if (LoadSnapshot(&cached)) {
+  // 启动即丢弃旧快照，避免把上次运行期间已删除的文件继续搜出来；后台会全量重建。
+  for (const std::wstring& path : SnapshotPaths()) {
+    if (DeleteFileW(path.c_str())) {
+      Log(L"文件索引: 已删除旧快照 %ls", path.c_str());
+    }
+  }
+  {
     std::lock_guard<std::mutex> lock(entriesMutex_);
-    entries_ = std::move(cached);
-    Log(L"文件索引: 快照加载 %zu 条 (%llu ms)", entries_.size(), GetTickCount64() - loadStart);
+    entries_.clear();
+    version_.fetch_add(1);
   }
 
   stop_.store(false);
@@ -285,7 +294,7 @@ bool FileIndex::Start() {
   for (const std::wstring& root : roots_) {
     watchers_.emplace_back([this, root]() { WatchLoop(root); });
   }
-  Log(L"文件索引: 根目录 %zu 个, 监听已启动", roots_.size());
+  Log(L"文件索引: 根目录 %zu 个, 监听已启动（启动重建中）", roots_.size());
   return true;
 }
 
@@ -353,7 +362,7 @@ bool FileIndex::LoadSnapshot(std::vector<FileEntry>* entries) const {
     if (!rootsMatch) continue;
 
     uint32_t count = 0;
-    if (!ReadPod(data, &offset, &count) || count > kMaxEntries) continue;
+    if (!ReadPod(data, &offset, &count) || count > kHardMaxEntries) continue;
     entries->clear();
     entries->reserve(count);
     bool valid = true;
@@ -404,7 +413,7 @@ void FileIndex::RebuildAndSwap() {
   std::vector<FileEntry> fresh;
   fresh.reserve(20000);
   const size_t rootCount = roots_.size();
-  const size_t perRootQuota = rootCount ? std::max<size_t>(1, kMaxEntries / rootCount) : 0;
+  const size_t perRootQuota = rootCount ? std::max<size_t>(1, maxEntries_ / rootCount) : 0;
   Log(L"文件索引: 根目录 %zu 个, 每根上限 %zu 条", rootCount, perRootQuota);
 
   std::vector<std::thread> threads;
@@ -433,7 +442,13 @@ void FileIndex::RebuildAndSwap() {
     entries_ = std::move(fresh);
     version_.fetch_add(1);
   }
-  SaveSnapshot(entries_);
+  if (persistSnapshot_) SaveSnapshot(entries_);
+  PROCESS_MEMORY_COUNTERS memory{};
+  if (K32GetProcessMemoryInfo(GetCurrentProcess(), &memory, sizeof(memory))) {
+    Log(L"文件索引内存: 当前 %.0f MB, 峰值 %.0f MB",
+        static_cast<double>(memory.WorkingSetSize) / (1024.0 * 1024.0),
+        static_cast<double>(memory.PeakWorkingSetSize) / (1024.0 * 1024.0));
+  }
   Log(L"文件索引: 重建完成 %zu 条", size());
 }
 
@@ -541,7 +556,7 @@ void FileIndex::HandleNotifications(const std::wstring& root, const char* buffer
 }
 
 void FileIndex::AddEntryLocked(const std::wstring& path, bool isDirectory) {
-  if (entries_.size() >= kMaxEntries) return;
+  if (entries_.size() >= maxEntries_) return;
   FileEntry entry;
   entry.lowerPath = ToLower(path);
   const size_t slash = entry.lowerPath.find_last_of(L'\\');

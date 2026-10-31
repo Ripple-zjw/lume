@@ -33,12 +33,17 @@ class FileIndex {
   FileIndex(const FileIndex&) = delete;
   FileIndex& operator=(const FileIndex&) = delete;
 
-  // 加载快照并启动后台重建 + watcher。返回 false 表示没有可用根目录。
+  // 删除旧快照、启动后台全量重建 + watcher。返回 false 表示没有可用根目录。
   bool Start();
   void Stop();
 
   // 测试/CLI 指定根目录（需在 Start 前调用；空表示使用默认桌面/文档/下载）。
   void SetRoots(std::vector<std::wstring> roots);
+
+  // 索引条目总上限（默认 300000，测试可调）。
+  void SetMaxEntries(size_t value);
+  // 是否把重建结果写回 files.idx（常驻模式启动即重建，不需要落盘）。
+  void SetPersistSnapshot(bool value) { persistSnapshot_ = value; }
 
   std::vector<std::wstring> roots() const;
   std::vector<FileHit> Search(const std::wstring& query, size_t limit) const;
@@ -70,6 +75,8 @@ class FileIndex {
   mutable std::mutex entriesMutex_;
   std::vector<FileEntry> entries_;
   std::vector<std::wstring> roots_;
+  size_t maxEntries_ = 300000;
+  bool persistSnapshot_ = true;
 
   std::vector<std::thread> watchers_;
   std::vector<HANDLE> watchHandles_;

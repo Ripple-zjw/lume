@@ -116,6 +116,9 @@ bool SettingsStore::Load(AppSettings* settings) {
       settings->autostart = (value == L"1" || value == L"true");
     } else if (key == L"tray") {
       settings->tray = (value == L"1" || value == L"true");
+    } else if (key == L"fileCap") {
+      const int cap = _wtoi(value.c_str());
+      if (cap >= 20000 && cap <= 1000000) settings->fileCap = cap;
     } else if (key == L"fileRoot" && !value.empty()) {
       settings->fileRoots.push_back(value);
     }
@@ -131,6 +134,7 @@ bool SettingsStore::Save(const AppSettings& settings, std::wstring* savedPath) {
   text += L"hotkey=" + settings.hotkey + L"\n";
   text += std::wstring(L"autostart=") + (settings.autostart ? L"1" : L"0") + L"\n";
   text += std::wstring(L"tray=") + (settings.tray ? L"1" : L"0") + L"\n";
+  text += L"fileCap=" + std::to_wstring(settings.fileCap) + L"\n";
   for (const std::wstring& root : settings.fileRoots) {
     text += L"fileRoot=" + root + L"\n";
   }
