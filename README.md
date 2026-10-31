@@ -2,7 +2,7 @@
 
 Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤出、输入即搜、回车启动应用与文件。C++20 + Win32 + Direct2D/DirectWrite + DirectComposition，免安装、免管理员、单 exe。
 
-**当前进度：P0（工具链与渲染闸门）已完成，P1 进行中。**
+**当前进度：P0（工具链与渲染闸门）已完成，下一步进入 P1 视觉骨架。**
 
 ![设计基线（100%）](docs/images/baseline-dark-100.png)
 
