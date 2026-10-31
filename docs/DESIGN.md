@@ -158,17 +158,18 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 2. **路径命中降级**：`ScorePathOnly` 要求查询 ≥3 字符、命中前一个字符是 `\ / 空格 - _ .` 边界，分数 `÷6`（约 160–200）；全路径不再做子序列匹配。`Search` 先扫文件名，只有文件名命中 <6 条时才补扫路径，且路径命中最多收 2000 条。修复前 `steamapps` 这类查询会把 `\Games\` 下几千个文件顶进前 80。
 3. **稳定排序**：同分比较“文件名长度升序 → 文件优先于目录 → 路径长度升序 → 路径字典序”，`partial_sort` / `sort` 使用同一比较器；两次 `--search-files=gam` 输出一致、无重复。
 4. **文件名位图预筛**：`FileEntry.charMask` 记录文件名中出现的 a-z/0-9（36 位），查询为纯 ASCII 字母数字时先做包含检查，跳过不可能命中的名字；1–2 字符只做子串匹配。200k 实测从 17.5–35.5ms 降到 5.7–15.7ms。
-5. **实测（47.2 万条，紧凑索引）**：`AlanWake2.exe` 0.9ms（1 条命中）、`game` 6.4ms。
+5. **实测（72.2 万条，C/F/E/D）**：`AlanWake2.exe` 4.2ms（1 条命中）；47.2 万条时 `game` 6.4ms。
 6. **调试入口**：`--search-files=<query>`（文件索引）、`--search-rows=<query>`（合并 quality/tier/score）、`--search-live=<query>`（现场重建并确认文件是否被收录）。
-7. **仍未解决**：47 万条约 123MB（索引 83MB）；子序列噪声；非精确目录仍排在文件后（字面精确目录已置顶）；目录路径仍是两份 `wstring`，可再做目录 arena。
+7. **仍未解决**：72.2 万条约 273MB 常驻（快照+重建峰值 486MB）；快照 170MB；子序列噪声；非精确目录仍排在文件后（字面精确目录已置顶）。
 8. **排序（质量优先 + 类型层级）**：`quality` 为主键——5 直接路径，4 字面完全一致（`name == query`），3 忽略扩展名一致（`game.exe` 对 `game`），2 前缀，1 子串，0 模糊/仅路径；同 quality 再看 `tier`（0 应用/可执行文件、1 其他文件、2 目录、3 仅路径），最后比分数。`game` 先出 20 个 `Game` 目录（同层按路径长度），`AlanWake2.exe` 字面精确置顶。
-9. **启动即重建 + 上限（2026-10-31）**：`Start` 删除所有候选 `files.idx`、清空内存索引后全量重建；常驻模式 `persistSnapshot=false`。默认上限 **1,000,000**，设置窗可直接改（20,000–1,000,000），也支持 `fileCap=`/`--file-cap`；旧配置的 20/30/52 万默认值自动迁移到 100 万。快照读取上限 512MB（44 万条约 102MB）。实测 3 个根（F:/E:/D:）47.2 万条：重建 2.8s、索引 83MB、进程 123MB 常驻 / 149MB 峰值。
-10. **紧凑索引**：目录表 `{path, lowerPath}` 每目录一份；条目 32 字节 `{父目录 id, nameOffset/len, lowerOffset/len, charMask, pathHash32, isDirectory}`。文件名/小写名放连续 `wchar_t` arena，`name == lowerName` 时（本机 78%）复用同一 offset。目录索引从字符串 map 换成 64 位哈希 `unordered_multimap` + 路径校验；路径哈希压到 32 位（删除/去重时校验完整路径）。并行枚举各根用本地 `RootData`，合并时逐个根重映射并立即释放其 vector/map，峰值从 130MB 降到 109MB。总内存从 424MB 降到 123MB（47 万条），Entry 从 96B 降到 32B。
-11. **“C 盘内容”解释**：应用索引与文件索引分离——`apps.idx` 收集开始菜单/AppsFolder/App Paths（含 C 盘系统应用），应用行副标题现在前缀 `应用 · ` 并显示启动路径；`files.idx` 只扫设置根目录（F/E/D），`--search-live=notepad.exe` 的 `exact_name=0` 可证明。启动时逐条打印 `文件索引根: …`。`--file-stats/--list-files` 未指定根时仍用默认桌面/文档/下载（C 盘），属诊断命令默认值。
+9. **快照优先 + 后台重建（2026-10-31）**：`Start` 先读 `files.idx`（72.2 万条 875ms），再后台全量重建；启动不再删除快照，常驻模式会写回（仅首次运行/手动清除时写）。设置窗新增“清除索引并重建”（删快照、清内存、立即重建，并重置冷却）。watcher 忽略自己的 `files.idx/.tmp/apps.idx/settings.conf/usage.conf/logs/icons`，否则 D 盘作为根时写快照会触发重建死循环；目录高频变化加 60s 冷却。退出时枚举/重建可取消，快照改为流式写临时文件再 `MoveFileEx` 原子替换，避免留下 0 字节文件。默认上限 **1,000,000**（设置窗可改 20,000–1,000,000），旧默认值自动迁移。快照读取上限 512MB。实测 4 个根 72.2 万条：重建 13.8s、进程 273MB 常驻 / 335MB 峰值（无快照首次）/ 486MB（读快照后再重建，两份索引并存）。
+10. **紧凑索引**：目录表 `{path, lowerPath}` 每目录一份；条目 32 字节 `{父目录 id, nameOffset/len, lowerOffset/len, charMask, pathHash32, isDirectory}`。文件名/小写名放连续 `wchar_t` arena，`name == lowerName` 时（本机 78%）复用同一 offset。目录索引从字符串 map 换成 64 位哈希 `unordered_multimap` + 路径校验；路径哈希压到 32 位（删除/去重时校验完整路径）。并行枚举各根用本地 `RootData`，合并时逐个根重映射并立即释放其 vector/map，峰值从 130MB 降到 109MB。Entry 从 96B 降到 32B；47 万条索引从 176MB 降到 83MB。
+11. **“C 盘内容”解释**：应用索引与文件索引分离——`apps.idx` 收集开始菜单/AppsFolder/App Paths（含 C 盘系统应用），应用行副标题现在前缀 `应用 · ` 并显示启动路径；`files.idx` 只扫设置根目录（C/F/E/D），`--search-live=notepad.exe` 的 `exact_name=0` 可证明。启动时逐条打印 `文件索引根: …`。`--file-stats/--list-files` 未指定根时仍用默认桌面/文档/下载（C 盘），属诊断命令默认值。
+12. **存储占用（72.2 万条）**：`files.idx` 170.0MB（178,303,881 字节，ETF3 完整路径快照）、`apps.idx` 48KB、图标/日志/配置合计 0.83MB，总计约 171MB。沙箱写不进 AppData 时落在 exe 同目录；正常会话在 `%LOCALAPPDATA%\eTools\files.idx`。进一步可把快照也改成“目录树 + 名字 arena”或压缩，目标 <100MB。
 
 ## 14. 后续方向
 
 - 子序列匹配加“跨度/间隙”惩罚，压掉 `steamapps → StreamingBar` 这类噪声；或对长查询要求连续片段。
-- 字符串 arena：把文件名/目录路径存进连续 `wchar_t` 缓冲，条目只存 offset/len，目标把 47 万条压到 ~100MB，为 100 万上限留空间。
+- 目录树 + 快照紧凑化：目录改存“父目录 id + 名字”，快照随之压到 <100MB；同时可把目录 arena 做掉。
 - 文件搜索接 Everything 可选适配器（检测到本机安装则优先全盘结果）；USN 全盘索引；文件内容搜索。
 - 打包：图标资源、便携模式、可选自签证书；真实会话回归已完成（`tools\regression.ps1` 全 PASS），后续改动重跑即可。

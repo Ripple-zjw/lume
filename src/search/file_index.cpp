@@ -70,6 +70,27 @@ bool ShouldSkipDirectory(const std::wstring& name) {
   return false;
 }
 
+bool EndsWith(const std::wstring& text, const wchar_t* suffix) {
+  const size_t length = wcslen(suffix);
+  return text.size() >= length && text.compare(text.size() - length, length, suffix) == 0;
+}
+
+// 快照/日志/图标本身在索引根内时，避免写文件触发 watcher 再触发重建的死循环。
+bool ShouldIgnoreWatchPath(const std::wstring& fullPath) {
+  const std::wstring lower = ToLower(fullPath);
+  if (EndsWith(lower, L"\\files.idx") || EndsWith(lower, L"\\files.idx.tmp") ||
+      EndsWith(lower, L"\\apps.idx") || EndsWith(lower, L"\\usage.conf") ||
+      EndsWith(lower, L"\\settings.conf")) {
+    return true;
+  }
+  if (lower.find(L"\\etools\\logs\\") != std::wstring::npos ||
+      lower.find(L"\\etools\\icons\\") != std::wstring::npos ||
+      lower.find(L"\\build\\icons\\") != std::wstring::npos) {
+    return true;
+  }
+  return false;
+}
+
 bool IsPathBoundary(wchar_t ch) {
   return ch == L'\\' || ch == L'/' || ch == L' ' || ch == L'-' || ch == L'_' || ch == L'.';
 }
@@ -188,16 +209,6 @@ bool ReadWholeFile(const std::wstring& path, std::string* data) {
   return ok != 0 && static_cast<size_t>(read) == data->size();
 }
 
-bool WriteWholeFile(const std::wstring& path, const std::string& data) {
-  HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                            FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (file == INVALID_HANDLE_VALUE) return false;
-  DWORD written = 0;
-  const BOOL ok = WriteFile(file, data.data(), static_cast<DWORD>(data.size()), &written, nullptr);
-  CloseHandle(file);
-  return ok != 0 && static_cast<size_t>(written) == data.size();
-}
-
 template <typename T>
 bool ReadPod(const std::string& data, size_t* offset, T* value) {
   if (*offset + sizeof(T) > data.size()) return false;
@@ -213,16 +224,6 @@ bool ReadWide(const std::string& data, size_t* offset, std::wstring* value) {
   value->assign(reinterpret_cast<const wchar_t*>(data.data() + *offset), length);
   *offset += static_cast<size_t>(length) * sizeof(wchar_t);
   return true;
-}
-
-template <typename T>
-void AppendPod(std::string* data, T value) {
-  data->append(reinterpret_cast<const char*>(&value), sizeof(T));
-}
-
-void AppendWide(std::string* data, const std::wstring& value) {
-  AppendPod(data, static_cast<uint32_t>(value.size()));
-  data->append(reinterpret_cast<const char*>(value.data()), value.size() * sizeof(wchar_t));
 }
 
 uint32_t AppendChars(std::vector<wchar_t>* arena, std::wstring_view text) {
@@ -318,6 +319,7 @@ void FileIndex::EnumerateRoot(const std::wstring& root, size_t quota, RootData* 
 
   std::vector<uint32_t> pending{rootIndex};
   while (!pending.empty()) {
+    if (stop_.load()) return;
     if (data->entries.size() >= quota) {
       *truncated = 1;
       return;
@@ -334,6 +336,10 @@ void FileIndex::EnumerateRoot(const std::wstring& root, size_t quota, RootData* 
                                    FindExSearchNameMatch, nullptr, FIND_FIRST_EX_LARGE_FETCH);
     if (find == INVALID_HANDLE_VALUE) continue;
     do {
+      if (stop_.load()) {
+        FindClose(find);
+        return;
+      }
       if (wcscmp(findData.cFileName, L".") == 0 || wcscmp(findData.cFileName, L"..") == 0) {
         continue;
       }
@@ -391,15 +397,11 @@ bool FileIndex::Start() {
     return false;
   }
 
-  for (const std::wstring& path : SnapshotPaths()) {
-    if (DeleteFileW(path.c_str())) {
-      Log(L"文件索引: 已删除旧快照 %ls", path.c_str());
-    }
-  }
-  {
-    std::lock_guard<std::mutex> lock(entriesMutex_);
-    storage_ = Storage{};
-    version_.fetch_add(1);
+  const ULONGLONG loadStart = GetTickCount64();
+  const bool loadedSnapshot = LoadSnapshot();
+  saveSnapshotAfterRebuild_.store(!loadedSnapshot);
+  if (loadedSnapshot) {
+    Log(L"文件索引: 快照加载完成 (%llu ms)", GetTickCount64() - loadStart);
   }
 
   stop_.store(false);
@@ -411,12 +413,31 @@ bool FileIndex::Start() {
   for (const std::wstring& root : roots_) {
     watchers_.emplace_back([this, root]() { WatchLoop(root); });
   }
-  Log(L"文件索引: 根目录 %zu 个, 监听已启动（启动重建中）", roots_.size());
+  Log(L"文件索引: 根目录 %zu 个, 监听已启动（后台重建中）", roots_.size());
   return true;
+}
+
+void FileIndex::ClearAndRebuild() {
+  for (const std::wstring& path : SnapshotPaths()) {
+    if (DeleteFileW(path.c_str())) {
+      Log(L"文件索引: 已删除快照 %ls", path.c_str());
+    }
+  }
+  {
+    std::lock_guard<std::mutex> lock(entriesMutex_);
+    storage_ = Storage{};
+    version_.fetch_add(1);
+  }
+  rebuildRequested_.store(true);
+  lastRebuildMs_.store(0);
+  saveSnapshotAfterRebuild_.store(true);
+  workerCv_.notify_all();
+  Log(L"文件索引: 手动清除，开始重建");
 }
 
 void FileIndex::Stop() {
   if (stop_.exchange(true)) return;
+  Log(L"文件索引: 停止中");
   {
     std::lock_guard<std::mutex> lock(watchMutex_);
     for (HANDLE handle : watchHandles_) {
@@ -424,7 +445,9 @@ void FileIndex::Stop() {
     }
   }
   workerCv_.notify_all();
+  Log(L"文件索引: 等待 worker");
   if (worker_.joinable()) worker_.join();
+  Log(L"文件索引: 等待 watcher");
   for (std::thread& thread : watchers_) {
     if (thread.joinable()) thread.join();
   }
@@ -433,11 +456,11 @@ void FileIndex::Stop() {
     std::lock_guard<std::mutex> lock(watchMutex_);
     watchHandles_.clear();
   }
+  Log(L"文件索引: 已停止");
 }
 
 void FileIndex::RebuildAndSwap() {
-  const size_t rootCount = roots_.size();
-  const size_t perRootQuota =
+  const size_t rootCount = roots_.size();  const size_t perRootQuota =
       rootCount ? std::max<size_t>(1, maxEntries_ / rootCount) : 0;
   Log(L"文件索引: 根目录 %zu 个, 每根上限 %zu 条", rootCount, perRootQuota);
 
@@ -450,6 +473,10 @@ void FileIndex::RebuildAndSwap() {
     });
   }
   for (std::thread& thread : threads) thread.join();
+  if (stop_.load()) {
+    Log(L"文件索引: 重建已取消");
+    return;
+  }
   for (size_t i = 0; i < roots_.size(); ++i) {
     if (truncated[i]) {
       Log(L"文件索引: %ls 达到上限 %zu 条，已截断", roots_[i].c_str(), perRootQuota);
@@ -492,7 +519,7 @@ void FileIndex::RebuildAndSwap() {
   // 释放并行枚举留下的 RootData 容量，再统计常驻内存。
   partial.clear();
   partial.shrink_to_fit();
-  if (persistSnapshot_) SaveSnapshot();
+  if (persistSnapshot_ && saveSnapshotAfterRebuild_.exchange(false)) SaveSnapshot();
 
   PROCESS_MEMORY_COUNTERS memory{};
   if (K32GetProcessMemoryInfo(GetCurrentProcess(), &memory, sizeof(memory))) {
@@ -535,8 +562,19 @@ void FileIndex::WorkerLoop() {
       shouldBuild = true;
     }
     if (shouldBuild) {
+      const uint64_t last = lastRebuildMs_.load();
+      const uint64_t now = GetTickCount64();
+      // 大根目录（尤其 C:）系统噪声会不断触发目录重建，做 60s 冷却避免 CPU/磁盘抖动。
+      if (last != 0 && now - last < 60000) {
+        rebuildRequested_.store(true);
+        std::unique_lock<std::mutex> lock(workerMutex_);
+        workerCv_.wait_for(lock, std::chrono::milliseconds(60000 - (now - last)),
+                           [this]() { return stop_.load(); });
+        continue;
+      }
       const ULONGLONG start = GetTickCount64();
       RebuildAndSwap();
+      lastRebuildMs_.store(GetTickCount64());
       Log(L"文件索引重建耗时: %llu ms", GetTickCount64() - start);
     }
     std::unique_lock<std::mutex> lock(workerMutex_);
@@ -589,6 +627,11 @@ void FileIndex::HandleNotifications(const std::wstring& root, const char* buffer
     const auto* info = reinterpret_cast<const FILE_NOTIFY_INFORMATION*>(buffer + offset);
     const std::wstring relative(info->FileName, info->FileNameLength / sizeof(wchar_t));
     const std::wstring full = root + L"\\" + relative;
+    if (ShouldIgnoreWatchPath(full)) {
+      if (info->NextEntryOffset == 0) break;
+      offset += info->NextEntryOffset;
+      continue;
+    }
 
     switch (info->Action) {
       case FILE_ACTION_ADDED: {
@@ -769,26 +812,67 @@ bool FileIndex::LoadSnapshot() {
 
 bool FileIndex::SaveSnapshot() const {
   std::lock_guard<std::mutex> lock(entriesMutex_);
-  std::string out;
-  out.append(kMagic, sizeof(kMagic));
-  AppendPod(&out, kSnapshotVersion);
-  AppendPod(&out, static_cast<uint32_t>(roots_.size()));
-  for (const std::wstring& root : roots_) AppendWide(&out, root);
-
-  uint32_t count = static_cast<uint32_t>(storage_.entries.size());
-  AppendPod(&out, count);
-  for (const Entry& entry : storage_.entries) {
-    const std::wstring path =
-        storage_.directories[entry.directory].path + L"\\" + std::wstring(NameOf(entry));
-    AppendWide(&out, path);
-    const uint8_t isDirectory = entry.isDirectory ? 1 : 0;
-    AppendPod(&out, isDirectory);
-  }
   for (const std::wstring& path : SnapshotPaths()) {
-    if (WriteWholeFile(path, out)) {
-      Log(L"文件索引快照已写入: %ls (%zu 条)", path.c_str(), storage_.entries.size());
-      return true;
+    const std::wstring temp = path + L".tmp";
+    HANDLE file = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) continue;
+
+    std::string buffer;
+    buffer.reserve(1 << 20);
+    size_t writtenTotal = 0;
+    bool ok = true;
+    auto flush = [&]() {
+      if (buffer.empty()) return true;
+      const DWORD size = static_cast<DWORD>(buffer.size());
+      DWORD written = 0;
+      const BOOL result = WriteFile(file, buffer.data(), size, &written, nullptr);
+      buffer.clear();
+      writtenTotal += written;
+      return result != 0 && written == size;
+    };
+    auto pod = [&](auto value) {
+      buffer.append(reinterpret_cast<const char*>(&value), sizeof(value));
+      if (buffer.size() >= (1 << 20)) ok = ok && flush();
+    };
+    auto wide = [&](const std::wstring& value) {
+      pod(static_cast<uint32_t>(value.size()));
+      buffer.append(reinterpret_cast<const char*>(value.data()),
+                    value.size() * sizeof(wchar_t));
+      if (buffer.size() >= (1 << 20)) ok = ok && flush();
+    };
+
+    buffer.append(kMagic, sizeof(kMagic));
+    pod(kSnapshotVersion);
+    pod(static_cast<uint32_t>(roots_.size()));
+    for (const std::wstring& root : roots_) wide(root);
+    pod(static_cast<uint32_t>(storage_.entries.size()));
+    size_t index = 0;
+    for (const Entry& entry : storage_.entries) {
+      if ((++index & 4095) == 0 && stop_.load()) {
+        ok = false;
+        break;
+      }
+      const std::wstring fullPath =
+          storage_.directories[entry.directory].path + L"\\" + std::wstring(NameOf(entry));
+      wide(fullPath);
+      pod(static_cast<uint8_t>(entry.isDirectory ? 1 : 0));
     }
+    ok = ok && flush();
+    CloseHandle(file);
+    if (!ok) {
+      DeleteFileW(temp.c_str());
+      Log(L"文件索引快照写入中断: %ls", temp.c_str());
+      return false;
+    }
+    if (!MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+      DeleteFileW(temp.c_str());
+      Log(L"文件索引快照替换失败: %lu", GetLastError());
+      continue;
+    }
+    Log(L"文件索引快照已写入: %ls (%zu 条, %.1f MB)", path.c_str(), storage_.entries.size(),
+        static_cast<double>(writtenTotal) / (1024.0 * 1024.0));
+    return true;
   }
   Log(L"文件索引快照写入失败: %lu", GetLastError());
   return false;

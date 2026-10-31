@@ -13,7 +13,8 @@ class SettingsWindow {
   using SaveCallback = std::function<void(const AppSettings&)>;
   ~SettingsWindow();
 
-  bool Show(HINSTANCE instance, HWND owner, const AppSettings& current, SaveCallback onSave);
+  bool Show(HINSTANCE instance, HWND owner, const AppSettings& current, SaveCallback onSave,
+            std::function<void()> onClearIndex = {});
   bool visible() const { return hwnd_ != nullptr; }
   HWND hwnd() const { return hwnd_; }
 
@@ -47,4 +48,5 @@ class SettingsWindow {
   AppSettings settings_;
   std::vector<std::wstring> roots_;
   SaveCallback onSave_;
+  std::function<void()> onClearIndex_;
 };

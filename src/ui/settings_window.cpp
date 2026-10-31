@@ -36,6 +36,7 @@ enum ControlId {
   kIdStatus = 109,
   kIdHotkeyCaptured = 110,
   kIdCap = 111,
+  kIdClearIndex = 112,
 };
 
 constexpr UINT kCaptureComboMessage = WM_APP + 20;
@@ -239,10 +240,11 @@ SettingsWindow::~SettingsWindow() {
 int SettingsWindow::Scale(int value) const { return MulDiv(value, dpi_, 96); }
 
 bool SettingsWindow::Show(HINSTANCE instance, HWND owner, const AppSettings& current,
-                          SaveCallback onSave) {
+                          SaveCallback onSave, std::function<void()> onClearIndex) {
   settings_ = current;
   roots_ = current.fileRoots;
   onSave_ = std::move(onSave);
+  onClearIndex_ = std::move(onClearIndex);
 
   if (hwnd_) {
     ShowWindow(hwnd_, SW_SHOW);
@@ -378,6 +380,7 @@ void SettingsWindow::CreateControls() {
                             nullptr);
   applyFont(status_);
 
+  button(L"清除索引并重建", kIdClearIndex, 120, 462, 160, 32);
   button(L"保存", kIdSave, 300, 462, 100, 32);
   button(L"取消", kIdCancel, 410, 462, 96, 32);
 
@@ -576,6 +579,11 @@ LRESULT SettingsWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         SetWindowTextW(accentButton_,
                        accentIndex_ == 1 ? L"跟随系统强调色" : L"设计蓝 #6EA8FF");
         InvalidateRect(accentButton_, nullptr, TRUE);
+        return 0;
+      }
+      if (id == kIdClearIndex) {
+        if (onClearIndex_) onClearIndex_();
+        SetWindowTextW(status_, L"已清除文件索引，正在后台重建…");
         return 0;
       }
       if (id == kIdSave) {

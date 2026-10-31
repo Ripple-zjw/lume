@@ -30,9 +30,12 @@ class FileIndex {
   FileIndex(const FileIndex&) = delete;
   FileIndex& operator=(const FileIndex&) = delete;
 
-  // 删除旧快照、启动后台全量重建 + watcher。返回 false 表示没有可用根目录。
+  // 删除旧快照、读快照（若根目录匹配）并启动后台重建 + watcher。
   bool Start();
   void Stop();
+
+  // 手动清除内存索引与快照，并立即触发后台重建（设置窗按钮）。
+  void ClearAndRebuild();
 
   // 测试/CLI 指定根目录（需在 Start 前调用；空表示使用默认桌面/文档/下载）。
   void SetRoots(std::vector<std::wstring> roots);
@@ -119,4 +122,6 @@ class FileIndex {
   std::atomic<bool> stop_{false};
   std::atomic<bool> rebuildRequested_{false};
   std::atomic<uint64_t> version_{0};
+  std::atomic<uint64_t> lastRebuildMs_{0};
+  std::atomic<bool> saveSnapshotAfterRebuild_{true};
 };

@@ -94,7 +94,6 @@ bool LauncherWindow::Create(HINSTANCE instance, Renderer* renderer, Scene* scene
   input_.SetText(L"");
   usage_.Load();
   files_.SetMaxEntries(static_cast<size_t>(std::clamp(settings_.fileCap, 20000, 1000000)));
-  files_.SetPersistSnapshot(false);  // 常驻模式启动即重建，不再每轮写几十 MB 快照
   if (!fileRoot.empty()) {
     files_.SetRoots({fileRoot});
   } else if (!settings_.fileRoots.empty()) {
@@ -276,11 +275,22 @@ void LauncherWindow::UpdateLayoutForRows() {
 
 void LauncherWindow::OpenSettings() {
   if (!settingsWindow_) settingsWindow_ = std::make_unique<SettingsWindow>();
-  settingsWindow_->Show(instance_, hwnd_, settings_, [this](const AppSettings& updated) {
-    ApplySettings(updated);
-    if (onHotkeyRequest_) onHotkeyRequest_(updated);
-    if (onSettingsChanged_) onSettingsChanged_(updated);
-  });
+  settingsWindow_->Show(
+      instance_, hwnd_, settings_,
+      [this](const AppSettings& updated) {
+        ApplySettings(updated);
+        if (onHotkeyRequest_) onHotkeyRequest_(updated);
+        if (onSettingsChanged_) onSettingsChanged_(updated);
+      },
+      [this]() { ClearFileIndex(); });
+}
+
+void LauncherWindow::ClearFileIndex() {
+  Log(L"用户手动清除文件索引");
+  files_.ClearAndRebuild();
+  RebuildRows();
+  StartContentFade();
+  if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 void LauncherWindow::TestHotkeyCapture(const std::wstring& combo) {
