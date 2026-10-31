@@ -60,6 +60,47 @@ bool ShouldSkipDirectory(const std::wstring& name) {
   return false;
 }
 
+bool IsPathBoundary(wchar_t ch) {
+  return ch == L'\\' || ch == L'/' || ch == L' ' || ch == L'-' || ch == L'_' || ch == L'.';
+}
+
+uint64_t NameMask(std::wstring_view name) {
+  uint64_t mask = 0;
+  for (wchar_t ch : name) {
+    if (ch >= L'a' && ch <= L'z') {
+      mask |= 1ull << (ch - L'a');
+    } else if (ch >= L'0' && ch <= L'9') {
+      mask |= 1ull << (26 + (ch - L'0'));
+    }
+  }
+  return mask;
+}
+
+// 查询含非 ASCII 字母/数字时返回 0，表示不做位图预筛。
+uint64_t QueryMask(const std::wstring& needle) {
+  for (wchar_t ch : needle) {
+    const bool alnum = (ch >= L'a' && ch <= L'z') || (ch >= L'0' && ch <= L'9');
+    if (!alnum) return 0;
+  }
+  return NameMask(needle);
+}
+
+// 路径命中只做“目录/文件名边界处的子串”匹配，且大幅降权：
+// 典型分数 ~150–200，低于文件名子序列（300+），不会盖过文件名结果。
+size_t ScorePathOnly(const std::wstring& lowerPath, const std::wstring& needle) {
+  if (needle.size() < 3) return 0;
+  const size_t position = lowerPath.find(needle);
+  if (position == std::wstring::npos) return 0;
+  if (position > 0 && !IsPathBoundary(lowerPath[position - 1])) return 0;
+  size_t score = 1000;
+  if (position == 0) {
+    score += 200;
+  } else {
+    score -= std::min<size_t>(position * 2, 200);
+  }
+  return std::max<size_t>(1, score) / 6;
+}
+
 std::wstring KnownFolder(int csidl) {
   wchar_t path[MAX_PATH] = {};
   if (SUCCEEDED(SHGetFolderPathW(nullptr, csidl, nullptr, SHGFP_TYPE_CURRENT, path))) {
@@ -107,10 +148,15 @@ std::vector<std::wstring> DefaultRoots() {
   return roots;
 }
 
-void EnumerateRoot(const std::wstring& root, std::atomic<bool>* stop,
-                   std::atomic<size_t>* total, std::vector<FileEntry>* out) {
+void EnumerateRoot(const std::wstring& root, size_t quota, std::vector<FileEntry>* out,
+                   char* truncated) {
+  if (quota == 0) return;
   std::vector<std::wstring> pending{root};
-  while (!pending.empty() && !stop->load()) {
+  while (!pending.empty()) {
+    if (out->size() >= quota) {
+      *truncated = 1;
+      return;
+    }
     std::wstring directory = std::move(pending.back());
     pending.pop_back();
 
@@ -124,22 +170,21 @@ void EnumerateRoot(const std::wstring& root, std::atomic<bool>* stop,
       if (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
       const bool isDirectory = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
       if (isDirectory && ShouldSkipDirectory(data.cFileName)) continue;
-
-      const size_t before = total->load();
-      if (before >= kMaxEntries) {
-        stop->store(true);
+      if (out->size() >= quota) {
+        *truncated = 1;
         break;
       }
+
       std::wstring path = directory + L"\\" + data.cFileName;
       std::wstring lower = ToLower(path);
       const size_t slash = lower.find_last_of(L'\\');
       FileEntry entry;
       entry.nameOffset = static_cast<uint32_t>(slash == std::wstring::npos ? 0 : slash + 1);
+      entry.charMask = NameMask(std::wstring_view(lower).substr(entry.nameOffset));
       entry.lowerPath = std::move(lower);
       entry.path = std::move(path);
       entry.isDirectory = isDirectory;
       out->push_back(std::move(entry));
-      total->fetch_add(1);
       if (isDirectory) pending.push_back(out->back().path);
     } while (FindNextFileW(find, &data));
     FindClose(find);
@@ -323,6 +368,7 @@ bool FileIndex::LoadSnapshot(std::vector<FileEntry>* entries) const {
       entry.lowerPath = ToLower(entryPath);
       const size_t slash = entry.lowerPath.find_last_of(L'\\');
       entry.nameOffset = static_cast<uint32_t>(slash == std::wstring::npos ? 0 : slash + 1);
+      entry.charMask = NameMask(std::wstring_view(entry.lowerPath).substr(entry.nameOffset));
       entry.path = std::move(entryPath);
       entry.isDirectory = isDirectory != 0;
       entries->push_back(std::move(entry));
@@ -357,15 +403,24 @@ void FileIndex::SaveSnapshot(const std::vector<FileEntry>& entries) {
 void FileIndex::RebuildAndSwap() {
   std::vector<FileEntry> fresh;
   fresh.reserve(20000);
-  std::atomic<size_t> total{0};
-  std::atomic<bool> stop{false};
+  const size_t rootCount = roots_.size();
+  const size_t perRootQuota = rootCount ? std::max<size_t>(1, kMaxEntries / rootCount) : 0;
+  Log(L"文件索引: 根目录 %zu 个, 每根上限 %zu 条", rootCount, perRootQuota);
 
   std::vector<std::thread> threads;
   std::vector<std::vector<FileEntry>> partial(roots_.size());
+  std::vector<char> truncated(roots_.size(), 0);
   for (size_t i = 0; i < roots_.size(); ++i) {
-    threads.emplace_back([&, i]() { EnumerateRoot(roots_[i], &stop, &total, &partial[i]); });
+    threads.emplace_back([&, i]() {
+      EnumerateRoot(roots_[i], perRootQuota, &partial[i], &truncated[i]);
+    });
   }
   for (std::thread& thread : threads) thread.join();
+  for (size_t i = 0; i < roots_.size(); ++i) {
+    if (truncated[i]) {
+      Log(L"文件索引: %ls 达到上限 %zu 条，已截断", roots_[i].c_str(), perRootQuota);
+    }
+  }
   for (auto& part : partial) {
     fresh.insert(fresh.end(), std::make_move_iterator(part.begin()),
                  std::make_move_iterator(part.end()));
@@ -491,6 +546,7 @@ void FileIndex::AddEntryLocked(const std::wstring& path, bool isDirectory) {
   entry.lowerPath = ToLower(path);
   const size_t slash = entry.lowerPath.find_last_of(L'\\');
   entry.nameOffset = static_cast<uint32_t>(slash == std::wstring::npos ? 0 : slash + 1);
+  entry.charMask = NameMask(std::wstring_view(entry.lowerPath).substr(entry.nameOffset));
   entry.path = path;
   entry.isDirectory = isDirectory;
   entries_.push_back(std::move(entry));
@@ -542,27 +598,63 @@ std::vector<FileHit> FileIndex::Search(const std::wstring& query, size_t limit) 
     size_t score;
     size_t index;
   };
+  auto better = [this](const Scored& a, const Scored& b) {
+    if (a.score != b.score) return a.score > b.score;
+    const FileEntry& ea = entries_[a.index];
+    const FileEntry& eb = entries_[b.index];
+    const size_t nameA = ea.lowerPath.size() - ea.nameOffset;
+    const size_t nameB = eb.lowerPath.size() - eb.nameOffset;
+    if (nameA != nameB) return nameA < nameB;
+    if (ea.isDirectory != eb.isDirectory) return !ea.isDirectory;  // 同分时文件优先
+    if (ea.lowerPath.size() != eb.lowerPath.size()) return ea.lowerPath.size() < eb.lowerPath.size();
+    return ea.lowerPath < eb.lowerPath;
+  };
+
   std::vector<Scored> scored;
   scored.reserve(1024);
+  const uint64_t required = QueryMask(needle);
   for (size_t i = 0; i < entries_.size(); ++i) {
     const FileEntry& entry = entries_[i];
     const std::wstring_view name(entry.lowerPath.data() + entry.nameOffset,
                                  entry.lowerPath.size() - entry.nameOffset);
-    size_t score = ScoreLowerText(name, needle);
+    size_t score = 0;
+    if (required == 0 || (entry.charMask & required) == required) {
+      if (needle.size() < 3) {
+        // 1–2 字符只做子串匹配，避免过松的子序列命中。
+        if (name.find(needle) != std::wstring_view::npos) {
+          score = ScoreLowerText(name, needle);
+        }
+      } else {
+        score = ScoreLowerText(name, needle);
+      }
+    }
     if (score > 0) {
       score += 40;  // 文件名命中优先
-    } else if (needle.size() >= 2) {
-      score = ScoreLowerText(entry.lowerPath, needle) / 3;
+      scored.push_back({score, i});
     }
-    if (score > 0) scored.push_back({score, i});
+  }
+
+  // 文件名已够填满首屏时不再做昂贵的全路径扫描：路径命中只用于“文件名几乎没结果”的兜底。
+  constexpr size_t kNameHitsBeforePath = 6;
+  if (scored.size() < kNameHitsBeforePath) {
+    std::vector<uint8_t> nameMatched(entries_.size(), 0);
+    for (const Scored& item : scored) nameMatched[item.index] = 1;
+    constexpr size_t kMaxPathHits = 2000;
+    size_t pathHits = 0;
+    for (size_t i = 0; i < entries_.size() && pathHits < kMaxPathHits; ++i) {
+      if (nameMatched[i]) continue;
+      const size_t score = ScorePathOnly(entries_[i].lowerPath, needle);
+      if (score > 0) {
+        scored.push_back({score, i});
+        ++pathHits;
+      }
+    }
   }
   if (scored.size() > limit) {
-    std::partial_sort(scored.begin(), scored.begin() + limit, scored.end(),
-                      [](const Scored& a, const Scored& b) { return a.score > b.score; });
+    std::partial_sort(scored.begin(), scored.begin() + limit, scored.end(), better);
     scored.resize(limit);
   } else {
-    std::sort(scored.begin(), scored.end(),
-              [](const Scored& a, const Scored& b) { return a.score > b.score; });
+    std::sort(scored.begin(), scored.end(), better);
   }
   results.reserve(scored.size());
   for (const Scored& item : scored) results.push_back({entries_[item.index], item.score});

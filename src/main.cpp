@@ -29,6 +29,7 @@ struct CliOptions {
   bool selfCheck = false;
   std::wstring openPath;
   std::wstring setAutostart;
+  std::wstring searchFiles;
 };
 
 void PrintUsage() {
@@ -57,6 +58,7 @@ void PrintUsage() {
       "  --list-apps                      Print the collected app index and exit\n"
       "  --list-files                     Rebuild the file index, print stats and sample paths\n"
       "  --file-stats                     Rebuild the file index and print stats only\n"
+      "  --search-files=<query>           Search the file index and print top results with scores\n"
       "  --open=<path>                    Verify opening a file/path directly\n"
       "  --set-autostart=1|0              Enable/disable autostart and print state\n"
       "  --hotkey=<combo>                 Override hotkey for this run (e.g. Ctrl+Alt+K)\n"
@@ -110,6 +112,8 @@ CliOptions Parse(int argc, wchar_t** argv) {
     } else if (StartsWith(arg, L"--test-capture=")) {
       cli.app.testCapture = ValueAfter(arg, L"--test-capture=");
       cli.app.openSettings = true;
+    } else if (StartsWith(arg, L"--search-files=")) {
+      cli.searchFiles = ValueAfter(arg, L"--search-files=");
     } else if (arg == L"--self-check") {
       cli.selfCheck = true;
     } else if (StartsWith(arg, L"--scale=")) {
@@ -264,6 +268,37 @@ int wmain(int argc, wchar_t** argv) {
       }
     }
     fflush(stdout);
+    CoUninitialize();
+    return 0;
+  }
+  if (!cli.searchFiles.empty()) {
+    LogInit(cli.app.logPath);
+    FileIndex index;
+    AppSettings settings;
+    SettingsStore::Load(&settings);
+    std::vector<std::wstring> roots = settings.fileRoots;
+    if (!cli.app.fileRoot.empty()) roots = {cli.app.fileRoot};
+    if (!roots.empty()) index.SetRoots(roots);
+    const bool loaded = index.LoadCachedSnapshot();
+    printf("roots=%zu files=%zu snapshot=%d\n", index.roots().size(), index.size(),
+           loaded ? 1 : 0);
+    LARGE_INTEGER frequency{};
+    LARGE_INTEGER started{};
+    LARGE_INTEGER finished{};
+    QueryPerformanceFrequency(&frequency);
+    QueryPerformanceCounter(&started);
+    const std::vector<FileHit> hits = index.Search(cli.searchFiles, 20);
+    QueryPerformanceCounter(&finished);
+    const double elapsedMs = static_cast<double>(finished.QuadPart - started.QuadPart) * 1000.0 /
+                             static_cast<double>(frequency.QuadPart);
+    printf("search_ms=%.2f hits=%zu\n", elapsedMs, hits.size());
+    for (const FileHit& hit : hits) {
+      const std::string line =
+          std::to_string(hit.score) + "  " + WideToUtf8(hit.entry.path) + "\n";
+      fputs(line.c_str(), stdout);
+    }
+    fflush(stdout);
+    LogShutdown();
     CoUninitialize();
     return 0;
   }

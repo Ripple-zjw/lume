@@ -15,6 +15,8 @@ struct FileEntry {
   std::wstring lowerPath;  // 小写路径，供匹配
   uint32_t nameOffset = 0; // 文件名在 lowerPath 中的起点
   bool isDirectory = false;
+  // 文件名中出现过的 ASCII 字母/数字（a-z 0-25，0-9 26-35），用于查询预筛。
+  uint64_t charMask = 0;
 };
 
 struct FileHit {
