@@ -312,12 +312,20 @@ int wmain(int argc, wchar_t** argv) {
     const size_t count = index.RebuildSynchronously();
     printf("roots=%zu files=%zu cap=%zu rebuild=%llu ms\n", index.roots().size(), count, cap,
            static_cast<unsigned long long>(GetTickCount64() - start));
+    LARGE_INTEGER frequency{};
+    LARGE_INTEGER searchStart{};
+    LARGE_INTEGER searchEnd{};
+    QueryPerformanceFrequency(&frequency);
+    QueryPerformanceCounter(&searchStart);
     const std::vector<FileHit> hits = index.Search(cli.searchLive, 2000);
-    printf("hits=%zu\n", hits.size());
+    QueryPerformanceCounter(&searchEnd);
+    const double searchMs = static_cast<double>(searchEnd.QuadPart - searchStart.QuadPart) *
+                            1000.0 / static_cast<double>(frequency.QuadPart);
+    printf("search_ms=%.2f hits=%zu\n", searchMs, hits.size());
     size_t exactly = 0;
     const std::wstring needle = cli.searchLive;
     for (const FileHit& hit : hits) {
-      const std::wstring& path = hit.entry.path;
+      const std::wstring& path = hit.path;
       const size_t slash = path.find_last_of(L"\\/");
       const std::wstring name = slash == std::wstring::npos ? path : path.substr(slash + 1);
       if (_wcsicmp(name.c_str(), needle.c_str()) == 0) ++exactly;
@@ -327,7 +335,7 @@ int wmain(int argc, wchar_t** argv) {
       const FileHit& hit = hits[i];
       wchar_t line[1024];
       swprintf(line, ARRAYSIZE(line), L"%zu%s%s %ls\n", hit.score, hit.pathOnly ? L" [path]" : L"",
-               hit.entry.isDirectory ? L" [dir]" : L"", hit.entry.path.c_str());
+               hit.isDirectory ? L" [dir]" : L"", hit.path.c_str());
       fputs(WideToUtf8(line).c_str(), stdout);
     }
     fflush(stdout);
@@ -385,7 +393,7 @@ int wmain(int argc, wchar_t** argv) {
     printf("search_ms=%.2f hits=%zu\n", elapsedMs, hits.size());
     for (const FileHit& hit : hits) {
       const std::string line =
-          std::to_string(hit.score) + "  " + WideToUtf8(hit.entry.path) + "\n";
+          std::to_string(hit.score) + "  " + WideToUtf8(hit.path) + "\n";
       fputs(line.c_str(), stdout);
     }
     fflush(stdout);
@@ -430,3 +438,4 @@ int wmain(int argc, wchar_t** argv) {
   CoUninitialize();
   return exitCode;
 }
+

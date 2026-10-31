@@ -16,7 +16,7 @@ namespace {
 constexpr wchar_t kClassName[] = L"eToolsSettingsWindow";
 constexpr wchar_t kCaptureClass[] = L"eToolsHotkeyCapture";
 constexpr int kWindowWidth = 540;
-constexpr int kWindowHeight = 500;
+constexpr int kWindowHeight = 545;
 
 constexpr COLORREF kBackground = RGB(0x20, 0x20, 0x24);
 constexpr COLORREF kControl = RGB(0x2A, 0x2A, 0x30);
@@ -35,6 +35,7 @@ enum ControlId {
   kIdCancel = 108,
   kIdStatus = 109,
   kIdHotkeyCaptured = 110,
+  kIdCap = 111,
 };
 
 constexpr UINT kCaptureComboMessage = WM_APP + 20;
@@ -349,26 +350,36 @@ void SettingsWindow::CreateControls() {
                                     nullptr, nullptr);
   applyFont(autostartCheck_);
 
-  label(L"文件索引目录（留空 = 桌面 / 文档 / 下载）", 20, 174, 460);
+  label(L"索引上限", 20, 172, 80);
+  capEdit_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                             WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_NUMBER | ES_AUTOHSCROLL,
+                             Scale(110), Scale(168), Scale(140), Scale(26), hwnd_,
+                             reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdCap)), nullptr,
+                             nullptr);
+  applyFont(capEdit_);
+  SendMessageW(capEdit_, EM_SETLIMITTEXT, 7, 0);
+  label(L"条（20,000–1,000,000）", 258, 174, 260);
+
+  label(L"文件索引目录（留空 = 桌面 / 文档 / 下载）", 20, 208, 460);
   rootsList_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", nullptr,
                                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL |
                                    LBS_NOINTEGRALHEIGHT | LBS_NOTIFY,
-                               Scale(20), Scale(198), Scale(370), Scale(160), hwnd_,
+                               Scale(20), Scale(232), Scale(370), Scale(150), hwnd_,
                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdRoots)), nullptr,
                                nullptr);
   applyFont(rootsList_);
   SetWindowTheme(rootsList_, L"DarkMode_Explorer", nullptr);
-  button(L"添加…", kIdAdd, 406, 198, 100, 30);
-  button(L"移除", kIdRemove, 406, 234, 100, 30);
+  button(L"添加…", kIdAdd, 406, 232, 100, 30);
+  button(L"移除", kIdRemove, 406, 268, 100, 30);
 
   status_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT, Scale(20),
-                            Scale(370), Scale(486), Scale(44), hwnd_,
+                            Scale(394), Scale(486), Scale(44), hwnd_,
                             reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdStatus)), nullptr,
                             nullptr);
   applyFont(status_);
 
-  button(L"保存", kIdSave, 300, 430, 100, 32);
-  button(L"取消", kIdCancel, 410, 430, 96, 32);
+  button(L"保存", kIdSave, 300, 462, 100, 32);
+  button(L"取消", kIdCancel, 410, 462, 96, 32);
 
   const BOOL dark = TRUE;
   DwmSetWindowAttribute(hwnd_, 20 /*DWMWA_USE_IMMERSIVE_DARK_MODE*/, &dark, sizeof(dark));
@@ -383,6 +394,7 @@ void SettingsWindow::Populate() {
 
   SetWindowTextW(hotkeyCapture_, settings_.hotkey.c_str());
   hotkeyConflict_ = false;
+  SetWindowTextW(capEdit_, std::to_wstring(settings_.fileCap).c_str());
   SendMessageW(autostartCheck_, BM_SETCHECK, settings_.autostart ? BST_CHECKED : BST_UNCHECKED, 0);
 
   SendMessageW(rootsList_, LB_RESETCONTENT, 0, 0);
@@ -430,6 +442,14 @@ void SettingsWindow::OnSave() {
     SetWindowTextW(status_, L"当前热键不可用，请重新捕获或换一个组合");
     return;
   }
+  wchar_t capText[32] = {};
+  GetWindowTextW(capEdit_, capText, ARRAYSIZE(capText));
+  const long cap = wcstol(capText, nullptr, 10);
+  if (cap < 20000 || cap > 1000000) {
+    SetWindowTextW(status_, L"索引上限需在 20,000–1,000,000 之间");
+    return;
+  }
+  settings_.fileCap = static_cast<int>(cap);
   settings_.autostart = SendMessageW(autostartCheck_, BM_GETCHECK, 0, 0) == BST_CHECKED;
 
   std::vector<std::wstring> roots;
@@ -527,6 +547,12 @@ LRESULT SettingsWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
       SetBkColor(dc, kBackground);
       return reinterpret_cast<LRESULT>(backgroundBrush_);
     }
+    case WM_CTLCOLOREDIT: {
+      HDC dc = reinterpret_cast<HDC>(wParam);
+      SetTextColor(dc, kText);
+      SetBkColor(dc, kControl);
+      return reinterpret_cast<LRESULT>(controlBrush_);
+    }
     case WM_CTLCOLORLISTBOX: {
       HDC dc = reinterpret_cast<HDC>(wParam);
       SetTextColor(dc, kText);
@@ -606,6 +632,7 @@ LRESULT SettingsWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_DESTROY:
       status_ = nullptr;
       themeButton_ = accentButton_ = hotkeyCapture_ = autostartCheck_ = rootsList_ = nullptr;
+      capEdit_ = nullptr;
       break;
     case WM_NCDESTROY:
       hwnd_ = nullptr;

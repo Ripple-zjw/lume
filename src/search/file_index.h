@@ -8,26 +8,20 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
-struct FileEntry {
-  std::wstring path;       // 完整路径
-  std::wstring lowerPath;  // 小写路径，供匹配
-  uint32_t nameOffset = 0; // 文件名在 lowerPath 中的起点
-  bool isDirectory = false;
-  // 文件名中出现过的 ASCII 字母/数字（a-z 0-25，0-9 26-35），用于查询预筛。
-  uint64_t charMask = 0;
-};
-
 struct FileHit {
-  FileEntry entry;
+  std::wstring path;
+  bool isDirectory = false;
   size_t score = 0;
   bool pathOnly = false;  // true = 仅路径命中（文件名没命中）
-  // 0 = 模糊/仅路径，1 = 子串，2 = 前缀，3 = 精确（忽略扩展名）
+  // 0 = 模糊/仅路径，1 = 子串，2 = 前缀，3 = 忽略扩展名一致，4 = 字面完全一致
   uint8_t quality = 0;
 };
 
 // 文件/文件夹索引：枚举配置根目录、快照缓存、目录 watcher 增量更新、查询。
+// 内存结构按“目录表 + 文件名”压缩：完整路径只按目录存一份，条目只存文件名。
 class FileIndex {
  public:
   FileIndex() = default;
@@ -42,7 +36,7 @@ class FileIndex {
   // 测试/CLI 指定根目录（需在 Start 前调用；空表示使用默认桌面/文档/下载）。
   void SetRoots(std::vector<std::wstring> roots);
 
-  // 索引条目总上限（默认 300000，测试可调）。
+  // 索引条目总上限（默认 1000000，设置里可改）。
   void SetMaxEntries(size_t value);
   // 是否把重建结果写回 files.idx（常驻模式启动即重建，不需要落盘）。
   void SetPersistSnapshot(bool value) { persistSnapshot_ = value; }
@@ -62,22 +56,48 @@ class FileIndex {
   size_t RebuildSynchronously();
 
  private:
+  struct Directory {
+    std::wstring path;
+    std::wstring lowerPath;
+  };
+  struct Entry {
+    uint32_t directory = 0;  // 父目录在 directories_ 中的下标
+    std::wstring name;
+    std::wstring lowerName;
+    uint64_t charMask = 0;
+    uint64_t pathHash = 0;  // 小写完整路径的 FNV1a，供删除/去重快速筛选
+    bool isDirectory = false;
+  };
+  struct Storage {
+    std::vector<Directory> directories;
+    std::vector<Entry> entries;
+    std::unordered_map<std::wstring, uint32_t> directoryIndex;  // lower dir path -> index
+  };
+  struct RootData {
+    std::vector<Directory> directories;
+    std::vector<Entry> entries;
+    std::unordered_map<std::wstring, uint32_t> directoryIndex;
+  };
+
   void EnsureRoots();
+  void EnumerateRoot(const std::wstring& root, size_t quota, RootData* data, char* truncated);
   void WorkerLoop();
   void RebuildAndSwap();
   void WatchLoop(std::wstring root);
   void HandleNotifications(const std::wstring& root, const char* buffer, DWORD bytes);
   void AddEntryLocked(const std::wstring& path, bool isDirectory);
   void RemoveEntryLocked(const std::wstring& path);
+  uint32_t EnsureDirectoryLocked(const std::wstring& path);
+  std::wstring FullPathOf(const Entry& entry) const;
 
-  bool LoadSnapshot(std::vector<FileEntry>* entries) const;
-  void SaveSnapshot(const std::vector<FileEntry>& entries);
+  bool LoadSnapshot();
+  bool SaveSnapshot() const;
   std::vector<std::wstring> SnapshotPaths() const;
 
   mutable std::mutex entriesMutex_;
-  std::vector<FileEntry> entries_;
+  Storage storage_;
   std::vector<std::wstring> roots_;
-  size_t maxEntries_ = 520000;
+  size_t maxEntries_ = 1000000;
   bool persistSnapshot_ = true;
 
   std::vector<std::thread> watchers_;

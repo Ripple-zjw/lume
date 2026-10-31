@@ -56,22 +56,23 @@ ResultRow MakeAppRow(const AppEntry& entry, size_t score, uint8_t tier, uint8_t 
   return row;
 }
 
-ResultRow MakeFileRow(const FileEntry& entry, size_t score, bool pathOnly, uint8_t quality) {
+ResultRow MakeFileRow(const std::wstring& path, bool isDirectory, size_t score, bool pathOnly,
+                      uint8_t quality) {
   ResultRow row;
-  row.title = FileNameOf(entry.path);
-  row.subtitle = entry.path;
+  row.title = FileNameOf(path);
+  row.subtitle = path;
   row.glyph = FirstGlyph(row.title);
-  row.iconKey = entry.path;
-  row.color = entry.isDirectory ? 0xF59E0B : 0x64748B;
-  row.target = entry.path;
-  row.action = entry.isDirectory ? RowAction::OpenFolder : RowAction::OpenFile;
+  row.iconKey = path;
+  row.color = isDirectory ? 0xF59E0B : 0x64748B;
+  row.target = path;
+  row.action = isDirectory ? RowAction::OpenFolder : RowAction::OpenFile;
   row.score = score;
   row.quality = quality;
   if (pathOnly) {
     row.tier = kTierPathOnly;
-  } else if (entry.isDirectory) {
+  } else if (isDirectory) {
     row.tier = kTierDirectory;
-  } else if (IsExecutablePath(entry.path)) {
+  } else if (IsExecutablePath(path)) {
     row.tier = kTierApplication;
   } else {
     row.tier = kTierFile;
@@ -136,8 +137,9 @@ std::vector<ResultRow> BuildMergedRows(const std::vector<AppEntry>& apps, FileIn
     }
     if (files) {
       for (const FileHit& hit : files->Search(query, kMaxFileHits)) {
-        const size_t bonus = usage ? usage->Bonus(hit.entry.path) : 0;
-        rows.push_back(MakeFileRow(hit.entry, hit.score + bonus, hit.pathOnly, hit.quality));
+        const size_t bonus = usage ? usage->Bonus(hit.path) : 0;
+        rows.push_back(MakeFileRow(hit.path, hit.isDirectory, hit.score + bonus, hit.pathOnly,
+                                   hit.quality));
       }
     }
   }

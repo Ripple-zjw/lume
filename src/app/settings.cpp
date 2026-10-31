@@ -95,6 +95,7 @@ bool SettingsStore::Load(AppSettings* settings) {
   }
   if (!loaded) return false;
   const std::wstring text = Utf8ToWide(data);
+  bool hasVersion = false;
   size_t start = 0;
   while (start < text.size()) {
     size_t end = text.find(L'\n', start);
@@ -106,7 +107,9 @@ bool SettingsStore::Load(AppSettings* settings) {
     if (equals == std::wstring::npos) continue;
     const std::wstring key = Trim(line.substr(0, equals));
     const std::wstring value = Trim(line.substr(equals + 1));
-    if (key == L"theme") {
+    if (key == L"version") {
+      hasVersion = true;
+    } else if (key == L"theme") {
       settings->theme = value;
     } else if (key == L"accent") {
       settings->accent = value;
@@ -118,10 +121,16 @@ bool SettingsStore::Load(AppSettings* settings) {
       settings->tray = (value == L"1" || value == L"true");
     } else if (key == L"fileCap") {
       const int cap = _wtoi(value.c_str());
-      if (cap >= 20000 && cap <= 1000000) settings->fileCap = cap;
+      if (cap >= 20000 && cap <= 2000000) settings->fileCap = cap;
     } else if (key == L"fileRoot" && !value.empty()) {
       settings->fileRoots.push_back(value);
     }
+  }
+  // 老配置没有 version：把历史上的默认上限迁移到新默认 100 万。
+  if (!hasVersion && (settings->fileCap == 200000 || settings->fileCap == 300000 ||
+                      settings->fileCap == 520000)) {
+    settings->fileCap = 1000000;
+    Log(L"设置迁移: 索引上限提升到 %d", settings->fileCap);
   }
   return true;
 }
@@ -129,6 +138,7 @@ bool SettingsStore::Load(AppSettings* settings) {
 bool SettingsStore::Save(const AppSettings& settings, std::wstring* savedPath) {
   std::wstring text;
   text += L"# eTools settings\n";
+  text += L"version=2\n";
   text += L"theme=" + settings.theme + L"\n";
   text += L"accent=" + settings.accent + L"\n";
   text += L"hotkey=" + settings.hotkey + L"\n";

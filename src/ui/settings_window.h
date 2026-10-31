@@ -34,6 +34,7 @@ class SettingsWindow {
   HWND accentButton_ = nullptr;
   HWND hotkeyCapture_ = nullptr;
   HWND autostartCheck_ = nullptr;
+  HWND capEdit_ = nullptr;
   HWND rootsList_ = nullptr;
   HWND status_ = nullptr;
   HFONT font_ = nullptr;

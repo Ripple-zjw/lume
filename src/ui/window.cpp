@@ -348,6 +348,7 @@ void LauncherWindow::ApplySettings(const AppSettings& settings) {
     Log(L"应用自启设置失败: %ls", error.c_str());
   }
   files_.Stop();
+  files_.SetMaxEntries(static_cast<size_t>(std::clamp(settings_.fileCap, 20000, 1000000)));
   files_.SetRoots(settings_.fileRoots);
   files_.Start();
   fileVersionSeen_ = files_.version();

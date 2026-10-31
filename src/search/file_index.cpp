@@ -11,20 +11,29 @@
 #include <cwctype>
 #include <iterator>
 #include <string_view>
-#include <unordered_set>
+#include <tuple>
 
 #include "core/log.h"
 #include "search/app_entry.h"
 
 namespace {
 
-constexpr size_t kHardMaxEntries = 2000000;  // 快照/索引的硬上限，防止异常文件撑爆内存
+constexpr size_t kHardMaxEntries = 2000000;
 constexpr char kMagic[4] = {'E', 'T', 'F', '3'};
 constexpr uint32_t kSnapshotVersion = 3;
 
 std::wstring ToLower(std::wstring text) {
   for (wchar_t& ch : text) ch = static_cast<wchar_t>(std::towlower(static_cast<wint_t>(ch)));
   return text;
+}
+
+uint64_t Fnv1a(std::wstring_view text) {
+  uint64_t hash = 1469598103934665603ull;
+  for (wchar_t ch : text) {
+    hash ^= static_cast<uint64_t>(ch);
+    hash *= 1099511628211ull;
+  }
+  return hash;
 }
 
 std::wstring GetEnv(const wchar_t* name) {
@@ -77,13 +86,17 @@ uint64_t NameMask(std::wstring_view name) {
   return mask;
 }
 
-// 查询含非 ASCII 字母/数字时返回 0，表示不做位图预筛。
+// 只用查询里的 ASCII 字母/数字做位图预筛；标点、中文被忽略，仍是必要条件。
 uint64_t QueryMask(const std::wstring& needle) {
+  uint64_t mask = 0;
   for (wchar_t ch : needle) {
-    const bool alnum = (ch >= L'a' && ch <= L'z') || (ch >= L'0' && ch <= L'9');
-    if (!alnum) return 0;
+    if (ch >= L'a' && ch <= L'z') {
+      mask |= 1ull << (ch - L'a');
+    } else if (ch >= L'0' && ch <= L'9') {
+      mask |= 1ull << (26 + (ch - L'0'));
+    }
   }
-  return NameMask(needle);
+  return mask;
 }
 
 uint8_t NameQuality(std::wstring_view name, const std::wstring& needle) {
@@ -96,8 +109,7 @@ uint8_t NameQuality(std::wstring_view name, const std::wstring& needle) {
   return 0;
 }
 
-// 路径命中只做“目录/文件名边界处的子串”匹配，且大幅降权：
-// 典型分数 ~150–200，低于文件名子序列（300+），不会盖过文件名结果。
+// 路径命中只做“目录边界处的子串”匹配，且大幅降权。
 size_t ScorePathOnly(const std::wstring& lowerPath, const std::wstring& needle) {
   if (needle.size() < 3) return 0;
   const size_t position = lowerPath.find(needle);
@@ -132,8 +144,8 @@ std::wstring DownloadsFolder() {
   DWORD bytes = sizeof(buffer);
   DWORD type = 0;
   std::wstring result;
-  if (RegQueryValueExW(key, name, nullptr, &type, reinterpret_cast<LPBYTE>(buffer),
-                       &bytes) == ERROR_SUCCESS &&
+  if (RegQueryValueExW(key, name, nullptr, &type, reinterpret_cast<LPBYTE>(buffer), &bytes) ==
+          ERROR_SUCCESS &&
       type == REG_EXPAND_SZ) {
     result = ExpandEnv(buffer);
   }
@@ -157,49 +169,6 @@ std::vector<std::wstring> DefaultRoots() {
   add(KnownFolder(CSIDL_PERSONAL));
   add(DownloadsFolder());
   return roots;
-}
-
-void EnumerateRoot(const std::wstring& root, size_t quota, std::vector<FileEntry>* out,
-                   char* truncated) {
-  if (quota == 0) return;
-  std::vector<std::wstring> pending{root};
-  while (!pending.empty()) {
-    if (out->size() >= quota) {
-      *truncated = 1;
-      return;
-    }
-    std::wstring directory = std::move(pending.back());
-    pending.pop_back();
-
-    WIN32_FIND_DATAW data{};
-    const std::wstring pattern = directory + L"\\*";
-    HANDLE find = FindFirstFileExW(pattern.c_str(), FindExInfoBasic, &data, FindExSearchNameMatch,
-                                   nullptr, FIND_FIRST_EX_LARGE_FETCH);
-    if (find == INVALID_HANDLE_VALUE) continue;
-    do {
-      if (wcscmp(data.cFileName, L".") == 0 || wcscmp(data.cFileName, L"..") == 0) continue;
-      if (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
-      const bool isDirectory = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-      if (isDirectory && ShouldSkipDirectory(data.cFileName)) continue;
-      if (out->size() >= quota) {
-        *truncated = 1;
-        break;
-      }
-
-      std::wstring path = directory + L"\\" + data.cFileName;
-      std::wstring lower = ToLower(path);
-      const size_t slash = lower.find_last_of(L'\\');
-      FileEntry entry;
-      entry.nameOffset = static_cast<uint32_t>(slash == std::wstring::npos ? 0 : slash + 1);
-      entry.charMask = NameMask(std::wstring_view(lower).substr(entry.nameOffset));
-      entry.lowerPath = std::move(lower);
-      entry.path = std::move(path);
-      entry.isDirectory = isDirectory;
-      out->push_back(std::move(entry));
-      if (isDirectory) pending.push_back(out->back().path);
-    } while (FindNextFileW(find, &data));
-    FindClose(find);
-  }
 }
 
 bool ReadWholeFile(const std::wstring& path, std::string* data) {
@@ -230,17 +199,6 @@ bool WriteWholeFile(const std::wstring& path, const std::string& data) {
 }
 
 template <typename T>
-void AppendPod(std::string* out, const T& value) {
-  out->append(reinterpret_cast<const char*>(&value), sizeof(T));
-}
-
-void AppendWide(std::string* out, const std::wstring& value) {
-  const uint16_t length = static_cast<uint16_t>(std::min<size_t>(value.size(), 65535));
-  AppendPod(out, length);
-  out->append(reinterpret_cast<const char*>(value.data()), static_cast<size_t>(length) * sizeof(wchar_t));
-}
-
-template <typename T>
 bool ReadPod(const std::string& data, size_t* offset, T* value) {
   if (*offset + sizeof(T) > data.size()) return false;
   std::memcpy(value, data.data() + *offset, sizeof(T));
@@ -249,22 +207,27 @@ bool ReadPod(const std::string& data, size_t* offset, T* value) {
 }
 
 bool ReadWide(const std::string& data, size_t* offset, std::wstring* value) {
-  uint16_t length = 0;
-  if (!ReadPod(data, offset, &length)) return false;
-  const size_t bytes = static_cast<size_t>(length) * sizeof(wchar_t);
-  if (*offset + bytes > data.size()) return false;
+  uint32_t length = 0;
+  if (!ReadPod(data, offset, &length) || length > 32768) return false;
+  if (*offset + static_cast<size_t>(length) * sizeof(wchar_t) > data.size()) return false;
   value->assign(reinterpret_cast<const wchar_t*>(data.data() + *offset), length);
-  *offset += bytes;
+  *offset += static_cast<size_t>(length) * sizeof(wchar_t);
   return true;
+}
+
+template <typename T>
+void AppendPod(std::string* data, T value) {
+  data->append(reinterpret_cast<const char*>(&value), sizeof(T));
+}
+
+void AppendWide(std::string* data, const std::wstring& value) {
+  AppendPod(data, static_cast<uint32_t>(value.size()));
+  data->append(reinterpret_cast<const char*>(value.data()), value.size() * sizeof(wchar_t));
 }
 
 }  // namespace
 
 FileIndex::~FileIndex() { Stop(); }
-
-void FileIndex::EnsureRoots() {
-  if (roots_.empty()) roots_ = DefaultRoots();
-}
 
 void FileIndex::SetRoots(std::vector<std::wstring> roots) {
   roots_.clear();
@@ -276,7 +239,112 @@ void FileIndex::SetRoots(std::vector<std::wstring> roots) {
 }
 
 void FileIndex::SetMaxEntries(size_t value) {
-  maxEntries_ = std::clamp<size_t>(value, 1000, 2000000);
+  maxEntries_ = std::clamp<size_t>(value, 20000, kHardMaxEntries);
+}
+
+std::vector<std::wstring> FileIndex::roots() const { return roots_; }
+
+size_t FileIndex::size() const {
+  std::lock_guard<std::mutex> lock(entriesMutex_);
+  return storage_.entries.size();
+}
+
+void FileIndex::EnsureRoots() {
+  if (roots_.empty()) roots_ = DefaultRoots();
+}
+
+std::wstring FileIndex::FullPathOf(const Entry& entry) const {
+  if (storage_.directories.empty()) return entry.name;
+  return storage_.directories[entry.directory].path + L"\\" + entry.name;
+}
+
+uint32_t FileIndex::EnsureDirectoryLocked(const std::wstring& path) {
+  const std::wstring lower = ToLower(path);
+  auto found = storage_.directoryIndex.find(lower);
+  if (found != storage_.directoryIndex.end()) return found->second;
+
+  const size_t slash = path.find_last_of(L'\\');
+  if (slash != std::wstring::npos && slash > 0) {
+    EnsureDirectoryLocked(path.substr(0, slash));
+  }
+  Directory directory;
+  directory.path = path;
+  directory.lowerPath = lower;
+  const uint32_t index = static_cast<uint32_t>(storage_.directories.size());
+  storage_.directories.push_back(std::move(directory));
+  storage_.directoryIndex.emplace(lower, index);
+  return index;
+}
+
+void FileIndex::EnumerateRoot(const std::wstring& root, size_t quota, RootData* data,
+                              char* truncated) {
+  if (quota == 0) return;
+  const std::wstring rootLower = ToLower(root);
+  Directory rootDirectory;
+  rootDirectory.path = root;
+  rootDirectory.lowerPath = rootLower;
+  const uint32_t rootIndex = static_cast<uint32_t>(data->directories.size());
+  data->directories.push_back(std::move(rootDirectory));
+  data->directoryIndex.emplace(rootLower, rootIndex);
+
+  std::vector<uint32_t> pending{rootIndex};
+  while (!pending.empty()) {
+    if (data->entries.size() >= quota) {
+      *truncated = 1;
+      return;
+    }
+    const uint32_t directoryIndex = pending.back();
+    pending.pop_back();
+    // 目录表在枚举过程中会增长，先复制当前目录路径，避免引用失效。
+    const std::wstring directoryPath = data->directories[directoryIndex].path;
+    const std::wstring directoryLower = data->directories[directoryIndex].lowerPath;
+
+    WIN32_FIND_DATAW findData{};
+    const std::wstring pattern = directoryPath + L"\\*";
+    HANDLE find = FindFirstFileExW(pattern.c_str(), FindExInfoBasic, &findData,
+                                   FindExSearchNameMatch, nullptr, FIND_FIRST_EX_LARGE_FETCH);
+    if (find == INVALID_HANDLE_VALUE) continue;
+    do {
+      if (wcscmp(findData.cFileName, L".") == 0 || wcscmp(findData.cFileName, L"..") == 0) {
+        continue;
+      }
+      if (findData.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
+      const bool isDirectory = (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+      if (isDirectory && ShouldSkipDirectory(findData.cFileName)) continue;
+      if (data->entries.size() >= quota) {
+        *truncated = 1;
+        break;
+      }
+
+      const std::wstring name = findData.cFileName;
+      const std::wstring lowerName = ToLower(name);
+      const std::wstring fullPath = directoryPath + L"\\" + name;
+      const std::wstring fullLower = directoryLower + L"\\" + lowerName;
+
+      Entry entry;
+      entry.directory = directoryIndex;
+      entry.name = name;
+      entry.lowerName = lowerName;
+      entry.charMask = NameMask(lowerName);
+      entry.pathHash = Fnv1a(fullLower);
+      entry.isDirectory = isDirectory;
+      data->entries.push_back(std::move(entry));
+
+      if (isDirectory) {
+        auto existing = data->directoryIndex.find(fullLower);
+        if (existing == data->directoryIndex.end()) {
+          Directory child;
+          child.path = fullPath;
+          child.lowerPath = fullLower;
+          const uint32_t childIndex = static_cast<uint32_t>(data->directories.size());
+          data->directories.push_back(std::move(child));
+          data->directoryIndex.emplace(fullLower, childIndex);
+          pending.push_back(childIndex);
+        }
+      }
+    } while (FindNextFileW(find, &findData));
+    FindClose(find);
+  }
 }
 
 bool FileIndex::Start() {
@@ -286,7 +354,6 @@ bool FileIndex::Start() {
     return false;
   }
 
-  // 启动即丢弃旧快照，避免把上次运行期间已删除的文件继续搜出来；后台会全量重建。
   for (const std::wstring& path : SnapshotPaths()) {
     if (DeleteFileW(path.c_str())) {
       Log(L"文件索引: 已删除旧快照 %ls", path.c_str());
@@ -294,7 +361,7 @@ bool FileIndex::Start() {
   }
   {
     std::lock_guard<std::mutex> lock(entriesMutex_);
-    entries_.clear();
+    storage_ = Storage{};
     version_.fetch_add(1);
   }
 
@@ -328,107 +395,15 @@ void FileIndex::Stop() {
   }
 }
 
-std::vector<std::wstring> FileIndex::roots() const { return roots_; }
-
-size_t FileIndex::size() const {
-  std::lock_guard<std::mutex> lock(entriesMutex_);
-  return entries_.size();
-}
-
-std::vector<std::wstring> FileIndex::SnapshotPaths() const {
-  std::vector<std::wstring> paths;
-  const std::wstring base = GetEnv(L"LOCALAPPDATA");
-  if (!base.empty()) {
-    const std::wstring dir = base + L"\\eTools";
-    if (EnsureDirectory(dir)) paths.push_back(dir + L"\\files.idx");
-  }
-  const std::wstring fallback = ExeDirectory() + L"\\files.idx";
-  if (std::find(paths.begin(), paths.end(), fallback) == paths.end()) paths.push_back(fallback);
-  return paths;
-}
-
-bool FileIndex::LoadSnapshot(std::vector<FileEntry>* entries) const {
-  for (const std::wstring& path : SnapshotPaths()) {
-    std::string data;
-    if (!ReadWholeFile(path, &data)) continue;
-    if (data.size() < sizeof(kMagic) || std::memcmp(data.data(), kMagic, sizeof(kMagic)) != 0) {
-      continue;
-    }
-    size_t offset = sizeof(kMagic);
-    uint32_t version = 0;
-    if (!ReadPod(data, &offset, &version) || version != kSnapshotVersion) continue;
-    uint32_t rootCount = 0;
-    if (!ReadPod(data, &offset, &rootCount) || rootCount != roots_.size()) continue;
-
-    bool rootsMatch = true;
-    for (uint32_t i = 0; i < rootCount; ++i) {
-      std::wstring snapshotRoot;
-      if (!ReadWide(data, &offset, &snapshotRoot)) {
-        rootsMatch = false;
-        break;
-      }
-      if (ToLower(snapshotRoot) != ToLower(roots_[i])) rootsMatch = false;
-    }
-    if (!rootsMatch) continue;
-
-    uint32_t count = 0;
-    if (!ReadPod(data, &offset, &count) || count > kHardMaxEntries) continue;
-    entries->clear();
-    entries->reserve(count);
-    bool valid = true;
-    for (uint32_t i = 0; i < count; ++i) {
-      std::wstring entryPath;
-      uint8_t isDirectory = 0;
-      if (!ReadWide(data, &offset, &entryPath) || !ReadPod(data, &offset, &isDirectory)) {
-        valid = false;
-        break;
-      }
-      FileEntry entry;
-      entry.lowerPath = ToLower(entryPath);
-      const size_t slash = entry.lowerPath.find_last_of(L'\\');
-      entry.nameOffset = static_cast<uint32_t>(slash == std::wstring::npos ? 0 : slash + 1);
-      entry.charMask = NameMask(std::wstring_view(entry.lowerPath).substr(entry.nameOffset));
-      entry.path = std::move(entryPath);
-      entry.isDirectory = isDirectory != 0;
-      entries->push_back(std::move(entry));
-    }
-    if (valid && !entries->empty()) return true;
-    entries->clear();
-  }
-  return false;
-}
-
-void FileIndex::SaveSnapshot(const std::vector<FileEntry>& entries) {
-  std::string out;
-  out.append(kMagic, sizeof(kMagic));
-  AppendPod(&out, kSnapshotVersion);
-  AppendPod(&out, static_cast<uint32_t>(roots_.size()));
-  for (const std::wstring& root : roots_) AppendWide(&out, root);
-  AppendPod(&out, static_cast<uint32_t>(entries.size()));
-  for (const FileEntry& entry : entries) {
-    AppendWide(&out, entry.path);
-    const uint8_t isDirectory = entry.isDirectory ? 1 : 0;
-    AppendPod(&out, isDirectory);
-  }
-  for (const std::wstring& path : SnapshotPaths()) {
-    if (WriteWholeFile(path, out)) {
-      Log(L"文件索引快照已写入: %ls (%zu 条)", path.c_str(), entries.size());
-      return;
-    }
-  }
-  Log(L"文件索引快照写入失败: %lu", GetLastError());
-}
-
 void FileIndex::RebuildAndSwap() {
-  std::vector<FileEntry> fresh;
-  fresh.reserve(20000);
   const size_t rootCount = roots_.size();
-  const size_t perRootQuota = rootCount ? std::max<size_t>(1, maxEntries_ / rootCount) : 0;
+  const size_t perRootQuota =
+      rootCount ? std::max<size_t>(1, maxEntries_ / rootCount) : 0;
   Log(L"文件索引: 根目录 %zu 个, 每根上限 %zu 条", rootCount, perRootQuota);
 
-  std::vector<std::thread> threads;
-  std::vector<std::vector<FileEntry>> partial(roots_.size());
+  std::vector<RootData> partial(roots_.size());
   std::vector<char> truncated(roots_.size(), 0);
+  std::vector<std::thread> threads;
   for (size_t i = 0; i < roots_.size(); ++i) {
     threads.emplace_back([&, i]() {
       EnumerateRoot(roots_[i], perRootQuota, &partial[i], &truncated[i]);
@@ -440,19 +415,30 @@ void FileIndex::RebuildAndSwap() {
       Log(L"文件索引: %ls 达到上限 %zu 条，已截断", roots_[i].c_str(), perRootQuota);
     }
   }
-  for (auto& part : partial) {
-    fresh.insert(fresh.end(), std::make_move_iterator(part.begin()),
-                 std::make_move_iterator(part.end()));
+
+  Storage fresh;
+  for (RootData& data : partial) {
+    const uint32_t base = static_cast<uint32_t>(fresh.directories.size());
+    for (Directory& directory : data.directories) {
+      fresh.directoryIndex.emplace(directory.lowerPath, base + static_cast<uint32_t>(
+                                                            fresh.directories.size()));
+      fresh.directories.push_back(std::move(directory));
+    }
+    for (Entry& entry : data.entries) {
+      entry.directory += base;
+      fresh.entries.push_back(std::move(entry));
+    }
   }
-  std::sort(fresh.begin(), fresh.end(), [](const FileEntry& a, const FileEntry& b) {
-    return a.lowerPath < b.lowerPath;
-  });
   {
     std::lock_guard<std::mutex> lock(entriesMutex_);
-    entries_ = std::move(fresh);
+    storage_ = std::move(fresh);
     version_.fetch_add(1);
   }
-  if (persistSnapshot_) SaveSnapshot(entries_);
+  // 释放并行枚举留下的 RootData 容量，再统计常驻内存。
+  partial.clear();
+  partial.shrink_to_fit();
+  if (persistSnapshot_) SaveSnapshot();
+
   PROCESS_MEMORY_COUNTERS memory{};
   if (K32GetProcessMemoryInfo(GetCurrentProcess(), &memory, sizeof(memory))) {
     Log(L"文件索引内存: 当前 %.0f MB, 峰值 %.0f MB",
@@ -523,33 +509,33 @@ void FileIndex::WatchLoop(std::wstring root) {
 
 void FileIndex::HandleNotifications(const std::wstring& root, const char* buffer, DWORD bytes) {
   size_t offset = 0;
-  bool sizeChanged = false;
+  bool changed = false;
   while (offset + sizeof(FILE_NOTIFY_INFORMATION) <= bytes) {
     const auto* info = reinterpret_cast<const FILE_NOTIFY_INFORMATION*>(buffer + offset);
-    std::wstring relative(info->FileName, info->FileNameLength / sizeof(wchar_t));
+    const std::wstring relative(info->FileName, info->FileNameLength / sizeof(wchar_t));
     const std::wstring full = root + L"\\" + relative;
-    const std::wstring lower = ToLower(full);
 
     switch (info->Action) {
       case FILE_ACTION_ADDED: {
         const DWORD attributes = GetFileAttributesW(full.c_str());
         if (attributes == INVALID_FILE_ATTRIBUTES) break;
         const bool isDirectory = (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-        if (isDirectory) {
-          rebuildRequested_.store(true);  // 目录内容未知，交给后台重建
-        } else {
+        {
           std::lock_guard<std::mutex> lock(entriesMutex_);
-          AddEntryLocked(full, false);
+          AddEntryLocked(full, isDirectory);
           version_.fetch_add(1);
-          sizeChanged = true;
         }
+        if (isDirectory) rebuildRequested_.store(true);
+        changed = true;
         break;
       }
       case FILE_ACTION_REMOVED: {
-        std::lock_guard<std::mutex> lock(entriesMutex_);
-        RemoveEntryLocked(lower);
-        version_.fetch_add(1);
-        sizeChanged = true;
+        {
+          std::lock_guard<std::mutex> lock(entriesMutex_);
+          RemoveEntryLocked(full);
+          version_.fetch_add(1);
+        }
+        changed = true;
         break;
       }
       case FILE_ACTION_RENAMED_OLD_NAME:
@@ -562,54 +548,178 @@ void FileIndex::HandleNotifications(const std::wstring& root, const char* buffer
     if (info->NextEntryOffset == 0) break;
     offset += info->NextEntryOffset;
   }
-  if (sizeChanged) Log(L"文件索引: 增量更新");
+  if (changed) Log(L"文件索引: 增量更新");
 }
 
 void FileIndex::AddEntryLocked(const std::wstring& path, bool isDirectory) {
-  if (entries_.size() >= maxEntries_) return;
-  FileEntry entry;
-  entry.lowerPath = ToLower(path);
-  const size_t slash = entry.lowerPath.find_last_of(L'\\');
-  entry.nameOffset = static_cast<uint32_t>(slash == std::wstring::npos ? 0 : slash + 1);
-  entry.charMask = NameMask(std::wstring_view(entry.lowerPath).substr(entry.nameOffset));
-  entry.path = path;
+  if (storage_.entries.size() >= maxEntries_) return;
+  const size_t slash = path.find_last_of(L'\\');
+  if (slash == std::wstring::npos || slash + 1 >= path.size()) return;
+  const std::wstring parentPath = path.substr(0, slash);
+  const std::wstring name = path.substr(slash + 1);
+  const std::wstring lowerName = ToLower(name);
+  const std::wstring lowerFull = ToLower(parentPath) + L"\\" + lowerName;
+  const uint64_t hash = Fnv1a(lowerFull);
+  for (const Entry& existing : storage_.entries) {
+    if (existing.pathHash == hash && FullPathOf(existing) == path) return;
+  }
+  const uint32_t directory = EnsureDirectoryLocked(parentPath);
+  Entry entry;
+  entry.directory = directory;
+  entry.name = name;
+  entry.lowerName = lowerName;
+  entry.charMask = NameMask(lowerName);
+  entry.pathHash = hash;
   entry.isDirectory = isDirectory;
-  entries_.push_back(std::move(entry));
+  storage_.entries.push_back(std::move(entry));
 }
 
-void FileIndex::RemoveEntryLocked(const std::wstring& lowerPath) {
-  const std::wstring prefix = lowerPath + L"\\";
-  entries_.erase(std::remove_if(entries_.begin(), entries_.end(),
-                                [&](const FileEntry& entry) {
-                                  return entry.lowerPath == lowerPath ||
-                                         entry.lowerPath.rfind(prefix, 0) == 0;
-                                }),
-                 entries_.end());
+void FileIndex::RemoveEntryLocked(const std::wstring& path) {
+  const std::wstring lowerFull = ToLower(path);
+  const uint64_t hash = Fnv1a(lowerFull);
+  for (size_t i = 0; i < storage_.entries.size(); ++i) {
+    const Entry& entry = storage_.entries[i];
+    if (entry.pathHash != hash) continue;
+    if (_wcsicmp(FullPathOf(entry).c_str(), path.c_str()) != 0) continue;
+    if (entry.isDirectory) {
+      // 目录内容未知，交给后台重建。
+      rebuildRequested_.store(true);
+      return;
+    }
+    storage_.entries.erase(storage_.entries.begin() + static_cast<std::ptrdiff_t>(i));
+    return;
+  }
 }
 
-size_t FileIndex::RebuildSynchronously() {
-  EnsureRoots();
-  RebuildAndSwap();
-  return size();
+std::vector<std::wstring> FileIndex::SnapshotPaths() const {
+  std::vector<std::wstring> paths;
+  const std::wstring base = GetEnv(L"LOCALAPPDATA");
+  if (!base.empty()) {
+    const std::wstring directory = base + L"\\eTools";
+    if (EnsureDirectory(directory)) paths.push_back(directory + L"\\files.idx");
+  }
+  const std::wstring fallbackDir = ExeDirectory();
+  if (EnsureDirectory(fallbackDir)) {
+    const std::wstring fallback = fallbackDir + L"\\files.idx";
+    if (std::find(paths.begin(), paths.end(), fallback) == paths.end()) {
+      paths.push_back(fallback);
+    }
+  }
+  return paths;
+}
+
+bool FileIndex::LoadSnapshot() {
+  for (const std::wstring& path : SnapshotPaths()) {
+    std::string data;
+    if (!ReadWholeFile(path, &data)) continue;
+    if (data.size() < sizeof(kMagic) || std::memcmp(data.data(), kMagic, sizeof(kMagic)) != 0) {
+      continue;
+    }
+    size_t offset = sizeof(kMagic);
+    uint32_t version = 0;
+    if (!ReadPod(data, &offset, &version) || version != kSnapshotVersion) continue;
+    uint32_t rootCount = 0;
+    if (!ReadPod(data, &offset, &rootCount) || rootCount != roots_.size()) continue;
+
+    bool rootsMatch = true;
+    for (uint32_t i = 0; i < rootCount; ++i) {
+      std::wstring snapshotRoot;
+      if (!ReadWide(data, &offset, &snapshotRoot)) {
+        rootsMatch = false;
+        break;
+      }
+      if (ToLower(snapshotRoot) != ToLower(roots_[i])) rootsMatch = false;
+    }
+    if (!rootsMatch) continue;
+
+    uint32_t count = 0;
+    if (!ReadPod(data, &offset, &count) || count > kHardMaxEntries) continue;
+
+    Storage fresh;
+    bool valid = true;
+    for (uint32_t i = 0; i < count; ++i) {
+      std::wstring fullPath;
+      uint8_t isDirectory = 0;
+      if (!ReadWide(data, &offset, &fullPath) || !ReadPod(data, &offset, &isDirectory)) {
+        valid = false;
+        break;
+      }
+      const size_t slash = fullPath.find_last_of(L'\\');
+      if (slash == std::wstring::npos || slash + 1 >= fullPath.size()) continue;
+      const std::wstring parentPath = fullPath.substr(0, slash);
+      const std::wstring parentLower = ToLower(parentPath);
+      auto found = fresh.directoryIndex.find(parentLower);
+      uint32_t directory = 0;
+      if (found == fresh.directoryIndex.end()) {
+        Directory dir;
+        dir.path = parentPath;
+        dir.lowerPath = parentLower;
+        directory = static_cast<uint32_t>(fresh.directories.size());
+        fresh.directories.push_back(std::move(dir));
+        fresh.directoryIndex.emplace(parentLower, directory);
+      } else {
+        directory = found->second;
+      }
+      const std::wstring name = fullPath.substr(slash + 1);
+      const std::wstring lowerName = ToLower(name);
+      Entry entry;
+      entry.directory = directory;
+      entry.name = name;
+      entry.lowerName = lowerName;
+      entry.charMask = NameMask(lowerName);
+      entry.pathHash = Fnv1a(parentLower + L"\\" + lowerName);
+      entry.isDirectory = isDirectory != 0;
+      fresh.entries.push_back(std::move(entry));
+    }
+    if (!valid || fresh.entries.empty()) continue;
+    std::lock_guard<std::mutex> lock(entriesMutex_);
+    storage_ = std::move(fresh);
+    version_.fetch_add(1);
+    Log(L"文件索引: 快照加载 %zu 条", storage_.entries.size());
+    return true;
+  }
+  return false;
+}
+
+bool FileIndex::SaveSnapshot() const {
+  std::lock_guard<std::mutex> lock(entriesMutex_);
+  std::string out;
+  out.append(kMagic, sizeof(kMagic));
+  AppendPod(&out, kSnapshotVersion);
+  AppendPod(&out, static_cast<uint32_t>(roots_.size()));
+  for (const std::wstring& root : roots_) AppendWide(&out, root);
+
+  uint32_t count = static_cast<uint32_t>(storage_.entries.size());
+  AppendPod(&out, count);
+  for (const Entry& entry : storage_.entries) {
+    const std::wstring path = storage_.directories[entry.directory].path + L"\\" + entry.name;
+    AppendWide(&out, path);
+    const uint8_t isDirectory = entry.isDirectory ? 1 : 0;
+    AppendPod(&out, isDirectory);
+  }
+  for (const std::wstring& path : SnapshotPaths()) {
+    if (WriteWholeFile(path, out)) {
+      Log(L"文件索引快照已写入: %ls (%zu 条)", path.c_str(), storage_.entries.size());
+      return true;
+    }
+  }
+  Log(L"文件索引快照写入失败: %lu", GetLastError());
+  return false;
 }
 
 bool FileIndex::LoadCachedSnapshot() {
   EnsureRoots();
   if (roots_.empty()) return false;
-  std::vector<FileEntry> cached;
-  if (!LoadSnapshot(&cached)) return false;
-  std::lock_guard<std::mutex> lock(entriesMutex_);
-  entries_ = std::move(cached);
-  version_.fetch_add(1);
-  return true;
+  return LoadSnapshot();
 }
 
 std::vector<std::wstring> FileIndex::SamplePaths(size_t limit) const {
   std::vector<std::wstring> paths;
   std::lock_guard<std::mutex> lock(entriesMutex_);
-  const size_t count = std::min(limit, entries_.size());
-  paths.reserve(count);
-  for (size_t i = 0; i < count; ++i) paths.push_back(entries_[i].path);
+  for (const Entry& entry : storage_.entries) {
+    if (paths.size() >= limit) break;
+    paths.push_back(storage_.directories[entry.directory].path + L"\\" + entry.name);
+  }
   return paths;
 }
 
@@ -625,30 +735,36 @@ std::vector<FileHit> FileIndex::Search(const std::wstring& query, size_t limit) 
     bool pathOnly;
     uint8_t quality;
   };
+  auto pathOf = [this](const Entry& entry) {
+    return storage_.directories[entry.directory].path + L"\\" + entry.name;
+  };
   auto better = [this](const Scored& a, const Scored& b) {
     if (a.quality != b.quality) return a.quality > b.quality;
     if (a.score != b.score) return a.score > b.score;
-    const FileEntry& ea = entries_[a.index];
-    const FileEntry& eb = entries_[b.index];
-    const size_t nameA = ea.lowerPath.size() - ea.nameOffset;
-    const size_t nameB = eb.lowerPath.size() - eb.nameOffset;
-    if (nameA != nameB) return nameA < nameB;
-    if (ea.isDirectory != eb.isDirectory) return !ea.isDirectory;  // 同分时文件优先
-    if (ea.lowerPath.size() != eb.lowerPath.size()) return ea.lowerPath.size() < eb.lowerPath.size();
-    return ea.lowerPath < eb.lowerPath;
+    const Entry& ea = storage_.entries[a.index];
+    const Entry& eb = storage_.entries[b.index];
+    if (ea.lowerName.size() != eb.lowerName.size()) {
+      return ea.lowerName.size() < eb.lowerName.size();
+    }
+    if (ea.isDirectory != eb.isDirectory) return !ea.isDirectory;
+    const size_t pathA = storage_.directories[ea.directory].lowerPath.size() + 1 +
+                         ea.lowerName.size();
+    const size_t pathB = storage_.directories[eb.directory].lowerPath.size() + 1 +
+                         eb.lowerName.size();
+    if (pathA != pathB) return pathA < pathB;
+    return std::tie(storage_.directories[ea.directory].lowerPath, ea.lowerName) <
+           std::tie(storage_.directories[eb.directory].lowerPath, eb.lowerName);
   };
 
   std::vector<Scored> scored;
   scored.reserve(1024);
   const uint64_t required = QueryMask(needle);
-  for (size_t i = 0; i < entries_.size(); ++i) {
-    const FileEntry& entry = entries_[i];
-    const std::wstring_view name(entry.lowerPath.data() + entry.nameOffset,
-                                 entry.lowerPath.size() - entry.nameOffset);
+  for (size_t i = 0; i < storage_.entries.size(); ++i) {
+    const Entry& entry = storage_.entries[i];
+    const std::wstring_view name = entry.lowerName;
     size_t score = 0;
     if (required == 0 || (entry.charMask & required) == required) {
       if (needle.size() < 3) {
-        // 1–2 字符只做子串匹配，避免过松的子序列命中。
         if (name.find(needle) != std::wstring_view::npos) {
           score = ScoreLowerText(name, needle);
         }
@@ -657,27 +773,28 @@ std::vector<FileHit> FileIndex::Search(const std::wstring& query, size_t limit) 
       }
     }
     if (score > 0) {
-      score += 40;  // 文件名命中优先
+      score += 40;
       scored.push_back({score, i, false, NameQuality(name, needle)});
     }
   }
 
-  // 文件名已够填满首屏时不再做昂贵的全路径扫描：路径命中只用于“文件名几乎没结果”的兜底。
-  constexpr size_t kNameHitsBeforePath = 6;
-  if (scored.size() < kNameHitsBeforePath) {
-    std::vector<uint8_t> nameMatched(entries_.size(), 0);
+  // 只有文件名完全没有结果时才用路径兜底：路径命中优先级最低，也避免精确查询被全盘路径扫描拖慢。
+  if (scored.empty()) {
+    std::vector<uint8_t> nameMatched(storage_.entries.size(), 0);
     for (const Scored& item : scored) nameMatched[item.index] = 1;
     constexpr size_t kMaxPathHits = 2000;
     size_t pathHits = 0;
-    for (size_t i = 0; i < entries_.size() && pathHits < kMaxPathHits; ++i) {
+    for (size_t i = 0; i < storage_.entries.size() && pathHits < kMaxPathHits; ++i) {
       if (nameMatched[i]) continue;
-      const size_t score = ScorePathOnly(entries_[i].lowerPath, needle);
+      const Entry& entry = storage_.entries[i];
+      const size_t score = ScorePathOnly(storage_.directories[entry.directory].lowerPath, needle);
       if (score > 0) {
         scored.push_back({score, i, true, 0});
         ++pathHits;
       }
     }
   }
+
   if (scored.size() > limit) {
     std::partial_sort(scored.begin(), scored.begin() + limit, scored.end(), better);
     scored.resize(limit);
@@ -686,7 +803,21 @@ std::vector<FileHit> FileIndex::Search(const std::wstring& query, size_t limit) 
   }
   results.reserve(scored.size());
   for (const Scored& item : scored) {
-    results.push_back({entries_[item.index], item.score, item.pathOnly, item.quality});
+    const Entry& entry = storage_.entries[item.index];
+    FileHit hit;
+    hit.path = pathOf(entry);
+    hit.isDirectory = entry.isDirectory;
+    hit.score = item.score;
+    hit.pathOnly = item.pathOnly;
+    hit.quality = item.quality;
+    results.push_back(std::move(hit));
   }
   return results;
+}
+
+size_t FileIndex::RebuildSynchronously() {
+  EnsureRoots();
+  if (roots_.empty()) return 0;
+  RebuildAndSwap();
+  return size();
 }
