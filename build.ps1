@@ -129,7 +129,8 @@ function Invoke-BuildTarget {
 
   Write-Host ("  LD  {0}  ({1} sources, {2} compiled)" -f $Name, $Sources.Count, $compiled) -ForegroundColor DarkGray
   $sw = [Diagnostics.Stopwatch]::StartNew()
-  Invoke-NativeTool -Tool $Gpp -Arguments (@($common) + $objects + @('-o', $ExePath) + $staticLink + $libs + $ExtraFlags) -Label "link $Name"
+  $subsystem = if ($Name -eq 'Lume') { @('-mwindows') } else { @() }
+  Invoke-NativeTool -Tool $Gpp -Arguments (@($common) + $objects + @('-o', $ExePath) + $staticLink + $subsystem + $libs + $ExtraFlags) -Label "link $Name"
   $sw.Stop()
   $size = [math]::Round((Get-Item -LiteralPath $ExePath).Length / 1KB, 1)
   Write-Host ("Built: {0}  ({1} KB, link {2}ms)" -f $ExePath, $size, $sw.ElapsedMilliseconds) -ForegroundColor Green

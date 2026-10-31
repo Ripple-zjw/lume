@@ -2,6 +2,8 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <fcntl.h>
+#include <io.h>
 #include <string>
 
 #include "app/app.h"
@@ -261,7 +263,7 @@ int RunSelfCheck() {
 
 }  // namespace
 
-int wmain(int argc, wchar_t** argv) {
+int RunMain(int argc, wchar_t** argv) {
   SetConsoleOutputCP(CP_UTF8);
   if (!EnablePerMonitorDpi()) {
     // 具体失败原因由 app 内部记录；这里仅保证尽早设置。
@@ -445,5 +447,34 @@ int wmain(int argc, wchar_t** argv) {
   }
   CoUninitialize();
   return exitCode;
+}
+
+// 正式版是 GUI 子系统：双击不出现黑色控制台窗口；
+// 从命令行/重定向运行时复用继承的 stdout，或附加父控制台，保证 CLI 输出可见。
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+  int argc = 0;
+  LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+  if (!argv) return 1;
+  bool attached = false;
+  bool configured = false;
+  HANDLE inherited = GetStdHandle(STD_OUTPUT_HANDLE);
+  if (inherited && inherited != INVALID_HANDLE_VALUE) {
+    const int fd = _open_osfhandle(reinterpret_cast<intptr_t>(inherited), _O_WRONLY | _O_TEXT);
+    if (fd != -1) {
+      _dup2(fd, _fileno(stdout));
+      _close(fd);
+      configured = true;
+    }
+  }
+  if (!configured && AttachConsole(ATTACH_PARENT_PROCESS)) {
+    attached = true;
+    freopen("CONOUT$", "w", stdout);
+    freopen("CONOUT$", "w", stderr);
+    SetConsoleOutputCP(CP_UTF8);
+  }
+  const int code = RunMain(argc, argv);
+  LocalFree(argv);
+  if (attached) FreeConsole();
+  return code;
 }
 
