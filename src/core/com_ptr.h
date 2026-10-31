@@ -36,6 +36,16 @@ class ComPtr {
       ptr_ = nullptr;
     }
   }
+  // 接管一个已经 AddRef 的原始指针（不增加引用计数）。
+  void Attach(T* ptr) {
+    Reset();
+    ptr_ = ptr;
+  }
+  T* Detach() {
+    T* ptr = ptr_;
+    ptr_ = nullptr;
+    return ptr;
+  }
 
  private:
   T* ptr_ = nullptr;

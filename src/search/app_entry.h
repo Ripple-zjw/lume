@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "search/result.h"
@@ -25,6 +26,8 @@ struct AppEntry {
 std::vector<AppEntry> CollectAppEntries();
 
 size_t ScoreEntry(const AppEntry& entry, const std::wstring& query);
+// 小写输入上的同款评分（供文件索引复用，避免重复转小写）。
+size_t ScoreLowerText(std::wstring_view text, std::wstring_view queryLower);
 // 返回按得分降序（同分按标题）的条目指针；空查询返回全部（按标题）。
 std::vector<const AppEntry*> FilterEntries(const std::vector<AppEntry>& entries,
                                            const std::wstring& query, size_t limit = 200);

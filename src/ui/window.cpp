@@ -10,6 +10,7 @@
 #include "core/log.h"
 #include "launch/launcher.h"
 #include "platform/system.h"
+#include "search/merge.h"
 #include "ui/renderer.h"
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
@@ -33,6 +34,8 @@ namespace {
 constexpr wchar_t kClassName[] = L"eToolsLauncherWindow";
 constexpr UINT_PTR kTimerCaret = 0x20;
 constexpr UINT_PTR kTimerAnim = 0x21;
+constexpr UINT_PTR kTimerFileRefresh = 0x22;
+constexpr UINT_PTR kTimerIcons = 0x23;
 constexpr UINT kCaretBlinkMs = 530;
 constexpr double kShowAnimMs = 90.0;
 constexpr double kSelectionAnimMs = 120.0;
@@ -70,7 +73,7 @@ LauncherWindow::~LauncherWindow() {
 }
 
 bool LauncherWindow::Create(HINSTANCE instance, Renderer* renderer, Scene* scene,
-                            IconCache* icons) {
+                            IconCache* icons, const std::wstring& fileRoot) {
   instance_ = instance;
   renderer_ = renderer;
   scene_ = scene;
@@ -78,13 +81,16 @@ bool LauncherWindow::Create(HINSTANCE instance, Renderer* renderer, Scene* scene
   theme_ = MakeTheme(ThemeMode::Dark);
   visibleRows_ = Scene::kMaxVisibleRows;
   input_.SetText(L"");
+  if (!fileRoot.empty()) files_.SetRoots({fileRoot});
 
   LARGE_INTEGER indexStart{};
   QueryPerformanceCounter(&indexStart);
   apps_ = CollectAppEntries();
   Log(L"应用索引耗时: %.1f ms", ElapsedMs(indexStart));
-  filtered_ = FilterEntries(apps_, L"");
+  files_.Start();
+  fileVersionSeen_ = files_.version();
   RebuildRows();
+  PreloadIcons(true);  // 启动时同步预热首屏图标，避免第一次唤出看到字块
 
   // 按光标所在显示器创建，避免首次显示时因 DPI 变化重建交换链。
   POINT initialCursor{};
@@ -116,7 +122,18 @@ bool LauncherWindow::Create(HINSTANCE instance, Renderer* renderer, Scene* scene
     return false;
   }
   ApplyBackdrop();
+  SetTimer(hwnd_, kTimerFileRefresh, 1000, nullptr);
   return true;
+}
+
+void LauncherWindow::Shutdown() {
+  if (hwnd_) {
+    KillTimer(hwnd_, kTimerCaret);
+    KillTimer(hwnd_, kTimerAnim);
+    KillTimer(hwnd_, kTimerFileRefresh);
+    KillTimer(hwnd_, kTimerIcons);
+  }
+  files_.Stop();
 }
 
 void LauncherWindow::SetTheme(const Theme& theme) {
@@ -130,7 +147,6 @@ void LauncherWindow::SetTheme(const Theme& theme) {
 void LauncherWindow::SetQuery(const std::wstring& query) {
   input_.SetText(query);
   contentAlpha_ = 1.0f;
-  filtered_ = FilterEntries(apps_, input_.text());
   RebuildRows();
   if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
 }
@@ -203,36 +219,38 @@ void LauncherWindow::PositionOnCursorMonitor() {
                SWP_NOACTIVATE);
 }
 
-void LauncherWindow::PreloadIcons() {
+void LauncherWindow::PreloadIcons(bool warm) {
   if (!icons_) return;
   const size_t count = std::min(rows_.size(), static_cast<size_t>(visibleRows_));
   for (size_t i = 0; i < count; ++i) {
-    if (!rows_[i].iconKey.empty()) icons_->Get(rows_[i].iconKey);
+    if (rows_[i].iconKey.empty()) continue;
+    if (warm) {
+      icons_->Warm(rows_[i].iconKey);
+    } else {
+      icons_->Get(rows_[i].iconKey);
+    }
   }
 }
 
 void LauncherWindow::RebuildRows() {
-  rows_ = BuildRowsFromEntries(filtered_, !input_.text().empty());
+  rows_ = BuildMergedRows(apps_, &files_, input_.text());
   selected_ = 0;
   scroll_ = 0;
   selectionRow_ = 0.0f;
   EnsureSelectionVisible();
-  PreloadIcons();
+  PreloadIcons(false);
   UpdateSceneState();
 }
 
 void LauncherWindow::Refilter() {
-  filtered_ = FilterEntries(apps_, input_.text());
+  LARGE_INTEGER start{};
+  QueryPerformanceCounter(&start);
   RebuildRows();
   StartContentFade();
   UpdateSceneState();
   if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
-  Log(L"过滤: \"%ls\" -> %zu 条", input_.text().c_str(), filtered_.size());
-}
-
-const AppEntry* LauncherWindow::SelectedEntry() const {
-  if (selected_ < 0 || selected_ >= static_cast<int>(filtered_.size())) return nullptr;
-  return filtered_[static_cast<size_t>(selected_)];
+  Log(L"过滤: \"%ls\" -> %zu 条 (%.1f ms)", input_.text().c_str(), rows_.size(),
+      ElapsedMs(start));
 }
 
 void LauncherWindow::UpdateSceneState() {
@@ -369,7 +387,6 @@ void LauncherWindow::ResetQuery() {
   input_.SetText(L"");
   contentAlpha_ = 1.0f;
   caretVisible_ = true;
-  filtered_ = FilterEntries(apps_, L"");
   RebuildRows();
 }
 
@@ -415,6 +432,7 @@ void LauncherWindow::ShowAndFocus() {
   caretVisible_ = true;
   StartShowAnimation();
   SetTimer(hwnd_, kTimerCaret, kCaretBlinkMs, nullptr);
+  SetTimer(hwnd_, kTimerIcons, 120, nullptr);
   InvalidateRect(hwnd_, nullptr, FALSE);
   UpdateWindow(hwnd_);
   UpdateImeWindow();
@@ -427,6 +445,7 @@ void LauncherWindow::Hide() {
   visible_ = false;
   KillTimer(hwnd_, kTimerCaret);
   KillTimer(hwnd_, kTimerAnim);
+  KillTimer(hwnd_, kTimerIcons);
   animating_ = false;
   showAnimating_ = false;
   selectionAnimating_ = false;
@@ -449,23 +468,49 @@ bool LauncherWindow::HandleKeyDown(WPARAM key) {
       }
       return true;
     case VK_RETURN: {
-      const AppEntry* entry = SelectedEntry();
-      if (!entry) {
+      if (selected_ < 0 || selected_ >= static_cast<int>(rows_.size())) {
         Log(L"回车: 当前没有可启动项");
         return true;
       }
-      const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-      const LaunchMode mode =
-          shift ? LaunchMode::Reveal : (ctrl ? LaunchMode::Elevated : LaunchMode::Normal);
-      std::wstring error;
-      if (LaunchEntry(*entry, mode, &error)) {
-        Log(L"启动: %ls (%ls)", entry->title.c_str(),
-            mode == LaunchMode::Reveal ? L"定位"
-                                       : (mode == LaunchMode::Elevated ? L"管理员" : L"普通"));
-        Hide();
-      } else {
-        Log(L"启动失败: %ls -> %ls", entry->title.c_str(), error.c_str());
+      const ResultRow& row = rows_[static_cast<size_t>(selected_)];
+      Log(L"回车: [%d] %ls action=%d target=%ls", selected_, row.title.c_str(),
+          static_cast<int>(row.action), row.target.c_str());
+      if (row.action == RowAction::None) {
+        Log(L"回车: 当前行为占位提示");
+        return true;
       }
+      const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+      std::wstring error;
+      bool ok = false;
+      if (row.action == RowAction::LaunchApp || row.action == RowAction::LaunchUwp) {
+        AppEntry entry;
+        entry.title = row.title;
+        entry.detail = row.subtitle;
+        entry.launchTarget = row.target;
+        entry.iconKey = row.iconKey;
+        entry.glyph = row.glyph;
+        entry.color = row.color;
+        entry.kind = (row.action == RowAction::LaunchUwp) ? LaunchKind::AppUserModelId
+                                                          : LaunchKind::Shell;
+        const LaunchMode mode =
+            shift ? LaunchMode::Reveal : (ctrl ? LaunchMode::Elevated : LaunchMode::Normal);
+        ok = LaunchEntry(entry, mode, &error);
+        if (ok) {
+          Log(L"启动: %ls (%ls)", row.title.c_str(),
+              mode == LaunchMode::Reveal ? L"定位"
+                                         : (mode == LaunchMode::Elevated ? L"管理员" : L"普通"));
+        } else {
+          Log(L"启动失败: %ls -> %ls", row.title.c_str(), error.c_str());
+        }
+      } else {
+        ok = shift ? RevealPath(row.target, &error) : OpenPath(row.target, &error);
+        if (ok) {
+          Log(L"%ls: %ls", shift ? L"定位" : L"打开", row.target.c_str());
+        } else {
+          Log(L"打开失败: %ls -> %ls", row.target.c_str(), error.c_str());
+        }
+      }
+      if (ok) Hide();
       return true;
     }
     case VK_BACK:
@@ -655,6 +700,25 @@ LRESULT LauncherWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
       }
       if (wParam == kTimerAnim) {
         TickAnimation();
+        return 0;
+      }
+      if (wParam == kTimerFileRefresh) {
+        if (files_.version() != fileVersionSeen_) {
+          fileVersionSeen_ = files_.version();
+          RebuildRows();
+          StartContentFade();
+          UpdateSceneState();
+          InvalidateRect(hwnd_, nullptr, FALSE);
+          Log(L"文件索引已更新，当前结果 %zu 条", rows_.size());
+        }
+        return 0;
+      }
+      if (wParam == kTimerIcons) {
+        if (icons_ && icons_->version() != iconVersionSeen_) {
+          icons_->DrainCompleted();
+          iconVersionSeen_ = icons_->version();
+          InvalidateRect(hwnd_, nullptr, FALSE);
+        }
         return 0;
       }
       if (onTimer_) onTimer_(wParam);

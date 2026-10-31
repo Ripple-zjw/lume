@@ -118,9 +118,22 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 8. **细节**：副标题里的 `%windir%` 等环境变量已展开；`.lnk` 的副标题显示真实目标而不是"应用"。
 9. **待办**：面板高度固定 6 行（结果少时留白）、空查询的最近/常用排序（MRU）、图标磁盘缓存。
 
-## 10. 下一阶段（P4）入口
+## 10. P4 实测结论
 
-- 文件搜索索引：配置根目录（桌面/文档/下载默认），`FindFirstFileExW` 多线程枚举，跳过 reparse point，长路径 `\\?\`。
-- 磁盘快照 + `ReadDirectoryChangesW` 增量（500ms 防抖），`ERROR_NOTIFY_ENUM_DIR` 时整根重扫。
-- 查询延迟目标：5 万条目首建 ≤15s、二次加载 ≤200ms、1 字符 ≤40ms、3+ 字符 ≤16ms。
-- 结果行扩展：文件图标（沿用 IconCache）、路径高亮、`Shift+Enter` 打开所在文件夹。
+1. **索引范围与实现**：默认 `Desktop/Documents/Downloads`（`SHGetFolderPathW` + Downloads 注册表项）；`FindFirstFileExW(FindExInfoBasic, FIND_FIRST_EX_LARGE_FETCH)` 每个根目录一个线程，BFS 跳过 reparse point、`$RECYCLE.BIN`、`System Volume Information`、`.git/.svn/.hg/node_modules`，上限 20 万条。
+2. **实测规模**：本机默认根目录 1361 条、重建 31ms；`--file-root=C:\Windows\System32` 压测 **29640 条 / 515ms**（目标 5 万 ≤15s 有大量余量）；快照加载 1361 条 0ms。
+3. **快照**：二进制 `ETF3`（magic + 版本 + 根目录 + 路径/类型），`files.idx`；AppData 写入失败（沙箱返回 Win32 5）时自动换 exe 同目录，读取时按候选路径依次尝试；应用缓存 `apps.idx` 同样处理。
+4. **watcher**：每根目录 `ReadDirectoryChangesW` 递归监听；新增文件**立即**入索引、删除按前缀摘除、目录新增/重命名置 `rebuildRequested_` 交后台重建；窗口每 1s 比对 `version()` 并自动重新过滤。实测新建 `watchtest.txt` 后日志出现「增量更新」与「文件索引已更新」。
+5. **查询性能陷阱**：最初每次按键 `PreloadIcons` 同步拉 6 个 shell 图标，查询耗时 56.7ms（远超 16ms 目标）。改为**异步图标**：worker 线程 `IShellItemImageFactory` 取 HBITMAP，UI 线程 `DrainCompleted()` 转 D2D；`Get()` 未命中即入队并返回空（先画首字色块），120ms 定时器补图。查询降到 **0.4–0.6ms**；启动时仍用 `Warm()` 同步预热首屏 6 个图标，避免首次唤出闪字块。
+6. **合并排序**：应用（`ScoreEntry`）、文件（文件名命中 +40，路径命中降权 /3）、路径直通（分数 1e6）统一 `stable_sort`，同分保持应用在前；上限 200 行。
+7. **路径直通**：查询本身是存在的路径时置顶一行「打开此路径」；`Enter` 打开、`Shift+Enter` 定位。
+8. **打开文件的沙箱限制**：窗口内 `ShellExecuteEx` 打开 `.txt` 返回 Win32 5、打开 `.exe` 返回 1223（取消）；而 `--open` 单独调用可成功拉起进程，说明是沙箱对 shell 关联/激活的限制，桌面会话需人工验证。
+9. **待办**：面板固定 6 行、图标磁盘缓存、MRU、文件内容搜索、索引根目录设置界面（P5）。
+
+## 11. 下一阶段（P5）入口
+
+- 托盘图标 + 菜单（显示/设置/退出）、`HKCU\...\Run` 自启开关、单实例已就绪。
+- 设置窗（Win32 自绘或简化对话框）：主题、强调色、热键、文件索引根目录、自启。
+- 动态面板高度（结果数 <6 时平滑收起）与图标磁盘缓存（PNG，按解析名哈希）。
+- MRU：应用/文件使用频次与最近时间，空查询展示常用；回车后记录。
+- 性能与体积回归：热键→首帧、查询 P95、空闲内存与 CPU。

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "search/app_entry.h"
+#include "search/file_index.h"
 #include "search/result.h"
 #include "ui/icon_cache.h"
 #include "ui/input.h"
@@ -25,7 +26,8 @@ class LauncherWindow {
   LauncherWindow(const LauncherWindow&) = delete;
   LauncherWindow& operator=(const LauncherWindow&) = delete;
 
-  bool Create(HINSTANCE instance, Renderer* renderer, Scene* scene, IconCache* icons);
+  bool Create(HINSTANCE instance, Renderer* renderer, Scene* scene, IconCache* icons,
+              const std::wstring& fileRoot = std::wstring());
   void SetTheme(const Theme& theme);
   void SetGlass(bool glass);
   void SetQuery(const std::wstring& query);
@@ -37,6 +39,7 @@ class LauncherWindow {
   void Toggle();
   void ShowAndFocus();
   void Hide();
+  void Shutdown();
   // 隐藏状态下先渲染一帧：把 Direct2D/DirectWrite 首次绘制的着色器与布局成本
   // 挪到启动阶段，使首次唤出不再承担冷启动开销。
   void RenderNow();
@@ -57,8 +60,7 @@ class LauncherWindow {
   void ScrollBy(int delta);
   void RebuildRows();
   void Refilter();
-  void PreloadIcons();
-  const AppEntry* SelectedEntry() const;
+  void PreloadIcons(bool warm);
   bool HandleKeyDown(WPARAM key);
   bool HandleChar(wchar_t ch);
   bool HandleIme(UINT message, WPARAM wParam, LPARAM lParam);
@@ -75,7 +77,9 @@ class LauncherWindow {
   Theme theme_;
   TextInput input_;
   std::vector<AppEntry> apps_;
-  std::vector<const AppEntry*> filtered_;
+  FileIndex files_;
+  uint64_t fileVersionSeen_ = 0;
+  uint64_t iconVersionSeen_ = 0;
   IconCache* icons_ = nullptr;
   std::vector<ResultRow> rows_;
   SceneState sceneState_;

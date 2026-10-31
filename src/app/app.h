@@ -9,6 +9,7 @@ struct AppOptions {
   std::wstring accent;  // 空 = 设计默认蓝；system = 跟随系统；RRGGBB = 指定
   std::wstring query;
   std::wstring logPath;
+  std::wstring fileRoot;  // 测试用：覆盖文件索引根目录
   bool showAtStart = false;
   int autoExitMs = 0;
   std::wstring capturePath;

@@ -261,16 +261,17 @@ std::wstring ExeDirectory() {
   return dir;
 }
 
-std::wstring CachePath() {
-  static std::wstring path;
-  if (!path.empty()) return path;
+std::vector<std::wstring> CachePaths() {
+  static std::vector<std::wstring> paths;
+  if (!paths.empty()) return paths;
   const std::wstring base = GetEnv(L"LOCALAPPDATA");
   if (!base.empty()) {
     const std::wstring dir = base + L"\\eTools";
-    if (EnsureDirectory(dir)) path = dir + L"\\apps.idx";
+    if (EnsureDirectory(dir)) paths.push_back(dir + L"\\apps.idx");
   }
-  if (path.empty()) path = ExeDirectory() + L"\\apps.idx";
-  return path;
+  const std::wstring fallback = ExeDirectory() + L"\\apps.idx";
+  if (std::find(paths.begin(), paths.end(), fallback) == paths.end()) paths.push_back(fallback);
+  return paths;
 }
 
 FILETIME NewestStartMenuTime() {
@@ -310,29 +311,35 @@ std::vector<std::wstring> SplitFields(const std::wstring& line) {
 }
 
 bool LoadCache(std::vector<AppEntry>* entries) {
-  const std::wstring path = CachePath();
-  WIN32_FILE_ATTRIBUTE_DATA cacheData{};
-  if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &cacheData)) return false;
   const FILETIME newest = NewestStartMenuTime();
-  if (newest.dwLowDateTime != 0 &&
-      CompareFileTime(&cacheData.ftLastWriteTime, &newest) < 0) {
-    Log(L"索引缓存早于开始菜单变更，重建");
-    return false;
-  }
-
-  HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-                            FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (file == INVALID_HANDLE_VALUE) return false;
-  LARGE_INTEGER size{};
-  if (!GetFileSizeEx(file, &size) || size.QuadPart <= 0 || size.QuadPart > 8 * 1024 * 1024) {
+  std::string data;
+  bool loaded = false;
+  for (const std::wstring& path : CachePaths()) {
+    WIN32_FILE_ATTRIBUTE_DATA cacheData{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &cacheData)) continue;
+    if (newest.dwLowDateTime != 0 &&
+        CompareFileTime(&cacheData.ftLastWriteTime, &newest) < 0) {
+      Log(L"索引缓存早于开始菜单变更，重建: %ls", path.c_str());
+      continue;
+    }
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) continue;
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(file, &size) || size.QuadPart <= 0 || size.QuadPart > 8 * 1024 * 1024) {
+      CloseHandle(file);
+      continue;
+    }
+    data.resize(static_cast<size_t>(size.QuadPart));
+    DWORD read = 0;
+    const BOOL ok = ReadFile(file, data.data(), static_cast<DWORD>(data.size()), &read, nullptr);
     CloseHandle(file);
-    return false;
+    if (ok && static_cast<size_t>(read) == data.size()) {
+      loaded = true;
+      break;
+    }
   }
-  std::string data(static_cast<size_t>(size.QuadPart), '\0');
-  DWORD read = 0;
-  const BOOL ok = ReadFile(file, data.data(), static_cast<DWORD>(data.size()), &read, nullptr);
-  CloseHandle(file);
-  if (!ok || read != data.size()) return false;
+  if (!loaded) return false;
 
   const std::wstring text = Utf8ToWide(data);
   size_t lineStart = 0;
@@ -364,7 +371,6 @@ bool LoadCache(std::vector<AppEntry>* entries) {
 }
 
 void SaveCache(const std::vector<AppEntry>& entries) {
-  const std::wstring path = CachePath();
   std::string out = "v2\n";
   for (const AppEntry& entry : entries) {
     wchar_t color[16];
@@ -375,16 +381,19 @@ void SaveCache(const std::vector<AppEntry>& entries) {
                               SanitizeField(entry.launchTarget) + L"\n";
     out += WideToUtf8(line);
   }
-  HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                            FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (file == INVALID_HANDLE_VALUE) {
-    Log(L"索引缓存写入失败: %lu", GetLastError());
-    return;
+  for (const std::wstring& path : CachePaths()) {
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) continue;
+    DWORD written = 0;
+    const BOOL ok = WriteFile(file, out.data(), static_cast<DWORD>(out.size()), &written, nullptr);
+    CloseHandle(file);
+    if (ok && static_cast<size_t>(written) == out.size()) {
+      Log(L"索引缓存已写入: %ls", path.c_str());
+      return;
+    }
   }
-  DWORD written = 0;
-  WriteFile(file, out.data(), static_cast<DWORD>(out.size()), &written, nullptr);
-  CloseHandle(file);
-  Log(L"索引缓存已写入: %ls", path.c_str());
+  Log(L"索引缓存写入失败: %lu", GetLastError());
 }
 
 }  // namespace
@@ -422,11 +431,13 @@ std::vector<ResultRow> BuildRowsFromEntries(const std::vector<const AppEntry*>& 
     row.glyph = entry->glyph;
     row.iconKey = entry->iconKey;
     row.color = entry->color;
+    row.target = entry->launchTarget;
+    row.action = entry->IsUwp() ? RowAction::LaunchUwp : RowAction::LaunchApp;
     rows.push_back(std::move(row));
   }
   if (rows.empty() && withPlaceholder) {
     ResultRow placeholder;
-    placeholder.title = L"未找到匹配的应用";
+    placeholder.title = L"未找到匹配项";
     placeholder.subtitle = L"换个关键词试试";
     placeholder.glyph = L"?";
     placeholder.color = 0x64748B;

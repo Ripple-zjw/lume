@@ -10,6 +10,8 @@
 #include "platform/hotkey.h"
 #include "platform/system.h"
 #include "search/app_entry.h"
+#include "search/file_index.h"
+#include "search/merge.h"
 #include "ui/icon_cache.h"
 #include "ui/renderer.h"
 #include "ui/scene.h"
@@ -64,8 +66,10 @@ int RunScreenshot(const AppOptions& options, const std::wstring& path, float sca
     return 2;
   }
   const std::vector<AppEntry> apps = CollectAppEntries();
-  const std::vector<const AppEntry*> filtered = FilterEntries(apps, options.query);
-  std::vector<ResultRow> rows = BuildRowsFromEntries(filtered, !options.query.empty());
+  FileIndex files;
+  if (!options.fileRoot.empty()) files.SetRoots({options.fileRoot});
+  files.LoadCachedSnapshot();
+  std::vector<ResultRow> rows = BuildMergedRows(apps, &files, options.query);
   const int visibleRows = Scene::kMaxVisibleRows;
   if (!renderer.AttachOffscreen(PanelCanvasWidth(theme, scale),
                                 PanelCanvasHeight(theme, visibleRows, scale))) {
@@ -150,7 +154,8 @@ int RunLauncher(const AppOptions& options) {
   } else if (!scene.Init(renderer, theme, &icons)) {
     Log(L"场景初始化失败");
     exitCode = 2;
-  } else if (!window.Create(GetModuleHandleW(nullptr), &renderer, &scene, &icons)) {
+  } else if (!window.Create(GetModuleHandleW(nullptr), &renderer, &scene, &icons,
+                            options.fileRoot)) {
     Log(L"窗口创建失败");
     exitCode = 2;
   }
@@ -224,6 +229,8 @@ int RunLauncher(const AppOptions& options) {
     CloseHandle(instanceMutex);
     instanceMutex = nullptr;
   }
+  window.Shutdown();
+  icons.Shutdown();
   LogShutdown();
   return exitCode;
 }

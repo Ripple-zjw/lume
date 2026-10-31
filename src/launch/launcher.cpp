@@ -67,8 +67,7 @@ bool RevealTarget(const AppEntry& entry, std::wstring* error) {
 
 }  // namespace
 
-bool LaunchEntry(const AppEntry& entry, LaunchMode mode, std::wstring* error) {
-  if (error) error->clear();
+bool LaunchEntry(const AppEntry& entry, LaunchMode mode, std::wstring* error) {  if (error) error->clear();
   if (entry.launchTarget.empty()) {
     if (error) *error = L"条目没有可启动目标";
     return false;
@@ -88,4 +87,22 @@ bool LaunchEntry(const AppEntry& entry, LaunchMode mode, std::wstring* error) {
 
   const wchar_t* verb = (mode == LaunchMode::Elevated) ? L"runas" : L"open";
   return RunShellExecute(entry.launchTarget, verb, L"", error);
+}
+
+bool OpenPath(const std::wstring& path, std::wstring* error) {
+  if (error) error->clear();
+  if (path.empty()) {
+    if (error) *error = L"路径为空";
+    return false;
+  }
+  return RunShellExecute(path, L"open", L"", error);
+}
+
+bool RevealPath(const std::wstring& path, std::wstring* error) {
+  if (error) error->clear();
+  if (path.empty()) {
+    if (error) *error = L"路径为空";
+    return false;
+  }
+  return RunShellExecute(L"explorer.exe", L"open", L"/select,\"" + path + L"\"", error);
 }

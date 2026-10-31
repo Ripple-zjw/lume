@@ -2,11 +2,11 @@
 
 Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤出、输入即搜、回车启动应用与文件。C++20 + Win32 + Direct2D/DirectWrite + DirectComposition，免安装、免管理员、单 exe。
 
-**当前进度：P3（应用索引 / 评分 / 真实启动 / shell 图标）已完成，下一步 P4 文件搜索。**
+**当前进度：P4（文件/文件夹搜索、watcher、路径直通、异步图标）已完成，下一步 P5 打磨。**
 
-![真实应用索引与 shell 图标（150%）](docs/images/p3/selected-1.png)
+![文件搜索结果（真实窗口，125% DPI）](docs/images/p4/window-search.png)
 
-![真实桌面合成（125% DPI，云母背景）](docs/images/p3/window-icons.png)
+![watcher 增量更新（新建文件 1s 内出现）](docs/images/p4/watch-new.png)
 
 ## 系统要求
 
@@ -54,6 +54,15 @@ Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤�
 - shell 图标：`IShellItemImageFactory` 取 32px → WIC 转 `32bppPBGRA` → D2D 位图，内存缓存（失败也缓存避免重试），无图标时回退首字色块。
 - 过滤结果实时刷新，空查询按名称列出全部应用；无匹配时显示占位行。
 
+**P4：文件/文件夹搜索**
+
+- 默认索引桌面、文档、下载；`FindFirstFileExW(FIND_FIRST_EX_LARGE_FETCH)` 多线程枚举，跳过 reparse point 与 `.git/node_modules` 等噪声目录，上限 20 万条。
+- 二进制快照 `files.idx`（AppData 不可写时自动退回 exe 同目录）；启动即读快照，后台并行重建后热替换。
+- 每个根目录 `ReadDirectoryChangesW` 递归监听：新增文件立即入索引、删除即摘除、目录/重命名触发防抖重建；窗口 1s 内自动刷新结果。
+- 查询与应用共用评分器（文件名命中加权，路径命中降权）；实测 **0.4–0.6ms**（1361 文件 / 228 应用），路径直通输入可直接打开。
+- 异步图标：worker 取 shell 位图、UI 线程转 D2D，先画首字色块兜底；查询延迟从 56.7ms 降到 0.6ms。
+- `--list-files` / `--file-stats` / `--file-root` 可检查索引；`--open` 可单独验证打开路径。
+
 ## 构建
 
 ```powershell
@@ -99,6 +108,10 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Run
 | `--capture-ms=<n>` | 截图延迟（默认 450；用 30 观察淡入帧） |
 | `--selected=<n>` | 离屏截图时预选中第 n 行 |
 | `--list-apps` | 打印应用索引（UTF-8，每行一条） |
+| `--list-files` | 重建文件索引并打印统计与前 20 条路径 |
+| `--file-stats` | 重建文件索引并只打印统计 |
+| `--file-root=<dir>` | 覆盖文件索引根目录（测试用） |
+| `--open=<path>` | 单独验证打开文件/路径 |
 | `--no-hotkey` | 不注册全局热键 |
 | `--log=<path>` | 指定日志文件（默认 `%LOCALAPPDATA%\eTools\logs`，不可写时退回 exe 同目录） |
 
@@ -117,8 +130,11 @@ src/platform/hotkey.cpp    全局热键注册与候选组合
 src/search/app_entry.h     应用条目模型与索引/过滤接口
 src/search/app_index.cpp   开始菜单/AppsFolder/App Paths 收集、去重、磁盘缓存
 src/search/scorer.cpp      模糊评分与过滤
+src/search/file_index.cpp  文件枚举、快照、watcher、文件检索
+src/search/merge.cpp       应用/文件/路径直通合并排序
 src/search/result.h        显示层结果行
-src/launch/launcher.cpp    ShellExecuteEx / UWP 激活 / 定位 / 管理员运行
+src/ui/icon_cache.cpp      异步 shell 图标加载（worker 取图 + UI 转 D2D）
+src/launch/launcher.cpp    ShellExecuteEx / UWP 激活 / 定位 / 管理员运行 / 打开路径
 src/core/log.*             日志（文件/调试器/控制台，UTF-8）与通用工具
 assets/app.rc              版本/清单资源
 assets/app.manifest        Per-Monitor V2、长路径、UTF-8、asInvoker
@@ -127,6 +143,7 @@ build.ps1                  增量构建脚本
 docs/DESIGN.md             架构决策、实测数据、视觉 token
 docs/images/p2/            P2 设计基线与交互状态截图
 docs/images/p3/            P3 真实索引/图标/选中态截图
+docs/images/p4/            P4 文件搜索/watcher/窗口截图
 ```
 
 ## 已知事项
@@ -137,8 +154,10 @@ docs/images/p3/            P3 真实索引/图标/选中态截图
 - 组字渲染已通过注入验证，**真实微软拼音/搜狗输入法的候选窗位置仍需人工确认**（自动化无法安全驱动系统 IME）。
 - 云母背景下 `--glass` 看到的是壁纸模糊底而非桌面窗口内容，属预期。
 - **UWP 启动无法在本 agent 沙箱内验证**：`ActivateApplication` 与 `shell:AppsFolder\<AUMID>` 都被系统拒绝（Win32 5），连 PowerShell `Start-Process` 同样失败，属环境限制；普通 exe/.lnk 启动已实测成功。请在真实会话里用「记事本/计算器」确认。
+- **用 shell 打开文件/文件夹在沙箱里同样受限**：`.txt` 返回 Win32 5、`.exe` 返回 1223（取消），但 `--open` 单独调用能成功拉起进程；这是沙箱对 shell 关联/激活的限制，桌面会话应正常，需要你实测确认。
+- 文件索引只覆盖桌面/文档/下载（可 `--file-root` 覆盖），不是全盘；全盘秒搜需要 USN 日志/服务（管理员），与免安装定位冲突，后续可选接 Everything。
 - 面板高度固定 6 行（结果少时留白），动态高度属 P5 打磨。
-- 空查询按名称列出全部应用（最近/常用排序待 P3.1）；索引缓存 650ms → 1.1ms，已够用。
+- 空查询按名称列出全部应用（最近/常用排序待 P5）；图标磁盘缓存尚未做。
 - 唤出淡入通过场景整体 alpha 实现（mingw 的 `dcomp.h` 漏声明 `IDCompositionVisual::SetOpacity`，未用 ABI hack）。
 
 ## 路线
@@ -149,5 +168,5 @@ docs/images/p3/            P3 真实索引/图标/选中态截图
 | P1 ✅ | 模块化、主题 token、热键/定位/显隐、单实例、系统门禁、多 DPI 基线 |
 | P2 ✅ | 自绘输入 + IME、虚拟列表、键盘/滚动、唤出与选中动效、布局缓存 |
 | P3 ✅ | 应用索引（开始菜单/AppsFolder/App Paths）、评分、真实启动、shell 图标、索引缓存 |
-| P4 | 文件索引（根目录、快照、watcher）、路径直通 |
-| P5 | 设置窗、托盘、自启、动态高度/图标磁盘缓存、打磨与文档 |
+| P4 ✅ | 文件/文件夹索引、快照、watcher 增量、路径直通、异步图标 |
+| P5 | 设置窗、托盘、自启、动态高度、图标磁盘缓存、MRU、打磨与文档 |
