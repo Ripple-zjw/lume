@@ -23,6 +23,8 @@ struct FileHit {
   FileEntry entry;
   size_t score = 0;
   bool pathOnly = false;  // true = 仅路径命中（文件名没命中）
+  // 0 = 模糊/仅路径，1 = 子串，2 = 前缀，3 = 精确（忽略扩展名）
+  uint8_t quality = 0;
 };
 
 // 文件/文件夹索引：枚举配置根目录、快照缓存、目录 watcher 增量更新、查询。
@@ -75,7 +77,7 @@ class FileIndex {
   mutable std::mutex entriesMutex_;
   std::vector<FileEntry> entries_;
   std::vector<std::wstring> roots_;
-  size_t maxEntries_ = 300000;
+  size_t maxEntries_ = 520000;
   bool persistSnapshot_ = true;
 
   std::vector<std::thread> watchers_;

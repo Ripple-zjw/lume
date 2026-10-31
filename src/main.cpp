@@ -42,6 +42,7 @@ struct CliOptions {
   std::wstring setAutostart;
   std::wstring searchFiles;
   std::wstring searchRows;
+  std::wstring searchLive;
   size_t fileCap = 0;
 };
 
@@ -74,6 +75,7 @@ void PrintUsage() {
       "  --file-cap=<n>                   Override max index entries (testing)\n"
       "  --search-files=<query>           Search the file index and print top results with scores\n"
       "  --search-rows=<query>            Print merged app/file rows with tier and score\n"
+      "  --search-live=<query>            Rebuild index now and search it (diagnostics)\n"
       "  --open=<path>                    Verify opening a file/path directly\n"
       "  --set-autostart=1|0              Enable/disable autostart and print state\n"
       "  --hotkey=<combo>                 Override hotkey for this run (e.g. Ctrl+Alt+K)\n"
@@ -131,6 +133,8 @@ CliOptions Parse(int argc, wchar_t** argv) {
       cli.searchFiles = ValueAfter(arg, L"--search-files=");
     } else if (StartsWith(arg, L"--search-rows=")) {
       cli.searchRows = ValueAfter(arg, L"--search-rows=");
+    } else if (StartsWith(arg, L"--search-live=")) {
+      cli.searchLive = ValueAfter(arg, L"--search-live=");
     } else if (StartsWith(arg, L"--file-cap=")) {
       cli.fileCap = static_cast<size_t>(_wcstoui64(ValueAfter(arg, L"--file-cap=").c_str(),
                                                   nullptr, 10));
@@ -293,6 +297,44 @@ int wmain(int argc, wchar_t** argv) {
     CoUninitialize();
     return 0;
   }
+  if (!cli.searchLive.empty()) {
+    LogInit(cli.app.logPath);
+    AppSettings settings;
+    SettingsStore::Load(&settings);
+    const size_t cap = cli.fileCap > 0 ? cli.fileCap : static_cast<size_t>(settings.fileCap);
+    FileIndex index;
+    index.SetMaxEntries(cap);
+    index.SetPersistSnapshot(false);
+    std::vector<std::wstring> roots = settings.fileRoots;
+    if (!cli.app.fileRoot.empty()) roots = {cli.app.fileRoot};
+    if (!roots.empty()) index.SetRoots(roots);
+    const ULONGLONG start = GetTickCount64();
+    const size_t count = index.RebuildSynchronously();
+    printf("roots=%zu files=%zu cap=%zu rebuild=%llu ms\n", index.roots().size(), count, cap,
+           static_cast<unsigned long long>(GetTickCount64() - start));
+    const std::vector<FileHit> hits = index.Search(cli.searchLive, 2000);
+    printf("hits=%zu\n", hits.size());
+    size_t exactly = 0;
+    const std::wstring needle = cli.searchLive;
+    for (const FileHit& hit : hits) {
+      const std::wstring& path = hit.entry.path;
+      const size_t slash = path.find_last_of(L"\\/");
+      const std::wstring name = slash == std::wstring::npos ? path : path.substr(slash + 1);
+      if (_wcsicmp(name.c_str(), needle.c_str()) == 0) ++exactly;
+    }
+    printf("exact_name=%zu\n", exactly);
+    for (size_t i = 0; i < hits.size() && i < 30; ++i) {
+      const FileHit& hit = hits[i];
+      wchar_t line[1024];
+      swprintf(line, ARRAYSIZE(line), L"%zu%s%s %ls\n", hit.score, hit.pathOnly ? L" [path]" : L"",
+               hit.entry.isDirectory ? L" [dir]" : L"", hit.entry.path.c_str());
+      fputs(WideToUtf8(line).c_str(), stdout);
+    }
+    fflush(stdout);
+    LogShutdown();
+    CoUninitialize();
+    return 0;
+  }
   if (!cli.searchRows.empty()) {
     LogInit(cli.app.logPath);
     AppSettings settings;
@@ -310,8 +352,8 @@ int wmain(int argc, wchar_t** argv) {
            apps.size(), rows.size());
     for (const ResultRow& row : rows) {
       wchar_t line[1024];
-      swprintf(line, ARRAYSIZE(line), L"tier=%u score=%zu %ls | %ls\n", row.tier, row.score,
-               row.title.c_str(), row.subtitle.c_str());
+      swprintf(line, ARRAYSIZE(line), L"tier=%u quality=%u score=%zu %ls | %ls\n", row.tier,
+               row.quality, row.score, row.title.c_str(), row.subtitle.c_str());
       fputs(WideToUtf8(line).c_str(), stdout);
     }
     fflush(stdout);

@@ -86,6 +86,16 @@ uint64_t QueryMask(const std::wstring& needle) {
   return NameMask(needle);
 }
 
+uint8_t NameQuality(std::wstring_view name, const std::wstring& needle) {
+  const std::wstring_view query(needle);
+  if (name == query) return 4;  // 字面完全一致（例如目录名就是 game）
+  const size_t dot = name.find_last_of(L'.');
+  if (dot != std::wstring_view::npos && dot > 0 && name.substr(0, dot) == query) return 3;
+  if (name.size() >= query.size() && name.compare(0, query.size(), query) == 0) return 2;
+  if (name.find(query) != std::wstring_view::npos) return 1;
+  return 0;
+}
+
 // 路径命中只做“目录/文件名边界处的子串”匹配，且大幅降权：
 // 典型分数 ~150–200，低于文件名子序列（300+），不会盖过文件名结果。
 size_t ScorePathOnly(const std::wstring& lowerPath, const std::wstring& needle) {
@@ -613,8 +623,10 @@ std::vector<FileHit> FileIndex::Search(const std::wstring& query, size_t limit) 
     size_t score;
     size_t index;
     bool pathOnly;
+    uint8_t quality;
   };
   auto better = [this](const Scored& a, const Scored& b) {
+    if (a.quality != b.quality) return a.quality > b.quality;
     if (a.score != b.score) return a.score > b.score;
     const FileEntry& ea = entries_[a.index];
     const FileEntry& eb = entries_[b.index];
@@ -646,7 +658,7 @@ std::vector<FileHit> FileIndex::Search(const std::wstring& query, size_t limit) 
     }
     if (score > 0) {
       score += 40;  // 文件名命中优先
-      scored.push_back({score, i, false});
+      scored.push_back({score, i, false, NameQuality(name, needle)});
     }
   }
 
@@ -661,7 +673,7 @@ std::vector<FileHit> FileIndex::Search(const std::wstring& query, size_t limit) 
       if (nameMatched[i]) continue;
       const size_t score = ScorePathOnly(entries_[i].lowerPath, needle);
       if (score > 0) {
-        scored.push_back({score, i, true});
+        scored.push_back({score, i, true, 0});
         ++pathHits;
       }
     }
@@ -674,7 +686,7 @@ std::vector<FileHit> FileIndex::Search(const std::wstring& query, size_t limit) 
   }
   results.reserve(scored.size());
   for (const Scored& item : scored) {
-    results.push_back({entries_[item.index], item.score, item.pathOnly});
+    results.push_back({entries_[item.index], item.score, item.pathOnly, item.quality});
   }
   return results;
 }

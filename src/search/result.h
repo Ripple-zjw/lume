@@ -24,6 +24,8 @@ struct ResultRow {
   UINT32 color = 0x6EA8FF;
   RowAction action = RowAction::None;
   size_t score = 0;
-  // 排序主键：应用/可执行文件 0，其他文件 1，目录 2，仅路径命中 3。
+  // 匹配质量：5 直接路径，4 字面完全一致，3 忽略扩展名一致，2 前缀，1 子串，0 模糊/仅路径。
+  uint8_t quality = 0;
+  // 类型层级：应用/可执行文件 0，其他文件 1，目录 2，仅路径命中 3。
   uint8_t tier = 0;
 };

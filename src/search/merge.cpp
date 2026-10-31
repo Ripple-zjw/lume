@@ -41,7 +41,7 @@ std::wstring FirstGlyph(const std::wstring& text) {
   return text.substr(0, 1);
 }
 
-ResultRow MakeAppRow(const AppEntry& entry, size_t score, uint8_t tier) {
+ResultRow MakeAppRow(const AppEntry& entry, size_t score, uint8_t tier, uint8_t quality) {
   ResultRow row;
   row.title = entry.title;
   row.subtitle = entry.detail;
@@ -52,10 +52,11 @@ ResultRow MakeAppRow(const AppEntry& entry, size_t score, uint8_t tier) {
   row.action = entry.IsUwp() ? RowAction::LaunchUwp : RowAction::LaunchApp;
   row.score = score;
   row.tier = tier;
+  row.quality = quality;
   return row;
 }
 
-ResultRow MakeFileRow(const FileEntry& entry, size_t score, bool pathOnly) {
+ResultRow MakeFileRow(const FileEntry& entry, size_t score, bool pathOnly, uint8_t quality) {
   ResultRow row;
   row.title = FileNameOf(entry.path);
   row.subtitle = entry.path;
@@ -65,6 +66,7 @@ ResultRow MakeFileRow(const FileEntry& entry, size_t score, bool pathOnly) {
   row.target = entry.path;
   row.action = entry.isDirectory ? RowAction::OpenFolder : RowAction::OpenFile;
   row.score = score;
+  row.quality = quality;
   if (pathOnly) {
     row.tier = kTierPathOnly;
   } else if (entry.isDirectory) {
@@ -88,6 +90,7 @@ ResultRow MakePathRow(const std::wstring& path, bool isDirectory) {
   row.target = path;
   row.action = isDirectory ? RowAction::OpenFolder : RowAction::OpenFile;
   row.score = kDirectPathScore;
+  row.quality = 5;
   row.tier = kTierApplication;
   return row;
 }
@@ -109,7 +112,7 @@ std::vector<ResultRow> BuildMergedRows(const std::vector<AppEntry>& apps, FileIn
   if (query.empty()) {
     for (const AppEntry* entry : FilterEntries(apps, L"")) {
       const size_t bonus = usage ? usage->Bonus(entry->launchTarget) : 0;
-      rows.push_back(MakeAppRow(*entry, bonus, kTierApplication));
+      rows.push_back(MakeAppRow(*entry, bonus, kTierApplication, 0));
     }
   } else {
     for (const AppEntry* entry : FilterEntries(apps, query)) {
@@ -119,17 +122,28 @@ std::vector<ResultRow> BuildMergedRows(const std::vector<AppEntry>& apps, FileIn
       // 标题命中=应用优先级；只有详情/启动路径命中时按“路径命中”处理（UWP 的 AUMID 除外）。
       const uint8_t tier =
           (titleHit || entry->IsUwp()) ? kTierApplication : kTierPathOnly;
-      rows.push_back(MakeAppRow(*entry, score + bonus, tier));
+      uint8_t quality = 0;
+      if (titleHit) {
+        if (_wcsicmp(entry->title.c_str(), query.c_str()) == 0) {
+          quality = 4;
+        } else if (_wcsnicmp(entry->title.c_str(), query.c_str(), query.size()) == 0) {
+          quality = 2;
+        } else {
+          quality = 1;
+        }
+      }
+      rows.push_back(MakeAppRow(*entry, score + bonus, tier, quality));
     }
     if (files) {
       for (const FileHit& hit : files->Search(query, kMaxFileHits)) {
         const size_t bonus = usage ? usage->Bonus(hit.entry.path) : 0;
-        rows.push_back(MakeFileRow(hit.entry, hit.score + bonus, hit.pathOnly));
+        rows.push_back(MakeFileRow(hit.entry, hit.score + bonus, hit.pathOnly, hit.quality));
       }
     }
   }
 
   std::stable_sort(rows.begin(), rows.end(), [](const ResultRow& a, const ResultRow& b) {
+    if (a.quality != b.quality) return a.quality > b.quality;
     if (a.tier != b.tier) return a.tier < b.tier;
     return a.score > b.score;
   });
