@@ -9,7 +9,8 @@
 #include "core/log.h"
 #include "platform/hotkey.h"
 #include "platform/system.h"
-#include "search/result.h"
+#include "search/app_entry.h"
+#include "ui/icon_cache.h"
 #include "ui/renderer.h"
 #include "ui/scene.h"
 #include "ui/window.h"
@@ -55,13 +56,17 @@ int RunScreenshot(const AppOptions& options, const std::wstring& path, float sca
     return 2;
   }
   Theme theme = MakeTheme(options.themeMode, ParseAccent(options.accent));
+  IconCache icons;
+  icons.Init(&renderer);
   Scene scene;
-  if (!scene.Init(renderer, theme)) {
+  if (!scene.Init(renderer, theme, &icons)) {
     Log(L"场景初始化失败");
     return 2;
   }
-  std::vector<ResultRow> rows = SampleResults();
-  const int visibleRows = std::clamp(static_cast<int>(rows.size()), 1, Scene::kMaxVisibleRows);
+  const std::vector<AppEntry> apps = CollectAppEntries();
+  const std::vector<const AppEntry*> filtered = FilterEntries(apps, options.query);
+  std::vector<ResultRow> rows = BuildRowsFromEntries(filtered, !options.query.empty());
+  const int visibleRows = Scene::kMaxVisibleRows;
   if (!renderer.AttachOffscreen(PanelCanvasWidth(theme, scale),
                                 PanelCanvasHeight(theme, visibleRows, scale))) {
     Log(L"离屏目标创建失败");
@@ -73,8 +78,8 @@ int RunScreenshot(const AppOptions& options, const std::wstring& path, float sca
   state.caretIndex = options.query.size();
   state.rows = std::move(rows);
   state.visibleRows = visibleRows;
-  state.selected = 0;
-  state.selectionRow = 0.0f;
+  state.selected = options.selected;
+  state.selectionRow = static_cast<float>(options.selected);
   state.contentAlpha = 1.0f;
   state.glass = options.glass;
   scene.Draw(theme, state, true, scale);
@@ -130,6 +135,7 @@ int RunLauncher(const AppOptions& options) {
   }
 
   Renderer renderer;
+  IconCache icons;
   Scene scene;
   LauncherWindow window;
   int exitCode = 0;
@@ -138,10 +144,13 @@ int RunLauncher(const AppOptions& options) {
   if (!renderer.Init()) {
     Log(L"渲染器初始化失败");
     exitCode = 2;
-  } else if (!scene.Init(renderer, theme)) {
+  } else if (!icons.Init(&renderer)) {
+    Log(L"图标缓存初始化失败");
+    exitCode = 2;
+  } else if (!scene.Init(renderer, theme, &icons)) {
     Log(L"场景初始化失败");
     exitCode = 2;
-  } else if (!window.Create(GetModuleHandleW(nullptr), &renderer, &scene)) {
+  } else if (!window.Create(GetModuleHandleW(nullptr), &renderer, &scene, &icons)) {
     Log(L"窗口创建失败");
     exitCode = 2;
   }

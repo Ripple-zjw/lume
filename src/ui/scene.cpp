@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "core/log.h"
+#include "ui/icon_cache.h"
 #include "ui/renderer.h"
 
 namespace {
@@ -44,8 +45,9 @@ bool CreateFormat(IDWriteFactory* factory, const wchar_t* family, float size,
 
 }  // namespace
 
-bool Scene::Init(Renderer& renderer, const Theme& theme) {
+bool Scene::Init(Renderer& renderer, const Theme& theme, IconCache* icons) {
   renderer_ = &renderer;
+  icons_ = icons;
   IDWriteFactory* factory = renderer.dwrite();
   if (!CreateFormat(factory, theme.fontFamily, theme.queryFontSize, DWRITE_FONT_WEIGHT_SEMI_BOLD,
                     &queryFormat_)) {
@@ -125,11 +127,12 @@ void Scene::EnsureQueryLayout(const SceneState& state) {
 
 void Scene::EnsureRowLayouts(const SceneState& state) {
   std::vector<std::wstring> signature;
-  signature.reserve(state.rows.size() * 3);
+  signature.reserve(state.rows.size() * 4);
   for (const ResultRow& row : state.rows) {
     signature.push_back(row.title);
     signature.push_back(row.subtitle);
     signature.push_back(row.glyph);
+    signature.push_back(row.iconKey);
   }
   if (signature == rowSignature_ && !titleLayouts_.empty()) return;
   rowSignature_ = std::move(signature);
@@ -174,9 +177,7 @@ float Scene::CaretX(const SceneState& state) {
 
 void Scene::Draw(const Theme& theme, const SceneState& state, bool fakeWallpaper, float scale) {
   ID2D1DeviceContext* ctx = renderer_->context();
-  const int rows = std::clamp(state.rows.empty() ? 1 : static_cast<int>(state.rows.size()), 1,
-                              kMaxVisibleRows);
-  const int visibleRows = std::clamp(state.visibleRows, 1, rows);
+  const int visibleRows = std::clamp(state.visibleRows, 1, kMaxVisibleRows);
   const float panelHeight = PanelHeight(theme, visibleRows);
   const float canvasWidth = theme.panelWidth + theme.shadowMargin * 2.0f;
   const float canvasHeight = panelHeight + theme.shadowMargin * 2.0f;
@@ -329,13 +330,20 @@ void Scene::Draw(const Theme& theme, const SceneState& state, bool fakeWallpaper
     const float y = panel.y + theme.listTop +
                     static_cast<float>(v) * (theme.rowHeight + theme.rowGap);
 
-    brush_->SetColor(ScaleAlpha(Rgba(row.color, 0.95f), bodyAlpha));
-    ctx->FillRoundedRectangle(
-        D2D1::RoundedRect(D2D1::RectF(panel.x + 36.0f, y + 8.0f, panel.x + 64.0f, y + 36.0f),
-                          theme.tileCorner, theme.tileCorner),
-        brush_.Get());
+    ID2D1Bitmap1* icon = (icons_ && !row.iconKey.empty()) ? icons_->Get(row.iconKey) : nullptr;
+    if (icon) {
+      ctx->DrawBitmap(icon,
+                      D2D1::RectF(panel.x + 36.0f, y + 8.0f, panel.x + 64.0f, y + 36.0f),
+                      contentAlpha * globalAlpha, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+    } else {
+      brush_->SetColor(ScaleAlpha(Rgba(row.color, 0.95f), bodyAlpha));
+      ctx->FillRoundedRectangle(
+          D2D1::RoundedRect(D2D1::RectF(panel.x + 36.0f, y + 8.0f, panel.x + 64.0f, y + 36.0f),
+                            theme.tileCorner, theme.tileCorner),
+          brush_.Get());
+    }
 
-    if (index < glyphLayouts_.size() && glyphLayouts_[index]) {
+    if (!icon && index < glyphLayouts_.size() && glyphLayouts_[index]) {
       brush_->SetColor(ScaleAlpha(theme.tileText, bodyAlpha));
       ctx->DrawTextLayout(D2D1::Point2F(panel.x + 36.0f, y + 8.0f), glyphLayouts_[index].Get(),
                           brush_.Get());

@@ -6,7 +6,9 @@
 #include <string>
 #include <vector>
 
+#include "search/app_entry.h"
 #include "search/result.h"
+#include "ui/icon_cache.h"
 #include "ui/input.h"
 #include "ui/scene.h"
 #include "ui/theme.h"
@@ -23,7 +25,7 @@ class LauncherWindow {
   LauncherWindow(const LauncherWindow&) = delete;
   LauncherWindow& operator=(const LauncherWindow&) = delete;
 
-  bool Create(HINSTANCE instance, Renderer* renderer, Scene* scene);
+  bool Create(HINSTANCE instance, Renderer* renderer, Scene* scene, IconCache* icons);
   void SetTheme(const Theme& theme);
   void SetGlass(bool glass);
   void SetQuery(const std::wstring& query);
@@ -53,6 +55,10 @@ class LauncherWindow {
   void EnsureSelectionVisible();
   void MoveSelection(int delta);
   void ScrollBy(int delta);
+  void RebuildRows();
+  void Refilter();
+  void PreloadIcons();
+  const AppEntry* SelectedEntry() const;
   bool HandleKeyDown(WPARAM key);
   bool HandleChar(wchar_t ch);
   bool HandleIme(UINT message, WPARAM wParam, LPARAM lParam);
@@ -68,6 +74,9 @@ class LauncherWindow {
   Scene* scene_ = nullptr;
   Theme theme_;
   TextInput input_;
+  std::vector<AppEntry> apps_;
+  std::vector<const AppEntry*> filtered_;
+  IconCache* icons_ = nullptr;
   std::vector<ResultRow> rows_;
   SceneState sceneState_;
   std::function<void()> onHotkey_;

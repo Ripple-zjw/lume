@@ -5,7 +5,9 @@
 #include <string>
 
 #include "app/app.h"
+#include "core/log.h"
 #include "platform/system.h"
+#include "search/app_entry.h"
 #include "ui/theme.h"
 
 namespace {
@@ -15,6 +17,7 @@ struct CliOptions {
   std::wstring shot;
   std::wstring shotMatrix;
   float scale = 0.0f;
+  bool listApps = false;
 };
 
 void PrintUsage() {
@@ -40,6 +43,7 @@ void PrintUsage() {
       "  --keys=up,down,enter             Inject key sequence after showing\n"
       "  --compose=<text>                 Inject IME composition string (render test)\n"
       "  --capture-ms=<n>                 Capture delay in ms (default 450, use 30 for fade)\n"
+      "  --list-apps                      Print the collected app index and exit\n"
       "  --no-hotkey                      Do not register global hotkey\n",
       stdout);
 }
@@ -88,8 +92,13 @@ CliOptions Parse(int argc, wchar_t** argv) {
     } else if (StartsWith(arg, L"--capture-ms=")) {
       cli.app.captureDelayMs = static_cast<int>(wcstol(ValueAfter(arg, L"--capture-ms=").c_str(),
                                                        nullptr, 10));
+    } else if (StartsWith(arg, L"--selected=")) {
+      cli.app.selected =
+          static_cast<int>(wcstol(ValueAfter(arg, L"--selected=").c_str(), nullptr, 10));
     } else if (arg == L"--no-hotkey") {
       cli.app.noHotkey = true;
+    } else if (arg == L"--list-apps") {
+      cli.listApps = true;
     } else if (arg == L"--help" || arg == L"-h") {
       PrintUsage();
       exit(0);
@@ -113,6 +122,15 @@ int wmain(int argc, wchar_t** argv) {
 
   CliOptions cli = Parse(argc, argv);
   int exitCode = 0;
+  if (cli.listApps) {
+    for (const AppEntry& entry : CollectAppEntries()) {
+      const std::string line = WideToUtf8(entry.title) + "\n";
+      fputs(line.c_str(), stdout);
+    }
+    fflush(stdout);
+    CoUninitialize();
+    return 0;
+  }
   if (!cli.shot.empty()) {
     exitCode = RunScreenshot(cli.app, cli.shot, cli.scale > 0.0f ? cli.scale : 1.0f);
   } else if (!cli.shotMatrix.empty()) {

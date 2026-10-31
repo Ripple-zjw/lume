@@ -106,9 +106,21 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 9. **真实 IME 待人工确认**：自动化无法安全切换/驱动系统输入法，组字渲染与候选窗定位代码路径已就绪，需在微软拼音/搜狗下人工输入一次中文验证候选窗位置。
 10. **HUD 指标**：P2 下首帧仍为 13.1–13.6ms（120 DPI），构建体积 359KB。
 
-## 9. 下一阶段（P3）入口
+## 9. P3 实测结论
 
-- `IProvider` 接口 + `SearchEngine` 聚合；先接应用源：开始菜单 `.lnk`、`shell:AppsFolder`（UWP/商店）、`App Paths` 注册表。
-- 模糊评分（连续/词首/前缀/长度 + 频率近期性）、MRU 持久化、空查询显示最近/常用。
-- 启动：商店应用 `IApplicationActivationManager`，其它 `ShellExecuteEx`；Shift+Enter 打开位置、Ctrl+Enter 管理员运行。
-- 真实图标：`IShellItemImageFactory` + 内存/磁盘缓存，替换现在的字母色块。
+1. **索引三源**：开始菜单 `.lnk`（`IShellLinkW` 解析真实目标，用于去重与副标题）、`shell:AppsFolder`（`IPropertyStore` 读 `PKEY_AppUserModel_ID`）、`HKLM/HKCU ...\App Paths`。本机得到 228 条。
+2. **去重策略**：标题（忽略大小写）+ 解析后目标双键。修复了 `7zFM`（App Paths）与 `7-Zip File Manager`（.lnk）同时出现的问题。
+3. **索引成本与缓存**：首次 650ms → 缓存 1.1ms（`%LOCALAPPDATA%\eTools\apps.idx`，不可写时退回 exe 同目录；开始菜单目录 mtime 更新则重建）。缓存格式 `v2`，字段以 `\t` 分隔、UTF-8，读写时清洗制表符/换行。
+4. **图标**：`IShellItemImageFactory::GetImage(32, ICONONLY|RESIZETOFIT)` → HBITMAP → WIC `CreateBitmapFromHBITMAP(UseAlpha)` → **必须转 `32bppPBGRA`** 再 `CreateBitmapFromWicBitmap`（直接传原格式报 `WINCODEC_ERR_UNSUPPORTEDPIXELFORMAT 0x88982F80`）；失败也写入缓存避免每帧重试。
+5. **启动**：Shell 条目 `ShellExecuteEx`（`.lnk` 保留参数/工作目录/清单）；UWP 走 `IApplicationActivationManager::ActivateApplication`，失败回退 `shell:AppsFolder\<AUMID>`；`Ctrl+Enter` 用 `runas`，`Shift+Enter` 用 `explorer /select`。
+6. **本环境限制**：agent 沙箱拒绝 UWP 激活（`E_ACCESSDENIED`），且 PowerShell `Start-Process shell:AppsFolder\...` 同样失败 → 属沙箱令牌限制，不是代码问题。普通 exe/`.lnk` 启动已实测成功（7zFM 进程启动后手动结束）。
+7. **过滤**：`ScoreEntry` 子串优先（前缀 +200），子序列匹配按连续/词首加分；标题不命中且查询 ≥3 字符时回退匹配详情/AUMID（`calc` → `WindowsCalculator` 的 AUMID），权重 180 以下不抢标题命中；`FilterEntries` 排序后截断 200 条。空查询按名称排序；无匹配插入"未找到匹配的应用"占位行。
+8. **细节**：副标题里的 `%windir%` 等环境变量已展开；`.lnk` 的副标题显示真实目标而不是"应用"。
+9. **待办**：面板高度固定 6 行（结果少时留白）、空查询的最近/常用排序（MRU）、图标磁盘缓存。
+
+## 10. 下一阶段（P4）入口
+
+- 文件搜索索引：配置根目录（桌面/文档/下载默认），`FindFirstFileExW` 多线程枚举，跳过 reparse point，长路径 `\\?\`。
+- 磁盘快照 + `ReadDirectoryChangesW` 增量（500ms 防抖），`ERROR_NOTIFY_ENUM_DIR` 时整根重扫。
+- 查询延迟目标：5 万条目首建 ≤15s、二次加载 ≤200ms、1 字符 ≤40ms、3+ 字符 ≤16ms。
+- 结果行扩展：文件图标（沿用 IconCache）、路径高亮、`Shift+Enter` 打开所在文件夹。

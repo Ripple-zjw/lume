@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "core/log.h"
+#include "launch/launcher.h"
 #include "platform/system.h"
 #include "ui/renderer.h"
 
@@ -68,15 +69,22 @@ LauncherWindow::~LauncherWindow() {
   }
 }
 
-bool LauncherWindow::Create(HINSTANCE instance, Renderer* renderer, Scene* scene) {
+bool LauncherWindow::Create(HINSTANCE instance, Renderer* renderer, Scene* scene,
+                            IconCache* icons) {
   instance_ = instance;
   renderer_ = renderer;
   scene_ = scene;
+  icons_ = icons;
   theme_ = MakeTheme(ThemeMode::Dark);
-  rows_ = SampleResults();
-  visibleRows_ = std::clamp(static_cast<int>(rows_.size()), 1, Scene::kMaxVisibleRows);
+  visibleRows_ = Scene::kMaxVisibleRows;
   input_.SetText(L"");
-  UpdateSceneState();
+
+  LARGE_INTEGER indexStart{};
+  QueryPerformanceCounter(&indexStart);
+  apps_ = CollectAppEntries();
+  Log(L"应用索引耗时: %.1f ms", ElapsedMs(indexStart));
+  filtered_ = FilterEntries(apps_, L"");
+  RebuildRows();
 
   // 按光标所在显示器创建，避免首次显示时因 DPI 变化重建交换链。
   POINT initialCursor{};
@@ -121,11 +129,9 @@ void LauncherWindow::SetTheme(const Theme& theme) {
 
 void LauncherWindow::SetQuery(const std::wstring& query) {
   input_.SetText(query);
-  selected_ = 0;
-  scroll_ = 0;
-  selectionRow_ = 0.0f;
   contentAlpha_ = 1.0f;
-  UpdateSceneState();
+  filtered_ = FilterEntries(apps_, input_.text());
+  RebuildRows();
   if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -197,9 +203,40 @@ void LauncherWindow::PositionOnCursorMonitor() {
                SWP_NOACTIVATE);
 }
 
+void LauncherWindow::PreloadIcons() {
+  if (!icons_) return;
+  const size_t count = std::min(rows_.size(), static_cast<size_t>(visibleRows_));
+  for (size_t i = 0; i < count; ++i) {
+    if (!rows_[i].iconKey.empty()) icons_->Get(rows_[i].iconKey);
+  }
+}
+
+void LauncherWindow::RebuildRows() {
+  rows_ = BuildRowsFromEntries(filtered_, !input_.text().empty());
+  selected_ = 0;
+  scroll_ = 0;
+  selectionRow_ = 0.0f;
+  EnsureSelectionVisible();
+  PreloadIcons();
+  UpdateSceneState();
+}
+
+void LauncherWindow::Refilter() {
+  filtered_ = FilterEntries(apps_, input_.text());
+  RebuildRows();
+  StartContentFade();
+  UpdateSceneState();
+  if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+  Log(L"过滤: \"%ls\" -> %zu 条", input_.text().c_str(), filtered_.size());
+}
+
+const AppEntry* LauncherWindow::SelectedEntry() const {
+  if (selected_ < 0 || selected_ >= static_cast<int>(filtered_.size())) return nullptr;
+  return filtered_[static_cast<size_t>(selected_)];
+}
+
 void LauncherWindow::UpdateSceneState() {
-  sceneState_.displayText = input_.DisplayText();
-  sceneState_.caretIndex = input_.DisplayCaret();
+  sceneState_.displayText = input_.DisplayText();  sceneState_.caretIndex = input_.DisplayCaret();
   sceneState_.compositionStart = input_.composing() ? input_.compositionStart() : 0;
   sceneState_.compositionLength = input_.composing() ? input_.composition().size() : 0;
   sceneState_.caretVisible = caretVisible_;
@@ -330,12 +367,10 @@ void LauncherWindow::TickAnimation() {
 
 void LauncherWindow::ResetQuery() {
   input_.SetText(L"");
-  selected_ = 0;
-  scroll_ = 0;
-  selectionRow_ = 0.0f;
   contentAlpha_ = 1.0f;
   caretVisible_ = true;
-  UpdateSceneState();
+  filtered_ = FilterEntries(apps_, L"");
+  RebuildRows();
 }
 
 void LauncherWindow::RenderNow() {
@@ -414,26 +449,36 @@ bool LauncherWindow::HandleKeyDown(WPARAM key) {
       }
       return true;
     case VK_RETURN: {
-      if (rows_.empty()) return true;
-      const ResultRow& row = rows_[static_cast<size_t>(selected_)];
-      Log(L"回车: [%d] %ls", selected_, row.title.c_str());
+      const AppEntry* entry = SelectedEntry();
+      if (!entry) {
+        Log(L"回车: 当前没有可启动项");
+        return true;
+      }
+      const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+      const LaunchMode mode =
+          shift ? LaunchMode::Reveal : (ctrl ? LaunchMode::Elevated : LaunchMode::Normal);
+      std::wstring error;
+      if (LaunchEntry(*entry, mode, &error)) {
+        Log(L"启动: %ls (%ls)", entry->title.c_str(),
+            mode == LaunchMode::Reveal ? L"定位"
+                                       : (mode == LaunchMode::Elevated ? L"管理员" : L"普通"));
+        Hide();
+      } else {
+        Log(L"启动失败: %ls -> %ls", entry->title.c_str(), error.c_str());
+      }
       return true;
     }
     case VK_BACK:
       if (input_.Backspace()) {
-        StartContentFade();
-        UpdateSceneState();
+        Refilter();
         UpdateImeWindow();
-        InvalidateRect(hwnd_, nullptr, FALSE);
         Log(L"查询: \"%ls\"", input_.text().c_str());
       }
       return true;
     case VK_DELETE:
       if (input_.DeleteForward()) {
-        StartContentFade();
-        UpdateSceneState();
+        Refilter();
         UpdateImeWindow();
-        InvalidateRect(hwnd_, nullptr, FALSE);
       }
       return true;
     case VK_LEFT:
@@ -475,10 +520,8 @@ bool LauncherWindow::HandleKeyDown(WPARAM key) {
     default:
       if (ctrl && (key == 'V' || key == 'v')) {
         if (input_.PasteFromClipboard(hwnd_)) {
-          StartContentFade();
-          UpdateSceneState();
+          Refilter();
           UpdateImeWindow();
-          InvalidateRect(hwnd_, nullptr, FALSE);
           Log(L"粘贴: \"%ls\"", input_.text().c_str());
         }
         return true;
@@ -491,10 +534,8 @@ bool LauncherWindow::HandleChar(wchar_t ch) {
   if (ch < 0x20 || ch == 0x7F) return false;
   if (input_.composing()) return false;
   if (!input_.InsertChar(ch)) return false;
-  StartContentFade();
-  UpdateSceneState();
+  Refilter();
   UpdateImeWindow();
-  InvalidateRect(hwnd_, nullptr, FALSE);
   Log(L"查询: \"%ls\" (caret=%zu)", input_.text().c_str(), input_.caret());
   return true;
 }
@@ -518,14 +559,15 @@ bool LauncherWindow::HandleIme(UINT message, WPARAM wParam, LPARAM lParam) {
 
   HIMC context = ImmGetContext(hwnd_);
   if (!context) return false;
-  bool changed = false;
+  bool committed = false;
+  bool composing = false;
   if (lParam & GCS_RESULTSTR) {
     const LONG bytes = ImmGetCompositionStringW(context, GCS_RESULTSTR, nullptr, 0);
     if (bytes > 0) {
       std::wstring result(static_cast<size_t>(bytes) / sizeof(wchar_t), L'\0');
       ImmGetCompositionStringW(context, GCS_RESULTSTR, result.data(), bytes);
       input_.CommitComposition(std::move(result));
-      changed = true;
+      committed = true;
       Log(L"IME 上屏: \"%ls\"", input_.text().c_str());
     }
   } else if (lParam & GCS_COMPSTR) {
@@ -537,11 +579,13 @@ bool LauncherWindow::HandleIme(UINT message, WPARAM wParam, LPARAM lParam) {
     }
     const LONG caret = ImmGetCompositionStringW(context, GCS_CURSORPOS, nullptr, 0);
     input_.SetComposition(std::move(composition), caret >= 0 ? static_cast<size_t>(caret) : 0);
-    changed = true;
+    composing = true;
   }
   ImmReleaseContext(hwnd_, context);
-  if (changed) {
-    StartContentFade();
+  if (committed) {
+    Refilter();
+    UpdateImeWindow();
+  } else if (composing) {
     UpdateSceneState();
     UpdateImeWindow();
     InvalidateRect(hwnd_, nullptr, FALSE);

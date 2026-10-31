@@ -16,6 +16,7 @@ struct AppOptions {
   std::wstring type;  // 依次投递的字符，用于验证输入
   std::wstring compose;  // 测试钩子：注入组字串，验证 IME 渲染
   int captureDelayMs = 450;
+  int selected = 0;  // 截图用：预选中行
   bool noHotkey = false;
   bool glass = false;
 };

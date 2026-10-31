@@ -2,11 +2,11 @@
 
 Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤出、输入即搜、回车启动应用与文件。C++20 + Win32 + Direct2D/DirectWrite + DirectComposition，免安装、免管理员、单 exe。
 
-**当前进度：P2（输入 / IME / 列表交互 / 动效）已完成，下一步 P3 应用索引与启动。**
+**当前进度：P3（应用索引 / 评分 / 真实启动 / shell 图标）已完成，下一步 P4 文件搜索。**
 
-![设计基线（150%，六行列表）](docs/images/p2/baseline-dark-150.png)
+![真实应用索引与 shell 图标（150%）](docs/images/p3/selected-1.png)
 
-![真实桌面合成（125% DPI，云母背景）](docs/images/p2/window-mica-dark.png)
+![真实桌面合成（125% DPI，云母背景）](docs/images/p3/window-icons.png)
 
 ## 系统要求
 
@@ -45,6 +45,15 @@ Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤�
 - 自动化验证钩子：`--type`（输入）、`--keys`（按键序列）、`--compose`（注入组字）、`--capture-ms`（任意时刻截图）。
 - 3 DPI × 2 主题基线 + 输入/组字/淡入状态截图：`docs/images/p2/`。
 
+**P3：应用索引 / 评分 / 真实启动 / 图标**
+
+- 索引三源合并：开始菜单 `.lnk`（`IShellLinkW` 解析真实目标）、`shell:AppsFolder`（`IPropertyStore` 读 `PKEY_AppUserModel_ID`，覆盖商店应用）、注册表 `App Paths`；按标题与解析后目标双重去重。
+- 磁盘缓存：`%LOCALAPPDATA%\eTools\apps.idx`（不可写时退回 exe 同目录），开始菜单目录有更新则自动重建；实测 **首次 650ms → 缓存 1.1ms**。
+- 模糊评分：子串命中（前缀加分）、子序列命中（连续/词首加分）、长度惩罚；`--list-apps` 可直接检查索引内容。
+- 真实启动：Shell 条目走 `ShellExecuteEx`（`.lnk` 保留参数/工作目录/清单），商店应用走 `IApplicationActivationManager::ActivateApplication`（失败回退 `shell:AppsFolder\<AUMID>`）；`Ctrl+Enter` 以管理员运行，`Shift+Enter` 打开所在位置。
+- shell 图标：`IShellItemImageFactory` 取 32px → WIC 转 `32bppPBGRA` → D2D 位图，内存缓存（失败也缓存避免重试），无图标时回退首字色块。
+- 过滤结果实时刷新，空查询按名称列出全部应用；无匹配时显示占位行。
+
 ## 构建
 
 ```powershell
@@ -69,6 +78,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Run
 .\build\eTools.exe --shot=out.png --scale=1.5 --theme=light
 .\build\eTools.exe --shot-matrix=docs\images\p2   # 生成 3×2 基线矩阵
 .\build\eTools.exe --type=cod --keys=down,down    # 输入与选择（配合 --capture）
+.\build\eTools.exe --list-apps                    # 打印真实应用索引（UTF-8，每行一条）
 ```
 
 | 参数 | 说明 |
@@ -87,6 +97,8 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Run
 | `--keys=up,down,enter` | 显示后注入按键序列（支持 up/down/left/right/home/end/pgup/pgdn/enter/esc/back/delete） |
 | `--compose=<text>` | 注入 IME 组字串，验证组字渲染 |
 | `--capture-ms=<n>` | 截图延迟（默认 450；用 30 观察淡入帧） |
+| `--selected=<n>` | 离屏截图时预选中第 n 行 |
+| `--list-apps` | 打印应用索引（UTF-8，每行一条） |
 | `--no-hotkey` | 不注册全局热键 |
 | `--log=<path>` | 指定日志文件（默认 `%LOCALAPPDATA%\eTools\logs`，不可写时退回 exe 同目录） |
 
@@ -102,14 +114,19 @@ src/ui/scene.cpp           面板绘制（阴影、输入、虚拟化列表、�
 src/ui/theme.cpp           暗/亮主题 token、强调色解析
 src/platform/system.cpp    系统版本门禁、DPI、工作区、暗色/强调色读取
 src/platform/hotkey.cpp    全局热键注册与候选组合
-src/search/result.h        结果行模型（P3 起由真实搜索源填充）
+src/search/app_entry.h     应用条目模型与索引/过滤接口
+src/search/app_index.cpp   开始菜单/AppsFolder/App Paths 收集、去重、磁盘缓存
+src/search/scorer.cpp      模糊评分与过滤
+src/search/result.h        显示层结果行
+src/launch/launcher.cpp    ShellExecuteEx / UWP 激活 / 定位 / 管理员运行
 src/core/log.*             日志（文件/调试器/控制台，UTF-8）与通用工具
 assets/app.rc              版本/清单资源
 assets/app.manifest        Per-Monitor V2、长路径、UTF-8、asInvoker
 tools/fetch-toolchain.mjs  工具链获取与校验（锁定版本）
 build.ps1                  增量构建脚本
 docs/DESIGN.md             架构决策、实测数据、视觉 token
-docs/images/p2/            设计基线、真实合成、输入/组字/淡入状态截图
+docs/images/p2/            P2 设计基线与交互状态截图
+docs/images/p3/            P3 真实索引/图标/选中态截图
 ```
 
 ## 已知事项
@@ -119,7 +136,9 @@ docs/images/p2/            设计基线、真实合成、输入/组字/淡入状
 - 探针时代的 `--mica` 参数已移除（云母默认开启）；`--shot` 不校验系统版本，便于任意机器生成设计图。
 - 组字渲染已通过注入验证，**真实微软拼音/搜狗输入法的候选窗位置仍需人工确认**（自动化无法安全驱动系统 IME）。
 - 云母背景下 `--glass` 看到的是壁纸模糊底而非桌面窗口内容，属预期。
-- 列表仍为 12 条固定样例（P3 接真实索引）；Enter 目前只写日志。
+- **UWP 启动无法在本 agent 沙箱内验证**：`ActivateApplication` 与 `shell:AppsFolder\<AUMID>` 都被系统拒绝（Win32 5），连 PowerShell `Start-Process` 同样失败，属环境限制；普通 exe/.lnk 启动已实测成功。请在真实会话里用「记事本/计算器」确认。
+- 面板高度固定 6 行（结果少时留白），动态高度属 P5 打磨。
+- 空查询按名称列出全部应用（最近/常用排序待 P3.1）；索引缓存 650ms → 1.1ms，已够用。
 - 唤出淡入通过场景整体 alpha 实现（mingw 的 `dcomp.h` 漏声明 `IDCompositionVisual::SetOpacity`，未用 ABI hack）。
 
 ## 路线
@@ -129,6 +148,6 @@ docs/images/p2/            设计基线、真实合成、输入/组字/淡入状
 | P0 ✅ | 工具链、构建、DComp/D2D 透明窗口、离屏自检 |
 | P1 ✅ | 模块化、主题 token、热键/定位/显隐、单实例、系统门禁、多 DPI 基线 |
 | P2 ✅ | 自绘输入 + IME、虚拟列表、键盘/滚动、唤出与选中动效、布局缓存 |
-| P3 | 应用索引（开始菜单/AppsFolder/App Paths）、评分、启动、图标 |
+| P3 ✅ | 应用索引（开始菜单/AppsFolder/App Paths）、评分、真实启动、shell 图标、索引缓存 |
 | P4 | 文件索引（根目录、快照、watcher）、路径直通 |
-| P5 | 设置窗、托盘、自启、图标缓存、打磨与文档 |
+| P5 | 设置窗、托盘、自启、动态高度/图标磁盘缓存、打磨与文档 |

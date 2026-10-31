@@ -11,6 +11,7 @@
 #include "ui/theme.h"
 
 class Renderer;
+class IconCache;
 
 struct SceneState {
   std::wstring displayText;  // 已插入组字串
@@ -33,7 +34,7 @@ class Scene {
  public:
   static constexpr int kMaxVisibleRows = 6;
 
-  bool Init(Renderer& renderer, const Theme& theme);
+  bool Init(Renderer& renderer, const Theme& theme, IconCache* icons = nullptr);
   void SetTheme(const Theme& theme);
   void Draw(const Theme& theme, const SceneState& state, bool fakeWallpaper, float scale);
   // 光标相对面板左上角的 X（DIP），用于 IME 候选窗定位。
@@ -44,6 +45,7 @@ class Scene {
   void EnsureRowLayouts(const SceneState& state);
 
   Renderer* renderer_ = nullptr;
+  IconCache* icons_ = nullptr;
   ComPtr<ID2D1SolidColorBrush> brush_;
   ComPtr<IDWriteTextFormat> queryFormat_;
   ComPtr<IDWriteTextFormat> titleFormat_;

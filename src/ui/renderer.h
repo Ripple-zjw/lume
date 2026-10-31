@@ -31,6 +31,7 @@ class Renderer {
   ID2D1DeviceContext* context() const { return ctx_.Get(); }
   IDWriteFactory* dwrite() const { return dwrite_.Get(); }
   ID2D1Factory1* d2dFactory() const { return d2dFactory_.Get(); }
+  IWICImagingFactory* wic() const { return wic_.Get(); }
   UINT width() const { return width_; }
   UINT height() const { return height_; }
   RenderTargetKind kind() const { return kind_; }
