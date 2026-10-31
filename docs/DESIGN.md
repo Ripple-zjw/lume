@@ -63,7 +63,8 @@
 | 标题/副标题 | 14 / 11.5；副标题 50% 透明 |
 | 图标 | 32px 候选尺寸，绘制 28 |
 | 选中行 | 主题色 16% 填充 + 左侧 3×20、圆角 1.5 的强调条 |
-| 强调色 | `#6EA8FF`（后续改读系统个性化色） |
+| 强调色 | 默认设计蓝 `#6EA8FF`；`--accent=system` 跟随系统个性化色 |
+| 阴影 | 6 层扩散 2.2px 的圆角填充（待 P2 评估是否换 GaussianBlur 效果） |
 | 动效 | 唤出 90ms（scale 0.985→1、opacity 0→1，`cubic-bezier(0.2,0,0,1)`）；选中迁移 120ms；结果刷新 80ms；hover 60ms |
 
 ## 6. 复现方式
@@ -71,14 +72,28 @@
 ```powershell
 node tools/fetch-toolchain.mjs
 powershell -ExecutionPolicy Bypass -File .\build.ps1
-.\build\eTools.exe --shot=docs/images/baseline-dark-100.png --scale=1
-.\build\eTools.exe --shot=docs/images/baseline-dark-150.png --scale=1.5
-.\build\eTools.exe --mica --capture=docs/images/window-mica-125.png
+.\build\eTools.exe --shot-matrix=docs/images/p1
+.\build\eTools.exe --theme=dark --capture=docs/images/p1/window-mica-dark.png
+.\build\eTools.exe --theme=light --capture=docs/images/p1/window-mica-light.png
+.\build\eTools.exe --theme=dark --glass --capture=docs/images/p1/window-glass.png
 ```
 
-## 7. 下一阶段（P1）入口
+## 7. P1 实测结论
 
-- 拆分 `src/probe` → `src/ui/{window,renderer,theme,anim}`、`src/core/*`、`src/platform/*`。
-- 主题 token 落到代码常量；支持暗/亮/跟随系统与系统强调色。
-- 固定窗口定位策略（鼠标所在显示器、水平居中、垂直 1/5）与失焦隐藏。
-- 建立 `--shot` 矩阵：{100,150,200} × {dark,light} 基线，作为视觉回归门槛。
+1. **模块拆分**（9 个编译单元）：`core/{log}`、`platform/{system,hotkey}`、`ui/{theme,renderer,scene,window}`、`app/app`、`main`。渲染器把窗口目标与离屏目标抽象成 `AttachWindow/AttachOffscreen/Resize`，场景绘制只依赖 `Renderer::context()`。
+2. **唤出链路耗时（QPC 实测，120 DPI）**：定位 0.4ms + `ShowWindow` 12.2ms + 同步绘制 1.7ms ≈ **14.1ms** 到首帧；`SetForegroundWindow` 一次成功。
+3. **首帧优化**：创建后先隐藏渲染一帧（`RenderNow`）预热 Direct2D/DWrite；`Present(1,0)` 改为 `Present(0,0)` 避免等待垂直同步；`ShowWindow` 后 `UpdateWindow` 同步出帧。
+4. **前台激活**：`SetForegroundWindow` 失败时用 `AttachThreadInput` 附加前台线程重试；日志记录是否成功，便于后续判定 UAC/全屏场景。
+5. **测量陷阱**：用"启动第二个实例"触发唤起时，第二个进程是控制台程序，会短暂抢走前台并让首帧膨胀到 ~100ms（WM_PAINT 晚 42ms、Present 阻塞 46ms）。真实热键路径（单进程 `--show`）为 14.1ms。**性能验收必须用单进程路径测**。
+6. **强调色决策**：本机系统强调色为 `#D0000C`（红），直接跟随会把选中行染成酒红，破坏启动器观感；因此默认用设计蓝，`--accent=system` 供原生观感需求。
+7. **系统门禁**：`RtlGetVersion` 取 build，< 22621 弹 MessageBox 退出；`--shot`/`--shot-matrix` 不校验，便于任意机器生成设计图。
+8. **单实例**：命名互斥体 + `FindWindowW` + `WM_APP+1` 唤起；实测第二实例 1.2s 内退出，第一实例日志出现"显示窗口"。
+9. **日志**：默认 `%LOCALAPPDATA%\eTools\logs\etools.log`；沙箱/受限账户下 AppData 不可写时自动退回 exe 同目录（本机验证触发过），`--log=` 可显式指定。
+10. **沙箱限制**：本环境无法执行 `Add-Type`（csc 阻塞），交互测试改用"启动第二实例 + 读日志"的方式，不依赖 P/Invoke。
+
+## 8. 下一阶段（P2）入口
+
+- 自绘单行输入框（`WM_CHAR`/`WM_IME_*`、`ImmSetCompositionWindow`、组字下划线），失败则回退透明 `EDIT`。
+- 虚拟化结果列表与键盘语义（↑↓/PgUp/PgDn/Enter/Shift+Enter/Ctrl+Enter/Esc）。
+- 唤出 90ms 动效、选中迁移 120ms、结果刷新 80ms 淡入，全部基于 QPC 帧计时器。
+- 把 `Scene` 的文本布局与渐变资源改为缓存，避免每帧重建。
