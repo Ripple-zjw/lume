@@ -9,6 +9,9 @@ import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
 
 const REPO = 'brechtsanders/winlibs_mingw';
+// 固定到已验证的版本：重建时不应漂移到未经测试的新 GCC。
+// 升级工具链时改这里，并在 docs/DESIGN.md 记录验证结果。
+const PINNED_TAG = '16.2.0posix-23.1.3-14.0.0-ucrt-r3';
 const ASSET_RE = /^winlibs-x86_64-posix-seh-gcc-[\d.]+-mingw-w64ucrt-[\d.]+-r\d+\.zip$/;
 const HEADERS = { 'user-agent': 'etools-bootstrap/1.0' };
 const destDir = path.resolve(process.argv[2] ?? '.toolchain');
@@ -60,8 +63,11 @@ async function downloadAsset(asset, outFile) {
 async function main() {
   await mkdir(downloadDir, { recursive: true });
 
-  log('查询最新 release ...');
-  const release = await getJson(`https://api.github.com/repos/${REPO}/releases/latest`);
+  log(`查询 release ${PINNED_TAG} ...`);
+  const release = await getJson(`https://api.github.com/repos/${REPO}/releases/tags/${PINNED_TAG}`);
+  if (release.tag_name !== PINNED_TAG) {
+    throw new Error(`返回的 tag 不匹配: 期望 ${PINNED_TAG}, 实际 ${release.tag_name}`);
+  }
   const asset = (release.assets ?? []).find((a) => ASSET_RE.test(a.name));
   if (!asset) throw new Error(`release ${release.tag_name} 中没有匹配 ${ASSET_RE} 的资源`);
   const shaAsset = (release.assets ?? []).find((a) => a.name === `${asset.name}.sha256`);

@@ -4,6 +4,12 @@ Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤�
 
 **当前进度：P0（工具链与渲染闸门）已完成，下一步进入 P1 视觉骨架。**
 
+## 系统要求
+
+- **Windows 11 22H2（build 22621）及以上，x64**。只使用系统自带的云母/圆角与 DirectComposition，不提供 Win10 视觉回退。
+- 免管理员、免安装；无外部运行库依赖（静态链接，UCRT 为 Win10+ 系统组件）。
+- 启动时校验系统版本，低于要求会明确提示并退出（P1 落地）。
+
 ![设计基线（100%）](docs/images/baseline-dark-100.png)
 
 ![真实桌面合成（125% DPI，云母背景）](docs/images/window-mica-125.png)
