@@ -55,27 +55,29 @@
 | Token | 值 |
 | --- | --- |
 | 窗口宽 | 720 DIP |
-| 高度 | 72（输入区）+ 结果行 44×N + 12（N ≤ 8） |
+| 高度 | 84（输入区+列表起点）+ 结果行 44 + 行距 4，可见 6 行时面板 384 DIP |
 | 圆角 | 16（面板）/ 10（行）/ 7（图标底）/ 6（图标） |
 | 内描边 | 1px，暗色 `rgba(255,255,255,0.10)`，亮色 `rgba(0,0,0,0.06)` |
 | 面板底色 | 暗色 `#1B1B1F`，alpha 0.88（有云母时） |
-| 输入字号 | 28 Semibold；占位 36% 透明 |
+| 输入字号 | 26 Semibold；占位 36% 透明 |
 | 标题/副标题 | 14 / 11.5；副标题 50% 透明 |
 | 图标 | 32px 候选尺寸，绘制 28 |
 | 选中行 | 主题色 16% 填充 + 左侧 3×20、圆角 1.5 的强调条 |
 | 强调色 | 默认设计蓝 `#6EA8FF`；`--accent=system` 跟随系统个性化色 |
-| 阴影 | 6 层扩散 2.2px 的圆角填充（待 P2 评估是否换 GaussianBlur 效果） |
-| 动效 | 唤出 90ms（scale 0.985→1、opacity 0→1，`cubic-bezier(0.2,0,0,1)`）；选中迁移 120ms；结果刷新 80ms；hover 60ms |
+| 阴影 | 6 层扩散 2.2px 的圆角填充 |
+| 动效 | 唤出 90ms alpha 淡入；选中迁移 120ms ease-out；结果刷新 80ms；光标闪烁 530ms |
 
 ## 6. 复现方式
 
 ```powershell
 node tools/fetch-toolchain.mjs
 powershell -ExecutionPolicy Bypass -File .\build.ps1
-.\build\eTools.exe --shot-matrix=docs/images/p1
-.\build\eTools.exe --theme=dark --capture=docs/images/p1/window-mica-dark.png
-.\build\eTools.exe --theme=light --capture=docs/images/p1/window-mica-light.png
-.\build\eTools.exe --theme=dark --glass --capture=docs/images/p1/window-glass.png
+.\build\eTools.exe --shot-matrix=docs/images/p2
+.\build\eTools.exe --theme=dark --capture=docs/images/p2/window-mica-dark.png
+.\build\eTools.exe --theme=light --capture=docs/images/p2/window-mica-light.png
+.\build\eTools.exe --type=cod --keys=down,down --capture=docs/images/p2/typed.png
+.\build\eTools.exe --compose=wei --capture=docs/images/p2/compose.png
+.\build\eTools.exe --type=ab --capture=docs/images/p2/fade-30ms.png --capture-ms=30
 ```
 
 ## 7. P1 实测结论
@@ -91,9 +93,22 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 9. **日志**：默认 `%LOCALAPPDATA%\eTools\logs\etools.log`；沙箱/受限账户下 AppData 不可写时自动退回 exe 同目录（本机验证触发过），`--log=` 可显式指定。
 10. **沙箱限制**：本环境无法执行 `Add-Type`（csc 阻塞），交互测试改用"启动第二实例 + 读日志"的方式，不依赖 P/Invoke。
 
-## 8. 下一阶段（P2）入口
+## 8. P2 实测结论
 
-- 自绘单行输入框（`WM_CHAR`/`WM_IME_*`、`ImmSetCompositionWindow`、组字下划线），失败则回退透明 `EDIT`。
-- 虚拟化结果列表与键盘语义（↑↓/PgUp/PgDn/Enter/Shift+Enter/Ctrl+Enter/Esc）。
-- 唤出 90ms 动效、选中迁移 120ms、结果刷新 80ms 淡入，全部基于 QPC 帧计时器。
-- 把 `Scene` 的文本布局与渐变资源改为缓存，避免每帧重建。
+1. **输入**：`TextInput` 管理 UTF-16 文本/光标/组字；左右移动与退格按码点处理（跳过代理对），`Ctrl+V` 从剪贴板取 `CF_UNICODETEXT` 并清洗换行；光标闪烁 530ms。
+2. **IME**：`WM_IME_START/COMPOSITION/ENDCOMPOSITION` → `ImmGetCompositionStringW` 取 `GCS_COMPSTR`/`GCS_RESULTSTR`/`GCS_CURSORPOS`；显示文本 = 光标前文本 + 组字串 + 光标后文本，组字区间用 `IDWriteTextLayout::SetUnderline` 画下划线；`ImmSetCompositionWindow(CFS_POINT)` 把候选窗贴到光标，`ImmSetCompositionFontW` 同步字体字号。
+3. **自动化验证**：新增 `--type`（逐字符 `PostMessage(WM_CHAR)`）、`--keys`（`WM_KEYDOWN` 序列）、`--compose`（直接注入组字状态，验证渲染）、`--capture-ms`（任意时刻截图）。实测 `cod` + 两次下移 + 回车：日志依次 `查询 "c"/"co"/"cod"`、`选中 [1]/[2]`、`回车 [2] 下载`；30ms 截图可见整体淡入中间态，组字截图 `wei` 带下划线且光标跟随。
+4. **虚拟化**：12 条样例、可见 6 行，仅绘制可见行；选中越界自动滚动；滚轮可独立滚动列表。
+5. **动效**：90ms 淡入、120ms 选中迁移、80ms 结果淡入，全部由 8ms QPC 定时器驱动，收敛后自动 `KillTimer`；`Scene` 每帧只做布局缓存查找与少量笔刷设置。
+6. **`com_ptr` 需要移动语义**：`std::vector<ComPtr<T>>` 扩容要求可移动，已补移动构造/赋值。
+7. **`mingw` 的 `dcomp.h` 缺失 `IDCompositionVisual::SetOpacity`**：真实 COM 接口有该方法，但头文件未声明。不采用 vtable 偏移 hack，改为场景级 `globalAlpha` 对所有颜色做整体淡出；代价是云母底色不会随内容淡入（只淡面板与内容），视觉上等价于"面板渐显"。
+8. **`--glass` 在云母下不可见桌面窗口内容**：云母是壁纸级模糊，透明像素显示的是壁纸而非窗口；该参数只用于诊断渲染 alpha。
+9. **真实 IME 待人工确认**：自动化无法安全切换/驱动系统输入法，组字渲染与候选窗定位代码路径已就绪，需在微软拼音/搜狗下人工输入一次中文验证候选窗位置。
+10. **HUD 指标**：P2 下首帧仍为 13.1–13.6ms（120 DPI），构建体积 359KB。
+
+## 9. 下一阶段（P3）入口
+
+- `IProvider` 接口 + `SearchEngine` 聚合；先接应用源：开始菜单 `.lnk`、`shell:AppsFolder`（UWP/商店）、`App Paths` 注册表。
+- 模糊评分（连续/词首/前缀/长度 + 频率近期性）、MRU 持久化、空查询显示最近/常用。
+- 启动：商店应用 `IApplicationActivationManager`，其它 `ShellExecuteEx`；Shift+Enter 打开位置、Ctrl+Enter 管理员运行。
+- 真实图标：`IShellItemImageFactory` + 内存/磁盘缓存，替换现在的字母色块。

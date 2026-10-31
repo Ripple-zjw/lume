@@ -1,12 +1,15 @@
 #include "app/app.h"
 
+#include <algorithm>
 #include <cmath>
 #include <utility>
+#include <vector>
 
 #include "core/com_ptr.h"
 #include "core/log.h"
 #include "platform/hotkey.h"
 #include "platform/system.h"
+#include "search/result.h"
 #include "ui/renderer.h"
 #include "ui/scene.h"
 #include "ui/window.h"
@@ -16,15 +19,30 @@ namespace {
 constexpr int kHotkeyId = 1;
 constexpr UINT_PTR kTimerCapture = 0x10;
 constexpr UINT_PTR kTimerExit = 0x11;
-constexpr int kRowsForLayout = 3;
 
 UINT PanelCanvasWidth(const Theme& theme, float scale) {
   return static_cast<UINT>(std::lround((theme.panelWidth + theme.shadowMargin * 2.0f) * scale));
 }
 
-UINT PanelCanvasHeight(const Theme& theme, float scale) {
+UINT PanelCanvasHeight(const Theme& theme, int visibleRows, float scale) {
   return static_cast<UINT>(
-      std::lround((PanelHeight(theme, kRowsForLayout) + theme.shadowMargin * 2.0f) * scale));
+      std::lround((PanelHeight(theme, visibleRows) + theme.shadowMargin * 2.0f) * scale));
+}
+
+WPARAM KeyTokenToVk(const std::wstring& token) {
+  if (token == L"up") return VK_UP;
+  if (token == L"down") return VK_DOWN;
+  if (token == L"left") return VK_LEFT;
+  if (token == L"right") return VK_RIGHT;
+  if (token == L"home") return VK_HOME;
+  if (token == L"end") return VK_END;
+  if (token == L"pgup") return VK_PRIOR;
+  if (token == L"pgdn") return VK_NEXT;
+  if (token == L"enter") return VK_RETURN;
+  if (token == L"esc") return VK_ESCAPE;
+  if (token == L"back") return VK_BACK;
+  if (token == L"delete") return VK_DELETE;
+  return 0;
 }
 
 }  // namespace
@@ -42,14 +60,22 @@ int RunScreenshot(const AppOptions& options, const std::wstring& path, float sca
     Log(L"场景初始化失败");
     return 2;
   }
-  if (!renderer.AttachOffscreen(PanelCanvasWidth(theme, scale), PanelCanvasHeight(theme, scale))) {
+  std::vector<ResultRow> rows = SampleResults();
+  const int visibleRows = std::clamp(static_cast<int>(rows.size()), 1, Scene::kMaxVisibleRows);
+  if (!renderer.AttachOffscreen(PanelCanvasWidth(theme, scale),
+                                PanelCanvasHeight(theme, visibleRows, scale))) {
     Log(L"离屏目标创建失败");
     return 2;
   }
   if (!renderer.BeginFrame()) return 2;
   SceneState state;
-  state.query = options.query;
+  state.displayText = options.query;
+  state.caretIndex = options.query.size();
+  state.rows = std::move(rows);
+  state.visibleRows = visibleRows;
   state.selected = 0;
+  state.selectionRow = 0.0f;
+  state.contentAlpha = 1.0f;
   state.glass = options.glass;
   scene.Draw(theme, state, true, scale);
   renderer.EndFrame();
@@ -122,10 +148,8 @@ int RunLauncher(const AppOptions& options) {
 
   if (exitCode == 0) {
     window.SetTheme(theme);
-    SceneState state;
-    state.query = options.query;
-    state.glass = options.glass;
-    window.SetSceneState(state);
+    window.SetGlass(options.glass);
+    window.SetQuery(options.query);
     window.RenderNow();  // 隐藏预热：把首次绘制的着色器/布局成本挪到启动阶段
 
     std::wstring hotkeyName;
@@ -152,9 +176,29 @@ int RunLauncher(const AppOptions& options) {
     }
     if (!options.capturePath.empty()) {
       window.ShowAndFocus();
-      SetTimer(window.hwnd(), kTimerCapture, 450, nullptr);
+      SetTimer(window.hwnd(), kTimerCapture, static_cast<UINT>(std::max(10, options.captureDelayMs)),
+               nullptr);
     } else if (options.autoExitMs > 0) {
       SetTimer(window.hwnd(), kTimerExit, static_cast<UINT>(options.autoExitMs), nullptr);
+    }
+    if (!options.compose.empty()) {
+      window.SimulateComposition(options.compose, options.compose.size());
+    }
+    if (!options.type.empty() || !options.keys.empty()) {
+      for (wchar_t ch : options.type) {
+        PostMessageW(window.hwnd(), WM_CHAR, static_cast<WPARAM>(ch), 1);
+      }
+      size_t start = 0;
+      while (start <= options.keys.size()) {
+        const size_t comma = options.keys.find(L',', start);
+        const std::wstring token =
+            options.keys.substr(start, comma == std::wstring::npos ? std::wstring::npos
+                                                                  : comma - start);
+        const WPARAM key = KeyTokenToVk(token);
+        if (key != 0) PostMessageW(window.hwnd(), WM_KEYDOWN, key, 0);
+        if (comma == std::wstring::npos) break;
+        start = comma + 1;
+      }
     }
 
     MSG msg{};

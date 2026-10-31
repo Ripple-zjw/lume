@@ -1,24 +1,18 @@
 #include "ui/scene.h"
 
+#include <algorithm>
+#include <cmath>
+
 #include "core/log.h"
 #include "ui/renderer.h"
 
 namespace {
 
-struct RowSample {
-  const wchar_t* title;
-  const wchar_t* subtitle;
-  UINT32 tileColor;
-  const wchar_t* glyph;
-};
-
-const RowSample kRows[] = {
-    {L"微信", L"C:\\Program Files\\Tencent\\WeChat\\WeChat.exe", 0x14C463, L"微"},
-    {L"Visual Studio Code", L"C:\\Users\\13152\\AppData\\Local\\Programs\\VSCode\\Code.exe", 0x2F80ED,
-     L"V"},
-    {L"下载", L"C:\\Users\\13152\\Downloads", 0x8B5CF6, L"下"},
-};
-constexpr int kRowCount = ARRAYSIZE(kRows);
+constexpr float kInputLeft = 64.0f;
+constexpr float kInputTop = 17.0f;
+constexpr float kInputMaxWidth = 628.0f;
+constexpr float kCaretTop = 22.0f;
+constexpr float kCaretHeight = 28.0f;
 
 D2D1_COLOR_F Rgba(UINT32 rgb, float alpha) {
   return D2D1::ColorF(static_cast<float>((rgb >> 16) & 0xFF) / 255.0f,
@@ -28,6 +22,11 @@ D2D1_COLOR_F Rgba(UINT32 rgb, float alpha) {
 
 D2D1_COLOR_F WithAlpha(D2D1_COLOR_F color, float alpha) {
   color.a = alpha;
+  return color;
+}
+
+D2D1_COLOR_F ScaleAlpha(D2D1_COLOR_F color, float factor) {
+  color.a *= factor;
   return color;
 }
 
@@ -66,75 +65,128 @@ bool Scene::Init(Renderer& renderer, const Theme& theme) {
   }
   glyphFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
   glyphFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+  if (!CreateFormat(factory, theme.fontFamily, theme.queryFontSize, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                    &placeholderFormat_)) {
+    return false;
+  }
 
   HRESULT hr = renderer.context()->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, 1), brush_.Put());
   if (FAILED(hr)) {
     LogHr(L"CreateSolidColorBrush", hr);
     return false;
   }
+
+  if (FAILED(factory->CreateTextLayout(L"搜索应用与文件", 7, placeholderFormat_.Get(), 560.0f,
+                                       40.0f, placeholderLayout_.Put()))) {
+    Log(L"占位文本布局创建失败");
+    return false;
+  }
   return true;
 }
 
-void Scene::DrawRows(ID2D1DeviceContext* ctx, const Theme& theme, const SceneState& state,
-                     D2D1_POINT_2F panel, float panelHeight) {
-  const int rows = state.rows < 1 ? 1 : (state.rows > kRowCount ? kRowCount : state.rows);
-  for (int i = 0; i < rows; ++i) {
-    const float y = panel.y + theme.listTop + i * (theme.rowHeight + theme.rowGap);
-    const bool selected = (i == state.selected);
-    const float left = panel.x + 12.0f;
-    const float right = panel.x + theme.panelWidth - 12.0f;
+void Scene::SetTheme(const Theme& theme) {
+  (void)theme;  // 主题色在 Draw 时传入；这里保留接口用于后续缓存主题相关资源
+  queryKey_.clear();
+}
 
-    if (selected) {
-      brush_->SetColor(theme.selectedFill);
-      ctx->FillRoundedRectangle(
-          D2D1::RoundedRect(D2D1::RectF(left, y, right, y + theme.rowHeight), theme.rowCorner,
-                            theme.rowCorner),
-          brush_.Get());
-      brush_->SetColor(theme.accent);
-      ctx->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(panel.x + 20.0f, y + 12.0f,
-                                                             panel.x + 23.0f, y + 32.0f),
-                                                  1.5f, 1.5f),
-                                brush_.Get());
-    }
+void Scene::EnsureQueryLayout(const SceneState& state) {
+  wchar_t tail[64];
+  swprintf(tail, ARRAYSIZE(tail), L"|%zu|%zu", state.compositionStart, state.compositionLength);
+  const std::wstring key = state.displayText + tail;
+  if (key == queryKey_ && queryLayout_) return;
+  queryKey_ = key;
+  queryLayout_.Reset();
+  caretDipX_ = 0.0f;
+  scrollOffset_ = 0.0f;
+  if (state.displayText.empty()) return;
 
-    // 图标底座（P3 换成真实 shell 图标）
-    brush_->SetColor(Rgba(kRows[i].tileColor, 0.95f));
-    ctx->FillRoundedRectangle(
-        D2D1::RoundedRect(D2D1::RectF(panel.x + 36.0f, y + 8.0f, panel.x + 64.0f, y + 36.0f),
-                          theme.tileCorner, theme.tileCorner),
-        brush_.Get());
+  const UINT32 length = static_cast<UINT32>(state.displayText.size());
+  if (FAILED(renderer_->dwrite()->CreateTextLayout(state.displayText.c_str(), length,
+                                                   queryFormat_.Get(), 2400.0f, 40.0f,
+                                                   queryLayout_.Put()))) {
+    Log(L"查询文本布局创建失败");
+    return;
+  }
+  if (state.compositionLength > 0) {
+    queryLayout_->SetUnderline(TRUE, DWRITE_TEXT_RANGE{static_cast<UINT32>(state.compositionStart),
+                                                      static_cast<UINT32>(state.compositionLength)});
+  }
+  DWRITE_HIT_TEST_METRICS metrics{};
+  FLOAT x = 0.0f;
+  FLOAT y = 0.0f;
+  const UINT32 caret = static_cast<UINT32>(std::min(state.caretIndex, state.displayText.size()));
+  if (SUCCEEDED(queryLayout_->HitTestTextPosition(caret, FALSE, &x, &y, &metrics))) {
+    caretDipX_ = x;
+  }
+  if (caretDipX_ > kInputMaxWidth - 8.0f) {
+    scrollOffset_ = caretDipX_ - (kInputMaxWidth - 8.0f);
+  }
+}
 
-    ComPtr<IDWriteTextLayout> glyph;
-    if (SUCCEEDED(renderer_->dwrite()->CreateTextLayout(
-            kRows[i].glyph, 1, glyphFormat_.Get(), 28.0f, 28.0f, glyph.Put()))) {
-      brush_->SetColor(theme.tileText);
-      ctx->DrawTextLayout(D2D1::Point2F(panel.x + 36.0f, y + 8.0f), glyph.Get(), brush_.Get());
-    }
-
+void Scene::EnsureRowLayouts(const SceneState& state) {
+  std::vector<std::wstring> signature;
+  signature.reserve(state.rows.size() * 3);
+  for (const ResultRow& row : state.rows) {
+    signature.push_back(row.title);
+    signature.push_back(row.subtitle);
+    signature.push_back(row.glyph);
+  }
+  if (signature == rowSignature_ && !titleLayouts_.empty()) return;
+  rowSignature_ = std::move(signature);
+  titleLayouts_.clear();
+  subtitleLayouts_.clear();
+  glyphLayouts_.clear();
+  IDWriteFactory* factory = renderer_->dwrite();
+  for (const ResultRow& row : state.rows) {
     ComPtr<IDWriteTextLayout> title;
-    if (SUCCEEDED(renderer_->dwrite()->CreateTextLayout(
-            kRows[i].title, static_cast<UINT32>(wcslen(kRows[i].title)), titleFormat_.Get(), 420.0f,
-            18.0f, title.Put()))) {
-      brush_->SetColor(theme.textPrimary);
-      ctx->DrawTextLayout(D2D1::Point2F(panel.x + 76.0f, y + 7.0f), title.Get(), brush_.Get());
+    if (SUCCEEDED(factory->CreateTextLayout(row.title.c_str(),
+                                            static_cast<UINT32>(row.title.size()),
+                                            titleFormat_.Get(), 420.0f, 18.0f, title.Put()))) {
+      titleLayouts_.push_back(std::move(title));
+    } else {
+      titleLayouts_.emplace_back();
     }
     ComPtr<IDWriteTextLayout> subtitle;
-    if (SUCCEEDED(renderer_->dwrite()->CreateTextLayout(
-            kRows[i].subtitle, static_cast<UINT32>(wcslen(kRows[i].subtitle)),
-            subtitleFormat_.Get(), 600.0f, 16.0f, subtitle.Put()))) {
-      brush_->SetColor(theme.textSecondary);
-      ctx->DrawTextLayout(D2D1::Point2F(panel.x + 76.0f, y + 24.0f), subtitle.Get(), brush_.Get());
+    if (SUCCEEDED(factory->CreateTextLayout(row.subtitle.c_str(),
+                                            static_cast<UINT32>(row.subtitle.size()),
+                                            subtitleFormat_.Get(), 600.0f, 16.0f,
+                                            subtitle.Put()))) {
+      subtitleLayouts_.push_back(std::move(subtitle));
+    } else {
+      subtitleLayouts_.emplace_back();
+    }
+    ComPtr<IDWriteTextLayout> glyph;
+    if (SUCCEEDED(factory->CreateTextLayout(row.glyph.c_str(),
+                                            static_cast<UINT32>(row.glyph.size()),
+                                            glyphFormat_.Get(), 28.0f, 28.0f, glyph.Put()))) {
+      glyphLayouts_.push_back(std::move(glyph));
+    } else {
+      glyphLayouts_.emplace_back();
     }
   }
-  (void)panelHeight;
+}
+
+float Scene::CaretX(const SceneState& state) {
+  EnsureQueryLayout(state);
+  if (state.displayText.empty()) return kInputLeft;
+  return kInputLeft + caretDipX_ - scrollOffset_;
 }
 
 void Scene::Draw(const Theme& theme, const SceneState& state, bool fakeWallpaper, float scale) {
   ID2D1DeviceContext* ctx = renderer_->context();
-  const float panelHeight = PanelHeight(theme, 3);
+  const int rows = std::clamp(state.rows.empty() ? 1 : static_cast<int>(state.rows.size()), 1,
+                              kMaxVisibleRows);
+  const int visibleRows = std::clamp(state.visibleRows, 1, rows);
+  const float panelHeight = PanelHeight(theme, visibleRows);
   const float canvasWidth = theme.panelWidth + theme.shadowMargin * 2.0f;
   const float canvasHeight = panelHeight + theme.shadowMargin * 2.0f;
   const D2D1_POINT_2F panel = D2D1::Point2F(theme.shadowMargin, theme.shadowMargin);
+  const float contentAlpha = std::clamp(state.contentAlpha, 0.0f, 1.0f);
+  const float globalAlpha = std::clamp(state.globalAlpha, 0.0f, 1.0f);
+  const float bodyAlpha = contentAlpha * globalAlpha;
+
+  EnsureQueryLayout(state);
+  EnsureRowLayouts(state);
 
   ctx->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale));
   ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
@@ -171,13 +223,14 @@ void Scene::Draw(const Theme& theme, const SceneState& state, bool fakeWallpaper
     }
   }
 
-  // 分层柔和阴影（P2 视效果决定是否换 GaussianBlur 效果）
   const D2D1_ROUNDED_RECT panelRect{
       D2D1::RectF(panel.x, panel.y, panel.x + theme.panelWidth, panel.y + panelHeight),
       theme.corner, theme.corner};
+
+  // 分层柔和阴影
   for (int layer = 6; layer >= 1; --layer) {
     const float spread = static_cast<float>(layer) * 2.2f;
-    brush_->SetColor(WithAlpha(theme.shadow, theme.shadow.a * 0.06f));
+    brush_->SetColor(WithAlpha(theme.shadow, theme.shadow.a * 0.06f * globalAlpha));
     ctx->FillRoundedRectangle(
         D2D1::RoundedRect(
             D2D1::RectF(panelRect.rect.left - spread, panelRect.rect.top - spread,
@@ -186,18 +239,19 @@ void Scene::Draw(const Theme& theme, const SceneState& state, bool fakeWallpaper
         brush_.Get());
   }
 
-  // 面板本体（--glass 时降低不透明度，用于真实桌面合成检查）
   D2D1_COLOR_F panelColor = theme.panel;
   if (state.glass) panelColor.a = 0.35f;
+  panelColor.a *= globalAlpha;
   brush_->SetColor(panelColor);
   ctx->FillRoundedRectangle(panelRect, brush_.Get());
-  brush_->SetColor(theme.border);
+  brush_->SetColor(ScaleAlpha(theme.border, globalAlpha));
   ctx->DrawRoundedRectangle(panelRect, brush_.Get(), 1.0f);
 
-  // 顶部柔光：覆盖整个面板并按 96px 淡出
-  D2D1_GRADIENT_STOP topStops[3] = {{0.0f, theme.glow},
-                                    {96.0f / panelHeight, WithAlpha(theme.glow, 0.0f)},
-                                    {1.0f, WithAlpha(theme.glow, 0.0f)}};
+  // 顶部柔光
+  D2D1_COLOR_F glowColor = ScaleAlpha(theme.glow, globalAlpha);
+  D2D1_GRADIENT_STOP topStops[3] = {{0.0f, glowColor},
+                                    {96.0f / panelHeight, WithAlpha(glowColor, 0.0f)},
+                                    {1.0f, WithAlpha(glowColor, 0.0f)}};
   ComPtr<ID2D1GradientStopCollection> topCollection;
   if (SUCCEEDED(ctx->CreateGradientStopCollection(topStops, 3, topCollection.Put()))) {
     D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES topProps{};
@@ -210,42 +264,93 @@ void Scene::Draw(const Theme& theme, const SceneState& state, bool fakeWallpaper
   }
 
   // 搜索图标
-  brush_->SetColor(WithAlpha(theme.textSecondary, 0.85f));
+  brush_->SetColor(ScaleAlpha(WithAlpha(theme.textSecondary, 0.85f), globalAlpha));
   ctx->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(panel.x + 35.0f, panel.y + 35.0f), 7.0f, 7.0f),
                    brush_.Get(), 1.8f);
   ctx->DrawLine(D2D1::Point2F(panel.x + 40.0f, panel.y + 40.0f),
                 D2D1::Point2F(panel.x + 46.0f, panel.y + 46.0f), brush_.Get(), 1.8f);
 
-  // 输入文字与光标
-  const bool empty = state.query.empty();
-  const wchar_t* text = empty ? L"搜索应用与文件" : state.query.c_str();
-  ComPtr<IDWriteTextLayout> queryLayout;
-  if (SUCCEEDED(renderer_->dwrite()->CreateTextLayout(
-          text, static_cast<UINT32>(wcslen(text)), queryFormat_.Get(), 560.0f, 36.0f,
-          queryLayout.Put()))) {
-    brush_->SetColor(empty ? theme.textPlaceholder : theme.textPrimary);
-    ctx->DrawTextLayout(D2D1::Point2F(panel.x + 64.0f, panel.y + 17.0f), queryLayout.Get(),
-                        brush_.Get());
-    DWRITE_TEXT_METRICS metrics{};
-    queryLayout->GetMetrics(&metrics);
-    if (!empty) {
-      const float caretX = panel.x + 64.0f + metrics.widthIncludingTrailingWhitespace;
-      brush_->SetColor(theme.accent);
-      ctx->FillRectangle(
-          D2D1::RectF(caretX + 1.0f, panel.y + 21.0f, caretX + 2.6f, panel.y + 49.0f),
-          brush_.Get());
-    }
+  // 输入文本（组字串已插入显示文本）
+  if (state.displayText.empty()) {
+    brush_->SetColor(ScaleAlpha(theme.textPlaceholder, globalAlpha));
+    ctx->DrawTextLayout(D2D1::Point2F(panel.x + kInputLeft, panel.y + kInputTop),
+                        placeholderLayout_.Get(), brush_.Get());
+  } else if (queryLayout_) {
+    brush_->SetColor(ScaleAlpha(theme.textPrimary, globalAlpha));
+    ctx->DrawTextLayout(D2D1::Point2F(panel.x + kInputLeft - scrollOffset_,
+                                      panel.y + kInputTop),
+                        queryLayout_.Get(), brush_.Get());
+  }
+
+  // 光标
+  if (state.caretVisible) {
+    const float caretX = panel.x + kInputLeft + caretDipX_ - scrollOffset_;
+    brush_->SetColor(ScaleAlpha(theme.accent, globalAlpha));
+    ctx->FillRectangle(
+        D2D1::RectF(caretX + 1.0f, panel.y + kCaretTop, caretX + 2.6f,
+                    panel.y + kCaretTop + kCaretHeight),
+        brush_.Get());
   }
 
   // 分隔线
-  brush_->SetColor(theme.divider);
+  brush_->SetColor(ScaleAlpha(theme.divider, bodyAlpha));
   ctx->FillRectangle(
       D2D1::RectF(panel.x + 20.0f, panel.y + 72.0f, panel.x + theme.panelWidth - 20.0f,
                   panel.y + 73.0f),
       brush_.Get());
 
-  DrawRows(ctx, theme, state, panel, panelHeight);
+  // 选中态（位置可动画）
+  const float selectionOffset =
+      (state.selectionRow - static_cast<float>(state.scroll)) * (theme.rowHeight + theme.rowGap);
+  const bool selectionVisible = state.selectionRow >= -0.5f &&
+                                state.selectionRow <= static_cast<float>(state.scroll + visibleRows) -
+                                                           0.5f;
+  if (selectionVisible && !state.rows.empty()) {
+    const float y = panel.y + theme.listTop + selectionOffset;
+    brush_->SetColor(ScaleAlpha(theme.selectedFill, globalAlpha));
+    ctx->FillRoundedRectangle(D2D1::RoundedRect(
+                                  D2D1::RectF(panel.x + 12.0f, y,
+                                              panel.x + theme.panelWidth - 12.0f,
+                                              y + theme.rowHeight),
+                                  theme.rowCorner, theme.rowCorner),
+                              brush_.Get());
+    brush_->SetColor(ScaleAlpha(theme.accent, globalAlpha));
+    ctx->FillRoundedRectangle(
+        D2D1::RoundedRect(D2D1::RectF(panel.x + 20.0f, y + 12.0f, panel.x + 23.0f, y + 32.0f),
+                          1.5f, 1.5f),
+        brush_.Get());
+  }
+
+  // 虚拟化行内容：只绘制可见窗口
+  for (int v = 0; v < visibleRows; ++v) {
+    const size_t index = static_cast<size_t>(state.scroll + v);
+    if (index >= state.rows.size()) break;
+    const ResultRow& row = state.rows[index];
+    const float y = panel.y + theme.listTop +
+                    static_cast<float>(v) * (theme.rowHeight + theme.rowGap);
+
+    brush_->SetColor(ScaleAlpha(Rgba(row.color, 0.95f), bodyAlpha));
+    ctx->FillRoundedRectangle(
+        D2D1::RoundedRect(D2D1::RectF(panel.x + 36.0f, y + 8.0f, panel.x + 64.0f, y + 36.0f),
+                          theme.tileCorner, theme.tileCorner),
+        brush_.Get());
+
+    if (index < glyphLayouts_.size() && glyphLayouts_[index]) {
+      brush_->SetColor(ScaleAlpha(theme.tileText, bodyAlpha));
+      ctx->DrawTextLayout(D2D1::Point2F(panel.x + 36.0f, y + 8.0f), glyphLayouts_[index].Get(),
+                          brush_.Get());
+    }
+    if (index < titleLayouts_.size() && titleLayouts_[index]) {
+      brush_->SetColor(ScaleAlpha(theme.textPrimary, bodyAlpha));
+      ctx->DrawTextLayout(D2D1::Point2F(panel.x + 76.0f, y + 7.0f), titleLayouts_[index].Get(),
+                          brush_.Get());
+    }
+    if (index < subtitleLayouts_.size() && subtitleLayouts_[index]) {
+      brush_->SetColor(ScaleAlpha(theme.textSecondary, bodyAlpha));
+      ctx->DrawTextLayout(D2D1::Point2F(panel.x + 76.0f, y + 24.0f),
+                          subtitleLayouts_[index].Get(), brush_.Get());
+    }
+  }
 
   ctx->SetTransform(D2D1::Matrix3x2F::Identity());
-  (void)canvasHeight;
 }

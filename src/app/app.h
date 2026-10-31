@@ -12,6 +12,10 @@ struct AppOptions {
   bool showAtStart = false;
   int autoExitMs = 0;
   std::wstring capturePath;
+  std::wstring keys;  // 逗号分隔的按键序列（up/down/enter/...），用于自动化验证
+  std::wstring type;  // 依次投递的字符，用于验证输入
+  std::wstring compose;  // 测试钩子：注入组字串，验证 IME 渲染
+  int captureDelayMs = 450;
   bool noHotkey = false;
   bool glass = false;
 };

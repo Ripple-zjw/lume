@@ -4,7 +4,10 @@
 
 #include <functional>
 #include <string>
+#include <vector>
 
+#include "search/result.h"
+#include "ui/input.h"
 #include "ui/scene.h"
 #include "ui/theme.h"
 
@@ -22,7 +25,10 @@ class LauncherWindow {
 
   bool Create(HINSTANCE instance, Renderer* renderer, Scene* scene);
   void SetTheme(const Theme& theme);
-  void SetSceneState(const SceneState& state);
+  void SetGlass(bool glass);
+  void SetQuery(const std::wstring& query);
+  // 测试钩子：直接注入组字状态，用于验证组字串渲染（真实 IME 由 WM_IME_* 驱动）。
+  void SimulateComposition(const std::wstring& composition, size_t caretInComposition);
   void SetOnHotkey(std::function<void()> callback);
   void SetOnTimer(std::function<void(UINT_PTR)> callback);
 
@@ -42,19 +48,54 @@ class LauncherWindow {
   void ApplyBackdrop();
   void ApplyDpi(UINT dpi);
   void PositionOnCursorMonitor();
+  void UpdateSceneState();
+  void UpdateImeWindow();
+  void EnsureSelectionVisible();
+  void MoveSelection(int delta);
+  void ScrollBy(int delta);
+  bool HandleKeyDown(WPARAM key);
+  bool HandleChar(wchar_t ch);
+  bool HandleIme(UINT message, WPARAM wParam, LPARAM lParam);
+  void ResetQuery();
+  void StartSelectionAnimation();
+  void StartContentFade();
+  void StartShowAnimation();
+  void TickAnimation();
 
   HWND hwnd_ = nullptr;
   HINSTANCE instance_ = nullptr;
   Renderer* renderer_ = nullptr;
   Scene* scene_ = nullptr;
   Theme theme_;
-  SceneState state_;
+  TextInput input_;
+  std::vector<ResultRow> rows_;
+  SceneState sceneState_;
   std::function<void()> onHotkey_;
   std::function<void(UINT_PTR)> onTimer_;
+
+  int selected_ = 0;
+  int scroll_ = 0;
+  int visibleRows_ = Scene::kMaxVisibleRows;
+  float selectionRow_ = 0.0f;
+  float contentAlpha_ = 1.0f;
+  float showAlpha_ = 1.0f;
+  bool caretVisible_ = true;
+  bool glass_ = false;
   bool visible_ = false;
   UINT dpi_ = 96;
   UINT widthPx_ = 0;
   UINT heightPx_ = 0;
+
+  bool animating_ = false;
+  bool showAnimating_ = false;
+  bool selectionAnimating_ = false;
+  bool contentAnimating_ = false;
+  LARGE_INTEGER showStart_{};
+  LARGE_INTEGER selectionStart_{};
+  LARGE_INTEGER contentStart_{};
+  float selectionFrom_ = 0.0f;
+  float selectionTo_ = 0.0f;
+
   LARGE_INTEGER showRequestedAt_{};
   bool measureFirstFrame_ = false;
 };

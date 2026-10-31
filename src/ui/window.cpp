@@ -1,7 +1,9 @@
 #include "ui/window.h"
 
 #include <dwmapi.h>
+#include <imm.h>
 
+#include <algorithm>
 #include <cmath>
 #include <utility>
 
@@ -26,8 +28,14 @@
 #endif
 
 namespace {
+
 constexpr wchar_t kClassName[] = L"eToolsLauncherWindow";
-constexpr int kRowsForLayout = 3;
+constexpr UINT_PTR kTimerCaret = 0x20;
+constexpr UINT_PTR kTimerAnim = 0x21;
+constexpr UINT kCaretBlinkMs = 530;
+constexpr double kShowAnimMs = 90.0;
+constexpr double kSelectionAnimMs = 120.0;
+constexpr double kContentAnimMs = 80.0;
 
 double ElapsedMs(const LARGE_INTEGER& start) {
   LARGE_INTEGER now{};
@@ -37,6 +45,18 @@ double ElapsedMs(const LARGE_INTEGER& start) {
   return static_cast<double>(now.QuadPart - start.QuadPart) * 1000.0 /
          static_cast<double>(frequency.QuadPart);
 }
+
+double Progress(const LARGE_INTEGER& start, double durationMs) {
+  const double t = ElapsedMs(start) / durationMs;
+  return t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
+}
+
+float EaseOut(double t) {
+  const float clamped = static_cast<float>(t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t));
+  const float inverse = 1.0f - clamped;
+  return 1.0f - inverse * inverse;
+}
+
 }  // namespace
 
 const wchar_t* WindowClassName() { return kClassName; }
@@ -53,6 +73,11 @@ bool LauncherWindow::Create(HINSTANCE instance, Renderer* renderer, Scene* scene
   renderer_ = renderer;
   scene_ = scene;
   theme_ = MakeTheme(ThemeMode::Dark);
+  rows_ = SampleResults();
+  visibleRows_ = std::clamp(static_cast<int>(rows_.size()), 1, Scene::kMaxVisibleRows);
+  input_.SetText(L"");
+  UpdateSceneState();
+
   // 按光标所在显示器创建，避免首次显示时因 DPI 变化重建交换链。
   POINT initialCursor{};
   GetCursorPos(&initialCursor);
@@ -88,12 +113,32 @@ bool LauncherWindow::Create(HINSTANCE instance, Renderer* renderer, Scene* scene
 
 void LauncherWindow::SetTheme(const Theme& theme) {
   theme_ = theme;
+  if (scene_) scene_->SetTheme(theme);
   ApplyBackdrop();
+  UpdateSceneState();
   if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
-void LauncherWindow::SetSceneState(const SceneState& state) {
-  state_ = state;
+void LauncherWindow::SetQuery(const std::wstring& query) {
+  input_.SetText(query);
+  selected_ = 0;
+  scroll_ = 0;
+  selectionRow_ = 0.0f;
+  contentAlpha_ = 1.0f;
+  UpdateSceneState();
+  if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void LauncherWindow::SetGlass(bool glass) {
+  glass_ = glass;
+  UpdateSceneState();
+  if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void LauncherWindow::SimulateComposition(const std::wstring& composition, size_t caretInComposition) {
+  input_.SetComposition(composition, caretInComposition);
+  UpdateSceneState();
+  UpdateImeWindow();
   if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -108,11 +153,10 @@ void LauncherWindow::SetOnTimer(std::function<void(UINT_PTR)> callback) {
 void LauncherWindow::ApplyDpi(UINT dpi) {
   dpi_ = dpi < 48 ? 96 : dpi;
   const float scale = static_cast<float>(dpi_) / 96.0f;
-  const float panelHeight = PanelHeight(theme_, kRowsForLayout);
-  widthPx_ = static_cast<UINT>(
-      std::lround((theme_.panelWidth + theme_.shadowMargin * 2.0f) * scale));
-  heightPx_ = static_cast<UINT>(
-      std::lround((panelHeight + theme_.shadowMargin * 2.0f) * scale));
+  const float panelHeight = PanelHeight(theme_, visibleRows_);
+  widthPx_ = static_cast<UINT>(std::lround((theme_.panelWidth + theme_.shadowMargin * 2.0f) * scale));
+  heightPx_ =
+      static_cast<UINT>(std::lround((panelHeight + theme_.shadowMargin * 2.0f) * scale));
 }
 
 void LauncherWindow::ApplyBackdrop() {
@@ -153,18 +197,159 @@ void LauncherWindow::PositionOnCursorMonitor() {
                SWP_NOACTIVATE);
 }
 
+void LauncherWindow::UpdateSceneState() {
+  sceneState_.displayText = input_.DisplayText();
+  sceneState_.caretIndex = input_.DisplayCaret();
+  sceneState_.compositionStart = input_.composing() ? input_.compositionStart() : 0;
+  sceneState_.compositionLength = input_.composing() ? input_.composition().size() : 0;
+  sceneState_.caretVisible = caretVisible_;
+  sceneState_.rows = rows_;
+  sceneState_.selected = selected_;
+  sceneState_.scroll = scroll_;
+  sceneState_.visibleRows = visibleRows_;
+  sceneState_.selectionRow = selectionRow_;
+  sceneState_.contentAlpha = contentAlpha_;
+  sceneState_.globalAlpha = showAlpha_;
+  sceneState_.glass = glass_;
+}
+
+void LauncherWindow::UpdateImeWindow() {
+  if (!hwnd_ || !scene_) return;
+  HIMC context = ImmGetContext(hwnd_);
+  if (!context) return;
+  RECT windowRect{};
+  GetWindowRect(hwnd_, &windowRect);
+  const float scale = static_cast<float>(dpi_) / 96.0f;
+  const float caretDip = scene_->CaretX(sceneState_);
+  POINT point{};
+  point.x = windowRect.left +
+            static_cast<LONG>(std::lround((theme_.shadowMargin + caretDip) * scale));
+  point.y = windowRect.top +
+            static_cast<LONG>(std::lround((theme_.shadowMargin + 20.0f) * scale));
+  COMPOSITIONFORM form{};
+  form.dwStyle = CFS_POINT;
+  form.ptCurrentPos = point;
+  ImmSetCompositionWindow(context, &form);
+
+  LOGFONTW font{};
+  font.lfHeight = -static_cast<LONG>(std::lround(theme_.queryFontSize * scale));
+  font.lfWeight = FW_SEMIBOLD;
+  lstrcpynW(font.lfFaceName, theme_.fontFamily, ARRAYSIZE(font.lfFaceName));
+  ImmSetCompositionFontW(context, &font);
+  ImmReleaseContext(hwnd_, context);
+}
+
+void LauncherWindow::EnsureSelectionVisible() {
+  if (selected_ < scroll_) scroll_ = selected_;
+  if (selected_ >= scroll_ + visibleRows_) scroll_ = selected_ - visibleRows_ + 1;
+  const int maxScroll = std::max(0, static_cast<int>(rows_.size()) - visibleRows_);
+  scroll_ = std::clamp(scroll_, 0, maxScroll);
+}
+
+void LauncherWindow::MoveSelection(int delta) {
+  if (rows_.empty()) return;
+  const int next =
+      std::clamp(selected_ + delta, 0, static_cast<int>(rows_.size()) - 1);
+  if (next == selected_) return;
+  selected_ = next;
+  EnsureSelectionVisible();
+  selectionFrom_ = selectionRow_;
+  selectionTo_ = static_cast<float>(selected_);
+  QueryPerformanceCounter(&selectionStart_);
+  selectionAnimating_ = true;
+  Log(L"选中: [%d] %ls", selected_, rows_[static_cast<size_t>(selected_)].title.c_str());
+  UpdateSceneState();
+  if (!animating_) {
+    animating_ = true;
+    SetTimer(hwnd_, kTimerAnim, 8, nullptr);
+  }
+}
+
+void LauncherWindow::ScrollBy(int delta) {
+  if (rows_.empty()) return;
+  const int maxScroll = std::max(0, static_cast<int>(rows_.size()) - visibleRows_);
+  const int next = std::clamp(scroll_ + delta, 0, maxScroll);
+  if (next == scroll_) return;
+  scroll_ = next;
+  UpdateSceneState();
+  InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void LauncherWindow::StartShowAnimation() {
+  QueryPerformanceCounter(&showStart_);
+  showAnimating_ = true;
+  showAlpha_ = 0.0f;
+  if (!animating_) {
+    animating_ = true;
+    SetTimer(hwnd_, kTimerAnim, 8, nullptr);
+  }
+}
+
+void LauncherWindow::StartContentFade() {
+  QueryPerformanceCounter(&contentStart_);
+  contentAlpha_ = 0.0f;
+  contentAnimating_ = true;
+  if (!animating_) {
+    animating_ = true;
+    SetTimer(hwnd_, kTimerAnim, 8, nullptr);
+  }
+}
+
+void LauncherWindow::TickAnimation() {
+  if (showAnimating_) {
+    const double t = Progress(showStart_, kShowAnimMs);
+    showAlpha_ = EaseOut(t);
+    if (t >= 1.0) {
+      showAlpha_ = 1.0f;
+      showAnimating_ = false;
+    }
+  }
+  if (selectionAnimating_) {
+    const double t = Progress(selectionStart_, kSelectionAnimMs);
+    selectionRow_ = selectionFrom_ + (selectionTo_ - selectionFrom_) * EaseOut(t);
+    if (t >= 1.0) {
+      selectionRow_ = selectionTo_;
+      selectionAnimating_ = false;
+    }
+  }
+  if (contentAnimating_) {
+    const double t = Progress(contentStart_, kContentAnimMs);
+    contentAlpha_ = EaseOut(t);
+    if (t >= 1.0) {
+      contentAlpha_ = 1.0f;
+      contentAnimating_ = false;
+    }
+  }
+  UpdateSceneState();
+  if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+  if (!showAnimating_ && !selectionAnimating_ && !contentAnimating_) {
+    animating_ = false;
+    if (hwnd_) KillTimer(hwnd_, kTimerAnim);
+  }
+}
+
+void LauncherWindow::ResetQuery() {
+  input_.SetText(L"");
+  selected_ = 0;
+  scroll_ = 0;
+  selectionRow_ = 0.0f;
+  contentAlpha_ = 1.0f;
+  caretVisible_ = true;
+  UpdateSceneState();
+}
+
+void LauncherWindow::RenderNow() {
+  if (!renderer_ || !scene_ || !renderer_->BeginFrame()) return;
+  scene_->Draw(theme_, sceneState_, false, static_cast<float>(dpi_) / 96.0f);
+  renderer_->EndFrame();
+}
+
 void LauncherWindow::Toggle() {
   if (visible_) {
     Hide();
   } else {
     ShowAndFocus();
   }
-}
-
-void LauncherWindow::RenderNow() {
-  if (!renderer_ || !scene_ || !renderer_->BeginFrame()) return;
-  scene_->Draw(theme_, state_, false, static_cast<float>(dpi_) / 96.0f);
-  renderer_->EndFrame();
 }
 
 void LauncherWindow::ShowAndFocus() {
@@ -192,8 +377,12 @@ void LauncherWindow::ShowAndFocus() {
   Log(L"显示窗口 (dpi=%u, 前台=%ls, 定位 %.1fms, Show %.1fms, 激活后 %.1fms)", dpi_,
       foregroundOk ? L"是" : L"否", positionMs, showMs, ElapsedMs(showRequestedAt_));
   visible_ = true;
+  caretVisible_ = true;
+  StartShowAnimation();
+  SetTimer(hwnd_, kTimerCaret, kCaretBlinkMs, nullptr);
   InvalidateRect(hwnd_, nullptr, FALSE);
-  UpdateWindow(hwnd_);  // 同步出帧，避免 WM_PAINT 被延后
+  UpdateWindow(hwnd_);
+  UpdateImeWindow();
 }
 
 void LauncherWindow::Hide() {
@@ -201,6 +390,163 @@ void LauncherWindow::Hide() {
   ShowWindow(hwnd_, SW_HIDE);
   if (visible_) Log(L"隐藏窗口");
   visible_ = false;
+  KillTimer(hwnd_, kTimerCaret);
+  KillTimer(hwnd_, kTimerAnim);
+  animating_ = false;
+  showAnimating_ = false;
+  selectionAnimating_ = false;
+  contentAnimating_ = false;
+  showAlpha_ = 1.0f;
+  ResetQuery();
+}
+
+bool LauncherWindow::HandleKeyDown(WPARAM key) {
+  const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+  switch (key) {
+    case VK_ESCAPE:
+      if (input_.composing()) {
+        input_.CancelComposition();
+        UpdateSceneState();
+        UpdateImeWindow();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+      } else {
+        Hide();
+      }
+      return true;
+    case VK_RETURN: {
+      if (rows_.empty()) return true;
+      const ResultRow& row = rows_[static_cast<size_t>(selected_)];
+      Log(L"回车: [%d] %ls", selected_, row.title.c_str());
+      return true;
+    }
+    case VK_BACK:
+      if (input_.Backspace()) {
+        StartContentFade();
+        UpdateSceneState();
+        UpdateImeWindow();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        Log(L"查询: \"%ls\"", input_.text().c_str());
+      }
+      return true;
+    case VK_DELETE:
+      if (input_.DeleteForward()) {
+        StartContentFade();
+        UpdateSceneState();
+        UpdateImeWindow();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+      }
+      return true;
+    case VK_LEFT:
+      input_.MoveLeft();
+      UpdateSceneState();
+      UpdateImeWindow();
+      InvalidateRect(hwnd_, nullptr, FALSE);
+      return true;
+    case VK_RIGHT:
+      input_.MoveRight();
+      UpdateSceneState();
+      UpdateImeWindow();
+      InvalidateRect(hwnd_, nullptr, FALSE);
+      return true;
+    case VK_HOME:
+      input_.MoveHome();
+      UpdateSceneState();
+      UpdateImeWindow();
+      InvalidateRect(hwnd_, nullptr, FALSE);
+      return true;
+    case VK_END:
+      input_.MoveEnd();
+      UpdateSceneState();
+      UpdateImeWindow();
+      InvalidateRect(hwnd_, nullptr, FALSE);
+      return true;
+    case VK_UP:
+      MoveSelection(-1);
+      return true;
+    case VK_DOWN:
+      MoveSelection(1);
+      return true;
+    case VK_PRIOR:
+      MoveSelection(-visibleRows_);
+      return true;
+    case VK_NEXT:
+      MoveSelection(visibleRows_);
+      return true;
+    default:
+      if (ctrl && (key == 'V' || key == 'v')) {
+        if (input_.PasteFromClipboard(hwnd_)) {
+          StartContentFade();
+          UpdateSceneState();
+          UpdateImeWindow();
+          InvalidateRect(hwnd_, nullptr, FALSE);
+          Log(L"粘贴: \"%ls\"", input_.text().c_str());
+        }
+        return true;
+      }
+      return false;
+  }
+}
+
+bool LauncherWindow::HandleChar(wchar_t ch) {
+  if (ch < 0x20 || ch == 0x7F) return false;
+  if (input_.composing()) return false;
+  if (!input_.InsertChar(ch)) return false;
+  StartContentFade();
+  UpdateSceneState();
+  UpdateImeWindow();
+  InvalidateRect(hwnd_, nullptr, FALSE);
+  Log(L"查询: \"%ls\" (caret=%zu)", input_.text().c_str(), input_.caret());
+  return true;
+}
+
+bool LauncherWindow::HandleIme(UINT message, WPARAM wParam, LPARAM lParam) {
+  (void)wParam;
+  if (message == WM_IME_STARTCOMPOSITION) {
+    input_.BeginComposition();
+    UpdateSceneState();
+    UpdateImeWindow();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+    return true;
+  }
+  if (message == WM_IME_ENDCOMPOSITION) {
+    input_.CancelComposition();
+    UpdateSceneState();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+    return true;
+  }
+  if (message != WM_IME_COMPOSITION) return false;
+
+  HIMC context = ImmGetContext(hwnd_);
+  if (!context) return false;
+  bool changed = false;
+  if (lParam & GCS_RESULTSTR) {
+    const LONG bytes = ImmGetCompositionStringW(context, GCS_RESULTSTR, nullptr, 0);
+    if (bytes > 0) {
+      std::wstring result(static_cast<size_t>(bytes) / sizeof(wchar_t), L'\0');
+      ImmGetCompositionStringW(context, GCS_RESULTSTR, result.data(), bytes);
+      input_.CommitComposition(std::move(result));
+      changed = true;
+      Log(L"IME 上屏: \"%ls\"", input_.text().c_str());
+    }
+  } else if (lParam & GCS_COMPSTR) {
+    const LONG bytes = ImmGetCompositionStringW(context, GCS_COMPSTR, nullptr, 0);
+    std::wstring composition;
+    if (bytes > 0) {
+      composition.resize(static_cast<size_t>(bytes) / sizeof(wchar_t));
+      ImmGetCompositionStringW(context, GCS_COMPSTR, composition.data(), bytes);
+    }
+    const LONG caret = ImmGetCompositionStringW(context, GCS_CURSORPOS, nullptr, 0);
+    input_.SetComposition(std::move(composition), caret >= 0 ? static_cast<size_t>(caret) : 0);
+    changed = true;
+  }
+  ImmReleaseContext(hwnd_, context);
+  if (changed) {
+    StartContentFade();
+    UpdateSceneState();
+    UpdateImeWindow();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+  }
+  return true;
 }
 
 LRESULT CALLBACK LauncherWindow::Thunk(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -234,17 +580,41 @@ LRESULT LauncherWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
       EndPaint(hwnd_, &ps);
       return 0;
     }
+    case WM_CHAR:
+      if (static_cast<wchar_t>(wParam) == 0x1B) return 0;
+      HandleChar(static_cast<wchar_t>(wParam));
+      return 0;
+    case WM_KEYDOWN:
+      if (HandleKeyDown(wParam)) return 0;
+      break;
+    case WM_IME_STARTCOMPOSITION:
+    case WM_IME_COMPOSITION:
+    case WM_IME_ENDCOMPOSITION:
+      if (HandleIme(message, wParam, lParam)) return 0;
+      break;
+    case WM_MOUSEWHEEL: {
+      const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+      ScrollBy(delta > 0 ? -1 : 1);
+      return 0;
+    }
     case WM_ACTIVATE:
       if (LOWORD(wParam) == WA_INACTIVE && visible_) {
         Hide();
       }
       return 0;
-    case WM_KEYDOWN:
-      if (wParam == VK_ESCAPE) {
-        Hide();
+    case WM_TIMER:
+      if (wParam == kTimerCaret) {
+        caretVisible_ = !caretVisible_;
+        UpdateSceneState();
+        InvalidateRect(hwnd_, nullptr, FALSE);
         return 0;
       }
-      break;
+      if (wParam == kTimerAnim) {
+        TickAnimation();
+        return 0;
+      }
+      if (onTimer_) onTimer_(wParam);
+      return 0;
     case WM_DPICHANGED: {
       const auto* suggested = reinterpret_cast<const RECT*>(lParam);
       if (suggested) {
@@ -253,8 +623,7 @@ LRESULT LauncherWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         heightPx_ = static_cast<UINT>(suggested->bottom - suggested->top);
         if (renderer_) renderer_->Resize(widthPx_, heightPx_);
         SetWindowPos(hwnd_, HWND_TOP, suggested->left, suggested->top,
-                     static_cast<int>(widthPx_), static_cast<int>(heightPx_),
-                     SWP_NOACTIVATE);
+                     static_cast<int>(widthPx_), static_cast<int>(heightPx_), SWP_NOACTIVATE);
         InvalidateRect(hwnd_, nullptr, FALSE);
       }
       return 0;
@@ -264,9 +633,6 @@ LRESULT LauncherWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
       return 0;
     case kMsgToggle:
       ShowAndFocus();
-      return 0;
-    case WM_TIMER:
-      if (onTimer_) onTimer_(wParam);
       return 0;
     case WM_CLOSE:
       DestroyWindow(hwnd_);

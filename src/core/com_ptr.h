@@ -8,6 +8,15 @@ class ComPtr {
   ~ComPtr() { Reset(); }
   ComPtr(const ComPtr&) = delete;
   ComPtr& operator=(const ComPtr&) = delete;
+  ComPtr(ComPtr&& other) noexcept : ptr_(other.ptr_) { other.ptr_ = nullptr; }
+  ComPtr& operator=(ComPtr&& other) noexcept {
+    if (this != &other) {
+      Reset();
+      ptr_ = other.ptr_;
+      other.ptr_ = nullptr;
+    }
+    return *this;
+  }
 
   T* Get() const { return ptr_; }
   T* operator->() const { return ptr_; }
