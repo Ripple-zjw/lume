@@ -1,0 +1,25 @@
+# 工具链与构建产物
+.toolchain/
+build/
+out/
+*.obj
+*.o
+*.res
+*.exe
+*.pdb
+*.ilk
+*.map
+
+# 编辑器/系统
+.vs/
+.idea/
+.vscode/*
+!.vscode/settings.json
+Thumbs.db
+desktop.ini
+*.log
+*.png.tmp
+
+# 本地运行数据（若使用便携模式，忽略生成物）
+*.idx
+*.cache.json
