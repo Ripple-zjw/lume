@@ -20,7 +20,7 @@
 class Renderer;
 
 // shell 图标缓存：
-//  - 磁盘 PNG 缓存（%LOCALAPPDATA%\eTools\icons），二次启动直接解码
+//  - 磁盘 PNG 缓存（LLOCALAPPDATAL\eTools\icons），二次启动直接解码
 //  - Get() 非阻塞：未命中入队，worker 取图/解码后由 UI 线程转 D2D
 //  - Warm() 同步加载（启动预热首屏）
 class IconCache {

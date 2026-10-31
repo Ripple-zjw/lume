@@ -47,7 +47,7 @@ std::vector<std::wstring> IconCache::CachePaths(const std::wstring& key) const {
   std::vector<std::wstring> paths;
   const std::wstring base = GetEnv(L"LOCALAPPDATA");
   if (!base.empty()) {
-    const std::wstring dir = base + L"\\eTools\\icons";
+    const std::wstring dir = base + L"\\Lume\\icons";
     if (EnsureDirectory(dir)) paths.push_back(dir + L"\\" + name);
   }
   const std::wstring fallbackDir = ExeDirectory() + L"\\icons";

@@ -35,7 +35,7 @@
 
 namespace {
 
-constexpr wchar_t kClassName[] = L"eToolsLauncherWindow";
+constexpr wchar_t kClassName[] = L"LumeLauncherWindow";
 constexpr UINT_PTR kTimerCaret = 0x20;
 constexpr UINT_PTR kTimerAnim = 0x21;
 constexpr UINT_PTR kTimerFileRefresh = 0x22;
@@ -134,7 +134,7 @@ bool LauncherWindow::Create(HINSTANCE instance, Renderer* renderer, Scene* scene
   }
 
   hwnd_ = CreateWindowExW(
-      WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOREDIRECTIONBITMAP, kClassName, L"eTools", WS_POPUP,
+      WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOREDIRECTIONBITMAP, kClassName, L"Lume", WS_POPUP,
       0, 0, static_cast<int>(widthPx_), static_cast<int>(heightPx_), nullptr, nullptr, instance,
       this);
   if (!hwnd_) {
@@ -306,7 +306,7 @@ void LauncherWindow::TestHotkeyCapture(const std::wstring& combo) {
     return;
   }
   HWND settings = settingsWindow_->hwnd();
-  HWND capture = FindWindowExW(settings, nullptr, L"eToolsHotkeyCapture", nullptr);
+  HWND capture = FindWindowExW(settings, nullptr, L"LumeHotkeyCapture", nullptr);
   if (!capture) {
     Log(L"热键捕获测试: 找不到捕获框");
     return;

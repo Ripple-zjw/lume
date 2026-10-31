@@ -147,12 +147,12 @@ int RunLauncher(const AppOptions& options) {
   const OsVersion version = QueryOsVersion();
   Log(L"Windows %ls", FormatOsVersion(version).c_str());
   if (!IsSupportedOs()) {
-    MessageBoxW(nullptr, L"eTools 需要 Windows 11 22H2（build 22621）或更高版本。", L"eTools",
+    MessageBoxW(nullptr, L"Lume 需要 Windows 11 22H2（build 22621）或更高版本。", L"Lume",
                 MB_ICONERROR | MB_OK);
     return 2;
   }
 
-  HANDLE instanceMutex = CreateMutexW(nullptr, TRUE, L"Local\\eTools.Launcher.SingleInstance");
+  HANDLE instanceMutex = CreateMutexW(nullptr, TRUE, L"Local\\Lume.Launcher.SingleInstance");
   if (instanceMutex && GetLastError() == ERROR_ALREADY_EXISTS) {
     if (HWND existing = FindWindowW(WindowClassName(), nullptr)) {
       PostMessageW(existing, kMsgToggle, 0, 0);

@@ -13,8 +13,8 @@
 
 namespace {
 
-constexpr wchar_t kClassName[] = L"eToolsSettingsWindow";
-constexpr wchar_t kCaptureClass[] = L"eToolsHotkeyCapture";
+constexpr wchar_t kClassName[] = L"LumeSettingsWindow";
+constexpr wchar_t kCaptureClass[] = L"LumeHotkeyCapture";
 constexpr int kWindowWidth = 540;
 constexpr int kWindowHeight = 545;
 
@@ -275,7 +275,7 @@ bool SettingsWindow::Show(HINSTANCE instance, HWND owner, const AppSettings& cur
   const int x = work.left + ((work.right - work.left) - width) / 2;
   const int y = work.top + ((work.bottom - work.top) - height) / 2;
 
-  hwnd_ = CreateWindowExW(WS_EX_DLGMODALFRAME, kClassName, L"eTools 设置",
+  hwnd_ = CreateWindowExW(WS_EX_DLGMODALFRAME, kClassName, L"Lume 设置",
                           WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_VISIBLE, x, y, width,
                           height, owner, nullptr, instance, this);
   if (!hwnd_) {

@@ -48,15 +48,15 @@ struct CliOptions {
 
 void PrintUsage() {
   fputs(
-      "eTools launcher (P1)\n"
+      "Lume 0.1.0\n"
       "\n"
       "Usage:\n"
-      "  eTools.exe                       Run in tray-less resident mode (hotkey toggles)\n"
-      "  eTools.exe --show                Start visible (auto-hide on focus loss)\n"
-      "  eTools.exe --ms=1500             Auto exit after N milliseconds\n"
-      "  eTools.exe --capture=out.png     Show, capture composited window, exit\n"
-      "  eTools.exe --shot=out.png        Offscreen render with simulated wallpaper\n"
-      "  eTools.exe --shot-matrix=dir     Render 3 DPIs x 2 themes baselines into dir\n"
+      "  Lume.exe                       Run in tray-less resident mode (hotkey toggles)\n"
+      "  Lume.exe --show                Start visible (auto-hide on focus loss)\n"
+      "  Lume.exe --ms=1500             Auto exit after N milliseconds\n"
+      "  Lume.exe --capture=out.png     Show, capture composited window, exit\n"
+      "  Lume.exe --shot=out.png        Offscreen render with simulated wallpaper\n"
+      "  Lume.exe --shot-matrix=dir     Render 3 DPIs x 2 themes baselines into dir\n"
       "\n"
       "Options:\n"
       "  --theme=dark|light|system        Theme (default: system)\n"
@@ -80,6 +80,7 @@ void PrintUsage() {
       "  --set-autostart=1|0              Enable/disable autostart and print state\n"
       "  --hotkey=<combo>                 Override hotkey for this run (e.g. Ctrl+Alt+K)\n"
       "  --settings                       Open the settings window at startup\n"
+      "  --version                        Print version and exit\n"
       "  --clear-index                    Delete snapshots and rebuild at startup\n"
       "  --self-check                     Check hotkey/tray/autostart/file-open and print PASS/FAIL\n"
       "  --file-root=<dir>                Override file index roots (testing)\n"
@@ -176,6 +177,9 @@ CliOptions Parse(int argc, wchar_t** argv) {
     } else if (arg == L"--help" || arg == L"-h") {
       PrintUsage();
       exit(0);
+    } else if (arg == L"--version" || arg == L"-v") {
+      printf("Lume 0.1.0\n");
+      exit(0);
     } else {
       wprintf(L"未知参数: %ls\n", arg.c_str());
       PrintUsage();
@@ -192,9 +196,9 @@ namespace {
 int RunSelfCheck() {
   LogInit(L"");
   int failures = 0;
-  printf("eTools self-check\n");
+  printf("Lume self-check\n");
 
-  HWND hwnd = CreateWindowExW(0, L"STATIC", L"eToolsSelfCheck", WS_POPUP, 0, 0, 0, 0, nullptr,
+  HWND hwnd = CreateWindowExW(0, L"STATIC", L"LumeSelfCheck", WS_POPUP, 0, 0, 0, 0, nullptr,
                               nullptr, GetModuleHandleW(nullptr), nullptr);
   if (!hwnd) {
     printf("window=FAIL\n");
@@ -233,7 +237,7 @@ int RunSelfCheck() {
   HANDLE sample = CreateFileW(samplePath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                               FILE_ATTRIBUTE_NORMAL, nullptr);
   if (sample != INVALID_HANDLE_VALUE) {
-    const char content[] = "eTools self-check sample\n";
+    const char content[] = "Lume self-check sample\n";
     DWORD written = 0;
     WriteFile(sample, content, sizeof(content) - 1, &written, nullptr);
     CloseHandle(sample);

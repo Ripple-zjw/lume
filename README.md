@@ -1,8 +1,10 @@
-# eTools
+# Lume
 
 Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤出、输入即搜、回车启动应用与文件。C++20 + Win32 + Direct2D/DirectWrite + DirectComposition，免安装、免管理员、单 exe。
 
-**当前进度：P6 搜索质量修复（紧凑索引、可配置上限、精确匹配优先），P5.1 已完成。**
+**当前版本：0.1.0。**Windows 11（build 22621+）x64，免安装单 exe；发布包在 `dist\Lume-0.1.0-win64.zip`。
+
+**当前进度：P6 搜索质量修复（紧凑索引、按大小限制、精确匹配优先），P5.1 已完成。**
 
 ![自绘深色设置窗](docs/images/p5/settings-dark.png)
 
@@ -48,7 +50,7 @@ Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤�
 **P3：应用索引 / 评分 / 真实启动 / 图标**
 
 - 索引三源合并：开始菜单 `.lnk`（`IShellLinkW` 解析真实目标）、`shell:AppsFolder`（`IPropertyStore` 读 `PKEY_AppUserModel_ID`，覆盖商店应用）、注册表 `App Paths`；按标题与解析后目标双重去重。
-- 磁盘缓存：`%LOCALAPPDATA%\eTools\apps.idx`（不可写时退回 exe 同目录），开始菜单目录有更新则自动重建；实测 **首次 650ms → 缓存 1.1ms**。
+- 磁盘缓存：`%LOCALAPPDATA%\Lume\apps.idx`（不可写时退回 exe 同目录），开始菜单目录有更新则自动重建；实测 **首次 650ms → 缓存 1.1ms**。
 - 模糊评分：子串命中（前缀加分）、子序列命中（连续/词首加分）、长度惩罚；`--list-apps` 可直接检查索引内容。
 - 真实启动：Shell 条目走 `ShellExecuteEx`（`.lnk` 保留参数/工作目录/清单），商店应用走 `IApplicationActivationManager::ActivateApplication`（失败回退 `shell:AppsFolder\<AUMID>`）；`Ctrl+Enter` 以管理员运行，`Shift+Enter` 打开所在位置。
 - shell 图标：`IShellItemImageFactory` 取 32px → WIC 转 `32bppPBGRA` → D2D 位图，内存缓存（失败也缓存避免重试），无图标时回退首字色块。
@@ -56,8 +58,8 @@ Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤�
 
 **P4：文件/文件夹搜索**
 
-- 默认索引桌面、文档、下载；`FindFirstFileExW(FIND_FIRST_EX_LARGE_FETCH)` 多线程枚举，跳过 reparse point 与 `.git/node_modules` 等噪声目录，上限 20 万条。
-- 二进制快照 `files.idx`（AppData 不可写时自动退回 exe 同目录）；仅 `--file-stats`/`--shot` 等诊断模式加载，常驻启动会删除旧快照并全量重建（不再落盘）。
+- 默认索引桌面、文档、下载；`FindFirstFileExW(FIND_FIRST_EX_LARGE_FETCH)` 多线程枚举，跳过 reparse point 与 `.git/node_modules` 等噪声目录；上限按**索引文件大小**设置（默认 512MB，最大 256GB），每个根目录平分预算。
+- 二进制快照 `files.idx`（ETF4：目录树 + 名字 arena + 条目数组；AppData 不可写时退回 exe 同目录）；常驻启动先读最新快照再后台重建，首次/手动清除时写回。
 - 每个根目录 `ReadDirectoryChangesW` 递归监听：新增文件立即入索引、删除即摘除、目录/重命名触发防抖重建；窗口 1s 内自动刷新结果。
 - 查询与应用共用评分器（文件名命中加权，路径命中降权）；实测 **0.4–0.6ms**（1361 文件 / 228 应用），路径直通输入可直接打开。
 - 异步图标：worker 取 shell 位图、UI 线程转 D2D，先画首字色块兜底；查询延迟从 56.7ms 降到 0.6ms。
@@ -68,7 +70,7 @@ Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤�
 - 托盘图标 + 右键菜单（显示 / 开机自启 / 设置… / 退出），左键切换窗口；资源管理器重启后通过 `TaskbarCreated` 自动重挂。
 - 设置窗（原生控件）：主题（跟随系统/深色/浅色）、强调色（设计蓝/系统）、热键预设（Alt+Space / Ctrl+Alt+Space / Ctrl+Shift+Space）、开机自启、文件索引目录增删（文件夹选择器）。
 - 设置持久化 `settings.conf`（UTF-8 key=value，AppData 不可写时退回 exe 同目录）；改动即时应用：主题/强调色重绘、热键重新注册、文件索引按新根目录重建。
-- 开机自启写 `HKCU\...\Run`（命令 `"eTools.exe" --autostart`）。
+- 开机自启写 `HKCU\...\Run`（命令 `"Lume.exe" --autostart`）。
 - 动态面板高度：结果 1–6 行时窗口高度跟随收缩/展开，不再固定留白。
 - MRU：`usage.conf` 记录目标的使用次数与最近时间；空查询按常用/最近排序，非空查询叠加 0–200 分。
 - 修复：多份索引快照并存时，按“根目录匹配”逐个尝试，而不是读到第一份就放弃。
@@ -76,7 +78,7 @@ Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤�
 
 **P5.1：图标磁盘缓存 / 深色设置窗 / 自定义热键 / 自检**
 
-- 图标磁盘缓存：worker 先查 `%LOCALAPPDATA%\eTools\icons\<hash>.png`（不可写时 exe 同目录），未命中才走 shell 取图并写回 PNG；`Warm()` 启动预热、异步队列走同一路径。实测冷启动 **12 次 shell 取图、首帧 29.4ms**，二次启动 **12 次磁盘命中、0 次 shell、首帧 15.6ms**。
+- 图标磁盘缓存：worker 先查 `%LOCALAPPDATA%\Lume\icons\<hash>.png`（不可写时 exe 同目录），未命中才走 shell 取图并写回 PNG；`Warm()` 启动预热、异步队列走同一路径。实测冷启动 **12 次 shell 取图、首帧 29.4ms**，二次启动 **12 次磁盘命中、0 次 shell、首帧 15.6ms**。
 - 设置窗自绘深色：统一 `#202024` 背景/白色文字，主题与强调色改为自绘循环按钮（跟随系统 → 深色 → 浅色），文件目录列表与按钮全部深色，去掉原生 ComboBox 的白色箭头块。
 - 自定义热键：新增 `ParseHotkey`/`FormatHotkey`（Ctrl/Alt/Shift/Win + 字母/数字/F1–F24/方向键等），设置窗内点击热键框后直接按下组合键捕获，并用 `RegisterHotKey` 预检冲突；配置里可写任意组合（如 `Ctrl+Alt+K`）。
 - 捕获期间用 `WH_KEYBOARD_LL` 低级钩子取原始按键，**修复 Ctrl+Space 被输入法吞掉、只显示 Ctrl 的问题**；同时放行 Alt+Tab / Alt+F4 / Esc，避免捕获时卡住系统快捷键。实测 Ctrl+Space、Ctrl+Alt+K 均能正确捕获。
@@ -104,7 +106,7 @@ Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤�
 - **存储占用**：`files.idx` **124.4MB**、`apps.idx` **48KB**、日志/图标/配置 **0.83MB**，正常会话总计约 **125MB**。沙箱写不进 AppData 时快照落在 exe 同目录（本机还残留旧的 170MB AppData 快照，所以看起来更大）；启动取最新修改时间的那份，正常会话只有一份。
 - **紧凑索引**：目录表 + 文件名 arena，条目 32B；47 万条索引 83MB、进程 123MB。字符位图预筛、1–2 字符只做子串、路径命中仅最后兜底（查询≥3、分数÷6、最多 2000 条）。
 - **匹配质量优先**：`quality`（5 直接路径 / 4 字面完全一致 / 3 忽略扩展名一致 / 2 前缀 / 1 子串 / 0 模糊或路径）→ 类型 tier（应用、可执行文件 → 其他文件 → 目录 → 仅路径）→ 分数。
-- **启动工作目录**：打开文件/直接 exe 时把 `ShellExecuteEx` 的 `lpDirectory` 设为文件所在目录（`.lnk` 例外，保留快捷方式自带的工作目录），修复游戏按自身目录找 `data` 却报 `D:/projects/eTools/data` 的问题；版本资源改为 ASCII 描述，避免任务管理器显示乱码。
+- **启动工作目录**：打开文件/直接 exe 时把 `ShellExecuteEx` 的 `lpDirectory` 设为文件所在目录（`.lnk` 例外，保留快捷方式自带的工作目录），修复游戏按自身目录找 `data` 却跑到启动器目录的问题；版本资源改为 ASCII 描述，避免任务管理器显示乱码。
 - **光标缓存修复**：查询布局缓存之前只按文本/组字区间判断，左右/Home/End 移动光标时视觉光标不动。现在文本不变时单独重算 `HitTestTextPosition` 并处理左右滚动，光标会跟随实际插入点（长查询滚动也正确）。
 - 仍未解决：子序列噪声；非精确目录仍排在文件后；230MB 快照可进一步改成目录树+名字 arena 压缩。
 
@@ -123,16 +125,25 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Config Test
 powershell -ExecutionPolicy Bypass -File .\build.ps1 -Run
 ```
 
+## 发布包
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build.ps1 -Recompile
+# 产物：dist\Lume-0.1.0-win64.zip
+```
+
+压缩包内容：`Lume.exe`（单文件、静态链接）+ `README.txt`（系统要求、快捷键、首次索引、卸载）。解压即用，不需要安装。
+
 ## 运行
 
 ```powershell
-.\build\eTools.exe                       # 常驻：按 Alt+Space 唤出/隐藏
-.\build\eTools.exe --show --ms=3000      # 直接显示 3 秒（便于测试）
-.\build\eTools.exe --capture=cap.png     # 显示并截取真实合成结果
-.\build\eTools.exe --shot=out.png --scale=1.5 --theme=light
-.\build\eTools.exe --shot-matrix=docs\images\p2   # 生成 3×2 基线矩阵
-.\build\eTools.exe --type=cod --keys=down,down    # 输入与选择（配合 --capture）
-.\build\eTools.exe --list-apps                    # 打印真实应用索引（UTF-8，每行一条）
+.\build\Lume.exe                       # 常驻：按 Alt+Space 唤出/隐藏
+.\build\Lume.exe --show --ms=3000      # 直接显示 3 秒（便于测试）
+.\build\Lume.exe --capture=cap.png     # 显示并截取真实合成结果
+.\build\Lume.exe --shot=out.png --scale=1.5 --theme=light
+.\build\Lume.exe --shot-matrix=docs\images\p2   # 生成 3×2 基线矩阵
+.\build\Lume.exe --type=cod --keys=down,down    # 输入与选择（配合 --capture）
+.\build\Lume.exe --list-apps                    # 打印真实应用索引（UTF-8，每行一条）
 ```
 
 | 参数 | 说明 |
@@ -167,7 +178,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Run
 | `--settings` | 启动时打开设置窗 |
 | `--self-check` | 检查热键/托盘/自启/打开文件/设置写入并打印 PASS/FAIL |
 | `--no-hotkey` | 不注册全局热键 |
-| `--log=<path>` | 指定日志文件（默认 `%LOCALAPPDATA%\eTools\logs`，不可写时退回 exe 同目录） |
+| `--log=<path>` | 指定日志文件（默认 `%LOCALAPPDATA%\Lume\logs`，不可写时退回 exe 同目录） |
 
 ## 目录
 
@@ -216,10 +227,10 @@ docs/images/p5/            P5 动态高度截图
 - 云母背景下 `--glass` 看到的是壁纸模糊底而非桌面窗口内容，属预期。
 - **UWP 启动无法在本 agent 沙箱内验证**：`ActivateApplication` 与 `shell:AppsFolder\<AUMID>` 都被系统拒绝（Win32 5），连 PowerShell `Start-Process` 同样失败，属环境限制；普通 exe/.lnk 启动已实测成功。请在真实会话里用「记事本/计算器」确认。
 - **用 shell 打开文件**：沙箱内 `.txt` 返回 Win32 5、`.exe` 返回 1223（取消）；**真实会话已通过**（`open=PASS`，默认编辑器成功打开自检文件）。
-- 文件索引只覆盖桌面/文档/下载（可 `--file-root` 覆盖），不是全盘；全盘秒搜需要 USN 日志/服务（管理员），与免安装定位冲突，后续可选接 Everything。
+- 文件索引默认桌面/文档/下载，可在设置里添加盘符或目录（如 `C:\`、`D:\`）；它不是 USN 全盘秒搜，超大目录会受索引大小预算限制。可选后续接 Everything。
 - **托盘与开机自启**：在 agent 沙箱内会被系统拒绝（`Shell_NotifyIcon` 返回失败、`HKCU\...\Run` 不可写），但**真实桌面会话已实测通过**（`regression.ps1` 五项全 PASS），不影响正常使用。
-- 设置窗已改为自绘深色（主题/强调色循环按钮、热键捕获、深色列表与按钮）；设置保存路径优先 `%APPDATA%\eTools\settings.conf`，不可写时退回 exe 同目录。
-- 图标缓存位于 `%LOCALAPPDATA%\eTools\icons`（沙箱等不可写环境退回 exe 同目录 `icons\`），按解析名哈希存 PNG；删掉目录会重新取图。
+- 设置窗已改为自绘深色（主题/强调色循环按钮、热键捕获、深色列表与按钮）；设置保存路径优先 `%APPDATA%\Lume\settings.conf`，不可写时退回 exe 同目录。
+- 图标缓存位于 `%LOCALAPPDATA%\Lume\icons`（沙箱等不可写环境退回 exe 同目录 `icons\`），按解析名哈希存 PNG；删掉目录会重新取图。
 - 动态面板高度已实现（1–6 行）；全盘/更多根目录的设置项、文件内容搜索、Everything 适配器仍未做。
 - **真实会话回归**：`powershell -ExecutionPolicy Bypass -File tools\regression.ps1` 已跑通（exit=0）；后续改托盘/自启/启动链路时重跑即可。人工项（托盘菜单、设置重启生效、注销后自启）仍建议过一遍。
 - 唤出淡入通过场景整体 alpha 实现（mingw 的 `dcomp.h` 漏声明 `IDCompositionVisual::SetOpacity`，未用 ABI hack）。

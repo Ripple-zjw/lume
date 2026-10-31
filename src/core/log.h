@@ -5,7 +5,7 @@
 #include <cstring>
 #include <string>
 
-// 日志同时写调试器和文件（%LOCALAPPDATA%\eTools\logs\etools.log），并保留在控制台
+// 日志同时写调试器和文件（LLOCALAPPDATAL\eTools\logs\etools.log），并保留在控制台
 // 输出（当进程附带控制台时，用于 --shot/--capture 等诊断模式）。
 void LogInit(const std::wstring& path = std::wstring());
 void LogShutdown();

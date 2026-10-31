@@ -64,7 +64,7 @@ std::wstring Trim(const std::wstring& value) {
 std::wstring SettingsStore::Path() {
   const std::wstring base = GetEnv(L"APPDATA");
   if (!base.empty()) {
-    const std::wstring dir = base + L"\\eTools";
+    const std::wstring dir = base + L"\\Lume";
     if (EnsureDirectory(dir)) return dir + L"\\settings.conf";
   }
   return ExeDirectory() + L"\\settings.conf";
@@ -75,11 +75,20 @@ std::vector<std::wstring> Paths() {
   std::vector<std::wstring> paths;
   const std::wstring base = GetEnv(L"APPDATA");
   if (!base.empty()) {
-    const std::wstring dir = base + L"\\eTools";
+    const std::wstring dir = base + L"\\Lume";
     if (EnsureDirectory(dir)) paths.push_back(dir + L"\\settings.conf");
   }
   const std::wstring fallback = ExeDirectory() + L"\\settings.conf";
   if (std::find(paths.begin(), paths.end(), fallback) == paths.end()) paths.push_back(fallback);
+  return paths;
+}
+
+std::vector<std::wstring> LegacyPaths() {
+  std::vector<std::wstring> paths;
+  const std::wstring base = GetEnv(L"APPDATA");
+  if (!base.empty()) {
+    paths.push_back(base + L"\\eTools\\settings.conf");
+  }
   return paths;
 }
 }  // namespace
@@ -87,12 +96,18 @@ std::vector<std::wstring> Paths() {
 bool SettingsStore::Load(AppSettings* settings) {
   std::string data;
   bool loaded = false;
-  for (const std::wstring& path : Paths()) {
-    if (ReadWholeFile(path, &data)) {
-      loaded = true;
-      break;
+  bool legacy = false;
+  auto tryLoad = [&](const std::vector<std::wstring>& paths, bool isLegacy) {
+    for (const std::wstring& path : paths) {
+      if (ReadWholeFile(path, &data)) {
+        loaded = true;
+        legacy = isLegacy;
+        return true;
+      }
     }
-  }
+    return false;
+  };
+  if (!tryLoad(Paths(), false)) tryLoad(LegacyPaths(), true);
   if (!loaded) return false;
   const std::wstring text = Utf8ToWide(data);
   size_t start = 0;
@@ -125,12 +140,16 @@ bool SettingsStore::Load(AppSettings* settings) {
       settings->fileRoots.push_back(value);
     }
   }
+  if (legacy) {
+    Log(L"设置迁移: eTools -> Lume");
+    Save(*settings);
+  }
   return true;
 }
 
 bool SettingsStore::Save(const AppSettings& settings, std::wstring* savedPath) {
   std::wstring text;
-  text += L"# eTools settings\n";
+  text += L"# Lume settings\n";
   text += L"version=2\n";
   text += L"theme=" + settings.theme + L"\n";
   text += L"accent=" + settings.accent + L"\n";

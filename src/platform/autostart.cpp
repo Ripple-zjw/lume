@@ -7,7 +7,8 @@
 namespace {
 
 constexpr wchar_t kRunKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-constexpr wchar_t kValueName[] = L"eTools";
+constexpr wchar_t kValueName[] = L"Lume";
+constexpr wchar_t kLegacyValueName[] = L"eTools";
 
 std::wstring ExePath() {
   wchar_t path[MAX_PATH] = {};
@@ -32,6 +33,10 @@ bool SetAutostart(bool enabled, std::wstring* error) {
   } else {
     status = RegDeleteValueW(key, kValueName);
     if (status == ERROR_FILE_NOT_FOUND) status = ERROR_SUCCESS;
+  }
+  if (status == ERROR_SUCCESS) {
+    // 清理旧品牌的自启项，避免 eTools 与 Lume 同时开机启动。
+    RegDeleteValueW(key, kLegacyValueName);
   }
   RegCloseKey(key);
   if (status != ERROR_SUCCESS) {

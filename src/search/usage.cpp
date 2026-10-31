@@ -44,15 +44,26 @@ std::wstring Sanitize(const std::wstring& value) {
 std::wstring UsageStore::Path() const {
   const std::wstring base = GetEnv(L"APPDATA");
   if (!base.empty()) {
-    const std::wstring dir = base + L"\\eTools";
+    const std::wstring dir = base + L"\\Lume";
     if (EnsureDirectory(dir)) return dir + L"\\usage.conf";
   }
   return ExeDirectory() + L"\\usage.conf";
 }
 
 bool UsageStore::Load() {
-  HANDLE file = CreateFileW(Path().c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+  std::wstring source = Path();
+  HANDLE file = CreateFileW(source.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                             FILE_ATTRIBUTE_NORMAL, nullptr);
+  bool legacy = false;
+  if (file == INVALID_HANDLE_VALUE) {
+    const std::wstring base = GetEnv(L"APPDATA");
+    if (!base.empty()) {
+      source = base + L"\\eTools\\usage.conf";
+      file = CreateFileW(source.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                         FILE_ATTRIBUTE_NORMAL, nullptr);
+      legacy = file != INVALID_HANDLE_VALUE;
+    }
+  }
   if (file == INVALID_HANDLE_VALUE) return false;
   LARGE_INTEGER size{};
   if (!GetFileSizeEx(file, &size) || size.QuadPart <= 0 || size.QuadPart > 4 * 1024 * 1024) {
@@ -83,6 +94,11 @@ bool UsageStore::Load() {
                                                 nullptr, 10));
     const std::wstring target = line.substr(tab2 + 1);
     if (!target.empty()) entries_[target] = entry;
+  }
+  if (legacy) {
+    dirty_ = true;
+    Save();
+    Log(L"使用记录迁移: eTools -> Lume");
   }
   return true;
 }

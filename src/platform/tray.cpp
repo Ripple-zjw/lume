@@ -24,7 +24,7 @@ bool TrayIcon::Create(HWND owner) {
   data_.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
   data_.uCallbackMessage = kTrayMessage;
   data_.hIcon = icon_;
-  lstrcpynW(data_.szTip, L"eTools（Alt+Space 唤出）", ARRAYSIZE(data_.szTip));
+  lstrcpynW(data_.szTip, L"Lume（Alt+Space 唤出）", ARRAYSIZE(data_.szTip));
   data_.uVersion = NOTIFYICON_VERSION_4;
   if (!Shell_NotifyIconW(NIM_ADD, &data_)) {
     Log(L"托盘图标创建失败");
@@ -61,7 +61,7 @@ void TrayIcon::ReAdd() {
 UINT TrayIcon::ShowMenu(bool autostartChecked) {
   HMENU menu = CreatePopupMenu();
   if (!menu) return 0;
-  AppendMenuW(menu, MF_STRING, kTrayShow, L"显示 eTools");
+  AppendMenuW(menu, MF_STRING, kTrayShow, L"显示 Lume");
   AppendMenuW(menu, MF_STRING | (autostartChecked ? MF_CHECKED : MF_UNCHECKED), kTrayAutostart,
               L"开机自启");
   AppendMenuW(menu, MF_STRING, kTraySettings, L"设置…");

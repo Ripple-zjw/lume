@@ -266,11 +266,15 @@ std::vector<std::wstring> CachePaths() {
   if (!paths.empty()) return paths;
   const std::wstring base = GetEnv(L"LOCALAPPDATA");
   if (!base.empty()) {
-    const std::wstring dir = base + L"\\eTools";
+    const std::wstring dir = base + L"\\Lume";
     if (EnsureDirectory(dir)) paths.push_back(dir + L"\\apps.idx");
   }
   const std::wstring fallback = ExeDirectory() + L"\\apps.idx";
-  if (std::find(paths.begin(), paths.end(), fallback) == paths.end()) paths.push_back(fallback);
+  if (std::find(paths.begin(), paths.end(), fallback) == paths.end()) {
+    paths.push_back(fallback);
+  }
+  // 读取旧 eTools 缓存做一次迁移，写回时仍优先 Lume。
+  if (!base.empty()) paths.push_back(base + L"\\eTools\\apps.idx");
   return paths;
 }
 

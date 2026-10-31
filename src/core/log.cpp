@@ -79,7 +79,7 @@ void LogInit(const std::wstring& path) {
   if (target.empty()) {
     const std::wstring base = LocalAppDataDir();
     if (!base.empty()) {
-      target = base + L"\\eTools\\logs\\etools.log";
+      target = base + L"\\Lume\\logs\\lume.log";
     }
   }
   if (target.empty()) return;
@@ -97,7 +97,7 @@ void LogInit(const std::wstring& path) {
       const size_t slash = exeDir.find_last_of(L"\\/");
       if (slash != std::wstring::npos) {
         exeDir.resize(slash);
-        const std::wstring fallback = exeDir + L"\\eTools.log";
+        const std::wstring fallback = exeDir + L"\\Lume.log";
         if (fallback != target) {
           file = _wfopen(fallback.c_str(), L"ab");
           if (file) {
@@ -112,7 +112,7 @@ void LogInit(const std::wstring& path) {
     if (g_logPath.empty()) g_logPath = target;
     Log(L"日志文件: %ls", g_logPath.c_str());
   } else {
-    OutputDebugStringW(L"[eTools] 日志文件无法创建，仅输出到调试器/控制台\n");
+    OutputDebugStringW(L"[Lume] 日志文件无法创建，仅输出到调试器/控制台\n");
   }
 }
 

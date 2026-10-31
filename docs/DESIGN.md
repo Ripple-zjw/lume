@@ -1,4 +1,4 @@
-# eTools 设计文档
+# Lume 设计文档
 
 > 阶段：P0（工具链与渲染闸门）完成。本文记录已生效的架构决策、P0 实测结论与视觉 token，后续阶段在此累积。
 
@@ -36,7 +36,7 @@
 1. `node tools/fetch-toolchain.mjs`：经 `api.github.com` 资源端点下载 winlibs（264MB），用 GitHub 资产 `digest`（sha256）校验，解压到 `.toolchain/mingw64`。
 2. `build.ps1`：按源文件增量编译（头文件 mtime 参与判断）→ `windres` 编 `assets/app.rc`（清单 ID 1、版本信息）→ `g++ -static -s` 链接。
 3. 链接库：`d2d1 dwrite d3d11 dxgi dwmapi dcomp windowscodecs ole32 uuid oleaut32 shell32 shlwapi propsys uxtheme comctl32 gdi32 imm32 shcore version`。
-4. 产物：`build/eTools.exe`，当前 280KB。
+4. 产物：`build/Lume.exe`，当前 280KB。
 
 ## 4. P0 实测结论（踩过的坑）
 
@@ -46,7 +46,7 @@
 4. **WIC 会改写像素格式**：请求 `GUID_WICPixelFormat32bppBGR` 时 PNG 编码器可能改用 24bpp，若仍按 4 字节/像素写入会得到横向彩条。`SetPixelFormat` 后必须校验返回 GUID；截图路径统一用 `32bppBGRA` 并把 alpha 置 255。
 5. **`WM_DESTROY` 只能对主窗口 `PostQuitMessage`**：否则用于测 DPI 的临时窗口会提前终止消息循环（表现为"计时器从不触发、进程秒退"）。
 6. **PowerShell 5.1 陷阱**：`$ErrorActionPreference='Stop'` 下，原生命令写 stderr 的无害诊断会被当作终止错误；`Invoke-NativeTool` 内临时降级为 `Continue` 并显式读取 `$LASTEXITCODE`。另外 UTF-8 无 BOM 的中文脚本会被 GBK 解析破坏（报"Missing closing '}'"），因此 `build.ps1` 改为**纯 ASCII 输出**；`[Console]::OutputEncoding=UTF8` 让 g++ 中文诊断正确显示。
-7. **binutils 2.47 诊断**：链接含清单资源时输出 `.rsrc merge failure: multiple non-default manifests`，非致命；`findstr permonitorv2 eTools.exe` 可证实清单已嵌入。
+7. **binutils 2.47 诊断**：链接含清单资源时输出 `.rsrc merge failure: multiple non-default manifests`，非致命；`findstr permonitorv2 Lume.exe` 可证实清单已嵌入。
 8. **`GetProcAddress` 强转**：`reinterpret_cast<Fn>(FARPROC)` 触发 `-Wcast-function-type`，用 `memcpy` 中转。
 9. **DPI**：`GetDpiForSystem` 用于初始尺寸，避免为测量 DPI 创建临时窗口；窗口路径按 `dpi/96` 缩放绘制。
 
@@ -72,12 +72,12 @@
 ```powershell
 node tools/fetch-toolchain.mjs
 powershell -ExecutionPolicy Bypass -File .\build.ps1
-.\build\eTools.exe --shot-matrix=docs/images/p2
-.\build\eTools.exe --theme=dark --capture=docs/images/p2/window-mica-dark.png
-.\build\eTools.exe --theme=light --capture=docs/images/p2/window-mica-light.png
-.\build\eTools.exe --type=cod --keys=down,down --capture=docs/images/p2/typed.png
-.\build\eTools.exe --compose=wei --capture=docs/images/p2/compose.png
-.\build\eTools.exe --type=ab --capture=docs/images/p2/fade-30ms.png --capture-ms=30
+.\build\Lume.exe --shot-matrix=docs/images/p2
+.\build\Lume.exe --theme=dark --capture=docs/images/p2/window-mica-dark.png
+.\build\Lume.exe --theme=light --capture=docs/images/p2/window-mica-light.png
+.\build\Lume.exe --type=cod --keys=down,down --capture=docs/images/p2/typed.png
+.\build\Lume.exe --compose=wei --capture=docs/images/p2/compose.png
+.\build\Lume.exe --type=ab --capture=docs/images/p2/fade-30ms.png --capture-ms=30
 ```
 
 ## 7. P1 实测结论
@@ -90,7 +90,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 6. **强调色决策**：本机系统强调色为 `#D0000C`（红），直接跟随会把选中行染成酒红，破坏启动器观感；因此默认用设计蓝，`--accent=system` 供原生观感需求。
 7. **系统门禁**：`RtlGetVersion` 取 build，< 22621 弹 MessageBox 退出；`--shot`/`--shot-matrix` 不校验，便于任意机器生成设计图。
 8. **单实例**：命名互斥体 + `FindWindowW` + `WM_APP+1` 唤起；实测第二实例 1.2s 内退出，第一实例日志出现"显示窗口"。
-9. **日志**：默认 `%LOCALAPPDATA%\eTools\logs\etools.log`；沙箱/受限账户下 AppData 不可写时自动退回 exe 同目录（本机验证触发过），`--log=` 可显式指定。
+9. **日志**：默认 `%LOCALAPPDATA%\Lume\logs\lume.log`；沙箱/受限账户下 AppData 不可写时自动退回 exe 同目录（本机验证触发过），`--log=` 可显式指定。
 10. **沙箱限制**：本环境无法执行 `Add-Type`（csc 阻塞），交互测试改用"启动第二实例 + 读日志"的方式，不依赖 P/Invoke。
 
 ## 8. P2 实测结论
@@ -110,7 +110,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 
 1. **索引三源**：开始菜单 `.lnk`（`IShellLinkW` 解析真实目标，用于去重与副标题）、`shell:AppsFolder`（`IPropertyStore` 读 `PKEY_AppUserModel_ID`）、`HKLM/HKCU ...\App Paths`。本机得到 228 条。
 2. **去重策略**：标题（忽略大小写）+ 解析后目标双键。修复了 `7zFM`（App Paths）与 `7-Zip File Manager`（.lnk）同时出现的问题。
-3. **索引成本与缓存**：首次 650ms → 缓存 1.1ms（`%LOCALAPPDATA%\eTools\apps.idx`，不可写时退回 exe 同目录；开始菜单目录 mtime 更新则重建）。缓存格式 `v2`，字段以 `\t` 分隔、UTF-8，读写时清洗制表符/换行。
+3. **索引成本与缓存**：首次 650ms → 缓存 1.1ms（`%LOCALAPPDATA%\Lume\apps.idx`，不可写时退回 exe 同目录；开始菜单目录 mtime 更新则重建）。缓存格式 `v2`，字段以 `\t` 分隔、UTF-8，读写时清洗制表符/换行。
 4. **图标**：`IShellItemImageFactory::GetImage(32, ICONONLY|RESIZETOFIT)` → HBITMAP → WIC `CreateBitmapFromHBITMAP(UseAlpha)` → **必须转 `32bppPBGRA`** 再 `CreateBitmapFromWicBitmap`（直接传原格式报 `WINCODEC_ERR_UNSUPPORTEDPIXELFORMAT 0x88982F80`）；失败也写入缓存避免每帧重试。
 5. **启动**：Shell 条目 `ShellExecuteEx`（`.lnk` 保留参数/工作目录/清单）；UWP 走 `IApplicationActivationManager::ActivateApplication`，失败回退 `shell:AppsFolder\<AUMID>`；`Ctrl+Enter` 用 `runas`，`Shift+Enter` 用 `explorer /select`。
 6. **本环境限制**：agent 沙箱拒绝 UWP 激活（`E_ACCESSDENIED`），且 PowerShell `Start-Process shell:AppsFolder\...` 同样失败 → 属沙箱令牌限制，不是代码问题。普通 exe/`.lnk` 启动已实测成功（7zFM 进程启动后手动结束）。
@@ -132,9 +132,9 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 
 ## 11. P5 实测结论
 
-1. **设置**：`settings.conf`（UTF-8 `key=value`，`fileRoot` 可重复）。路径候选 `%APPDATA%\eTools` → exe 同目录，读写都逐个尝试；`theme/accent/hotkey/autostart/tray/fileRoot`。CLI `--theme/--accent` 用 `themeSpecified/accentSpecified` 区分“显式覆盖”与用户设置。实测写入自定义设置后启动日志为 `theme=dark accent="#FF6A00" hotkey=Ctrl+Alt+Space`，热键成功注册 `Ctrl+Alt+Space`。
+1. **设置**：`settings.conf`（UTF-8 `key=value`，`fileRoot` 可重复）。路径候选 `%APPDATA%\Lume` → exe 同目录，读写都逐个尝试；`theme/accent/hotkey/autostart/tray/fileRoot`。CLI `--theme/--accent` 用 `themeSpecified/accentSpecified` 区分“显式覆盖”与用户设置。实测写入自定义设置后启动日志为 `theme=dark accent="#FF6A00" hotkey=Ctrl+Alt+Space`，热键成功注册 `Ctrl+Alt+Space`。
 2. **托盘**：`Shell_NotifyIconW(NIM_ADD + NIM_SETVERSION v4)`，`NOTIFYICON_VERSION_4` 回调用 `LOWORD(lParam)` 判断事件；左键切换窗口、右键弹菜单（显示/开机自启/设置/退出）；监听 `RegisterWindowMessage("TaskbarCreated")` 在资源管理器重启后重挂。沙箱内 `NIM_ADD` 失败，但真实桌面会话自检 `tray=PASS`。
-3. **自启**：写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\eTools = "<exe>" --autostart`；沙箱中 `RegOpenKeyExW(KEY_SET_VALUE)` 被拒绝（Win32 5），真实会话自检 `autostart=PASS (set=1 read=1 restore=1)`。
+3. **自启**：写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Lume = "<exe>" --autostart`；沙箱中 `RegOpenKeyExW(KEY_SET_VALUE)` 被拒绝（Win32 5），真实会话自检 `autostart=PASS (set=1 read=1 restore=1)`。
 4. **设置窗**：P5 为原生 Win32 控件（ComboBox/Checkbox/ListBox/Button），按 `DpiForPoint` 缩放；P5.1 已替换为自绘深色控件（见 §12），保存回调链不变：窗口 `ApplySettings` → 主题重绘、`files_.Stop/SetRoots/Start`、`SetAutostart`，再由 app 持久化并重注册热键。
 5. **动态高度**：`visibleRows_ = clamp(rows.size(),1,6)`，变化时 `ResizeBuffers + SetWindowPos`；实测 3 条结果窗口 960×360（125% DPI），6 条 960×540。结果为空且有查询时给占位行，高度 1 行。
 6. **MRU**：`usage.conf` 每行 `count\tlastUnix\t<target>`；`Bonus` = `min(120, count*6)` + 近期加分（1 天 +80 / 7 天 +40 / 30 天 +10）。空查询按 Bonus 降序（同分按名称），非空查询叠加到应用/文件评分。实测启动 7-Zip 后写入一条记录。
@@ -144,7 +144,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 
 ## 12. P5.1 实测结论
 
-1. **图标磁盘缓存**：路径 `%LOCALAPPDATA%\eTools\icons\<fnv1a64(parsingName)>.png`（不可写时 exe 同目录 `icons\`）。worker 先解码 PNG（WIC→PBGRA 像素缓冲），未命中再 `IShellItemImageFactory` 取 HBITMAP，统一转 PBGRA 后写 PNG；UI 线程用 `ID2D1DeviceContext::CreateBitmap` 直接建位图，避免跨线程 D2D。实测冷启动 12 次 shell 取图、首帧 **29.4ms**；二次启动 12 次磁盘命中、0 次 shell、首帧 **15.6ms**，与无缓存基线一致。缓存按解析名哈希，图标尺寸固定 32。
+1. **图标磁盘缓存**：路径 `%LOCALAPPDATA%\Lume\icons\<fnv1a64(parsingName)>.png`（不可写时 exe 同目录 `icons\`）。worker 先解码 PNG（WIC→PBGRA 像素缓冲），未命中再 `IShellItemImageFactory` 取 HBITMAP，统一转 PBGRA 后写 PNG；UI 线程用 `ID2D1DeviceContext::CreateBitmap` 直接建位图，避免跨线程 D2D。实测冷启动 12 次 shell 取图、首帧 **29.4ms**；二次启动 12 次磁盘命中、0 次 shell、首帧 **15.6ms**，与无缓存基线一致。缓存按解析名哈希，图标尺寸固定 32。
 2. **自绘深色设置窗**：背景 `#202024`、控件 `#2A2A30`、文字 `#F0F0F2`、强调 `#6EA8FF`；主题/强调色为自绘循环按钮（去掉 ComboBox 的白色箭头区），热键为自绘捕获框，按钮/复选框 `WM_DRAWITEM` 自绘，列表与文字 `WM_CTLCOLOR*` 深色。窗口按 `DpiForPoint` 缩放（125% → 675×625）。
 3. **自定义热键**：`ParseHotkey` 支持 Ctrl/Alt/Shift/Win + 字母、数字、F1–F24、Space、方向键、Home/End/PgUp/PgDn 等；`FormatHotkey` 规范化为 `Ctrl+Alt+K` 形式。设置窗捕获时用 `RegisterHotKey` 预检冲突，冲突显示「该组合已被占用」并阻止保存；启动时 `RegisterConfiguredHotkey` 失败会按预设回退并记日志。实测 `--hotkey=Ctrl+Alt+K`：日志 `热键已注册: Ctrl+Alt+K`。
 4. **自检/回归**：`--self-check` 输出 `hotkey/tray/autostart/open/settings_save` 五项 PASS/FAIL 与退出码；`tools/regression.ps1` 调用它并打印人工确认清单。真实桌面会话（2026-10-31，Win11 25H2 26200）实测**五项全部 PASS**，exit=0；沙箱内 tray/autostart/open 会 FAIL，属环境限制。

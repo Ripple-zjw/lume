@@ -84,7 +84,9 @@ bool ShouldIgnoreWatchPath(const std::wstring& fullPath) {
       EndsWith(lower, L"\\settings.conf")) {
     return true;
   }
-  if (lower.find(L"\\etools\\logs\\") != std::wstring::npos ||
+  if (lower.find(L"\\lume\\logs\\") != std::wstring::npos ||
+      lower.find(L"\\lume\\icons\\") != std::wstring::npos ||
+      lower.find(L"\\etools\\logs\\") != std::wstring::npos ||
       lower.find(L"\\etools\\icons\\") != std::wstring::npos ||
       lower.find(L"\\build\\icons\\") != std::wstring::npos) {
     return true;
@@ -740,7 +742,7 @@ std::vector<std::wstring> FileIndex::SnapshotPaths() const {
   std::vector<std::wstring> paths;
   const std::wstring base = GetEnv(L"LOCALAPPDATA");
   if (!base.empty()) {
-    const std::wstring directory = base + L"\\eTools";
+    const std::wstring directory = base + L"\\Lume";
     if (EnsureDirectory(directory)) paths.push_back(directory + L"\\files.idx");
   }
   const std::wstring fallbackDir = ExeDirectory();
@@ -750,6 +752,8 @@ std::vector<std::wstring> FileIndex::SnapshotPaths() const {
       paths.push_back(fallback);
     }
   }
+  // 旧 eTools 快照只用于首次迁移读取；写入仍优先 Lume。
+  if (!base.empty()) paths.push_back(base + L"\\eTools\\files.idx");
   return paths;
 }
 

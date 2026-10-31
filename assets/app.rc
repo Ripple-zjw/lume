@@ -13,13 +13,13 @@ BEGIN
   BEGIN
     BLOCK "080404B0"
     BEGIN
-      VALUE "CompanyName",      "eTools"
-      VALUE "FileDescription",  "eTools Launcher"
+      VALUE "CompanyName",      "Lume"
+      VALUE "FileDescription",  "Lume Launcher"
       VALUE "FileVersion",      "0.1.0.0"
-      VALUE "InternalName",     "eTools"
-      VALUE "LegalCopyright",   "Copyright (c) 2026 eTools"
-      VALUE "OriginalFilename", "eTools.exe"
-      VALUE "ProductName",      "eTools"
+      VALUE "InternalName",     "Lume"
+      VALUE "LegalCopyright",   "Copyright (c) 2026 Lume"
+      VALUE "OriginalFilename", "Lume.exe"
+      VALUE "ProductName",      "Lume"
       VALUE "ProductVersion",   "0.1.0.0"
     END
   END

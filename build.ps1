@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Build eTools with the portable MinGW-w64 toolchain.
+  Build Lume with the portable MinGW-w64 toolchain.
 .EXAMPLE
   .\build.ps1                          # Release build
   .\build.ps1 -Config Debug -Run
@@ -116,7 +116,7 @@ function Invoke-BuildTarget {
   }
 
   $res = Join-Path $BuildDir 'app.res'
-  if ($Name -eq 'eTools') {
+  if ($Name -eq 'Lume') {
     $rc = Join-Path $Root 'assets\app.rc'
     if ((Test-Path -LiteralPath $rc) -and
         ((-not (Test-Path -LiteralPath $res)) -or (Get-Item $rc).LastWriteTime -gt (Get-Item $res).LastWriteTime -or $Recompile)) {
@@ -144,7 +144,7 @@ if ($Config -eq 'Test') {
 }
 
 $appSources = Get-Sources (Join-Path $Root 'src')
-$appExe = Invoke-BuildTarget -Name 'eTools' -Sources $appSources -ExePath (Join-Path $BuildDir 'eTools.exe')
+$appExe = Invoke-BuildTarget -Name 'Lume' -Sources $appSources -ExePath (Join-Path $BuildDir 'Lume.exe')
 if ($Run) {
   Write-Host ("Launching {0}" -f $appExe) -ForegroundColor Cyan
   Start-Process -FilePath $appExe -WorkingDirectory $BuildDir
