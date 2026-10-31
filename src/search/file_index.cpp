@@ -597,6 +597,7 @@ std::vector<FileHit> FileIndex::Search(const std::wstring& query, size_t limit) 
   struct Scored {
     size_t score;
     size_t index;
+    bool pathOnly;
   };
   auto better = [this](const Scored& a, const Scored& b) {
     if (a.score != b.score) return a.score > b.score;
@@ -630,7 +631,7 @@ std::vector<FileHit> FileIndex::Search(const std::wstring& query, size_t limit) 
     }
     if (score > 0) {
       score += 40;  // 文件名命中优先
-      scored.push_back({score, i});
+      scored.push_back({score, i, false});
     }
   }
 
@@ -645,7 +646,7 @@ std::vector<FileHit> FileIndex::Search(const std::wstring& query, size_t limit) 
       if (nameMatched[i]) continue;
       const size_t score = ScorePathOnly(entries_[i].lowerPath, needle);
       if (score > 0) {
-        scored.push_back({score, i});
+        scored.push_back({score, i, true});
         ++pathHits;
       }
     }
@@ -657,6 +658,8 @@ std::vector<FileHit> FileIndex::Search(const std::wstring& query, size_t limit) 
     std::sort(scored.begin(), scored.end(), better);
   }
   results.reserve(scored.size());
-  for (const Scored& item : scored) results.push_back({entries_[item.index], item.score});
+  for (const Scored& item : scored) {
+    results.push_back({entries_[item.index], item.score, item.pathOnly});
+  }
   return results;
 }

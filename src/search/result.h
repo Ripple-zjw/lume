@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -23,4 +24,6 @@ struct ResultRow {
   UINT32 color = 0x6EA8FF;
   RowAction action = RowAction::None;
   size_t score = 0;
+  // 排序主键：应用/可执行文件 0，其他文件 1，目录 2，仅路径命中 3。
+  uint8_t tier = 0;
 };

@@ -161,6 +161,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 5. **实测（200k 条）**：`g` 9.2ms、`gam` 9.0ms、`game` 7.0ms、`setup` 5.7ms、`steamapps` 15.7ms（首次路径兜底扫描）；无匹配 `zzz` 2.8ms。
 6. **调试入口**：`--search-files=<query>` 打印 `roots/files/snapshot`、`search_ms` 与前 20 条「分数 + 路径」，用于回归排序与性能。
 7. **仍未解决**：20 万总量上限、子序列噪声（`steamapps` 仍可能匹配 `StreamingBar`）、每次启动全量重建（1.3–2.2s、41MB 写盘）。
+8. **层级优先级**：`ResultRow.tier` 作为排序主键——`0` 应用（标题命中或 UWP AUMID）与可执行文件（`.exe/.lnk/.bat/.cmd/.com/.msi/.appref-ms`）；`1` 其他文件；`2` 目录；`3` 仅路径命中（文件路径，或应用仅详情/启动路径命中）。同层内仍按匹配分降序，稳定排序保留“应用先于文件”的插入顺序；同名目录同层按文件名长度、路径长度、字典序。`game` 实测顺序：`gamemd.exe` → Game Bar → Game Cheats Manager → Game.ini → game.icn …，目录排在文件之后。`--search-rows=<query>` 可检查 `tier/score`。代价：同名文件很多时目录可能落到很后面，暂未预留目录名额。
 
 ## 14. 后续方向
 

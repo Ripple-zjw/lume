@@ -25,7 +25,8 @@ struct AppEntry {
 // 枚举开始菜单快捷方式、shell:AppsFolder（含商店应用）与 App Paths 注册表项，去重后按名称排序。
 std::vector<AppEntry> CollectAppEntries();
 
-size_t ScoreEntry(const AppEntry& entry, const std::wstring& query);
+size_t ScoreEntry(const AppEntry& entry, const std::wstring& query,
+                  bool* matchedTitle = nullptr);
 // 小写输入上的同款评分（供文件索引复用，避免重复转小写）。
 size_t ScoreLowerText(std::wstring_view text, std::wstring_view queryLower);
 // 返回按得分降序（同分按标题）的条目指针；空查询返回全部（按标题）。

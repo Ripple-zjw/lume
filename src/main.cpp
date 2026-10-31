@@ -14,6 +14,7 @@
 #include "platform/tray.h"
 #include "search/app_entry.h"
 #include "search/file_index.h"
+#include "search/merge.h"
 #include "ui/theme.h"
 
 namespace {
@@ -30,6 +31,7 @@ struct CliOptions {
   std::wstring openPath;
   std::wstring setAutostart;
   std::wstring searchFiles;
+  std::wstring searchRows;
 };
 
 void PrintUsage() {
@@ -59,6 +61,7 @@ void PrintUsage() {
       "  --list-files                     Rebuild the file index, print stats and sample paths\n"
       "  --file-stats                     Rebuild the file index and print stats only\n"
       "  --search-files=<query>           Search the file index and print top results with scores\n"
+      "  --search-rows=<query>            Print merged app/file rows with tier and score\n"
       "  --open=<path>                    Verify opening a file/path directly\n"
       "  --set-autostart=1|0              Enable/disable autostart and print state\n"
       "  --hotkey=<combo>                 Override hotkey for this run (e.g. Ctrl+Alt+K)\n"
@@ -114,6 +117,8 @@ CliOptions Parse(int argc, wchar_t** argv) {
       cli.app.openSettings = true;
     } else if (StartsWith(arg, L"--search-files=")) {
       cli.searchFiles = ValueAfter(arg, L"--search-files=");
+    } else if (StartsWith(arg, L"--search-rows=")) {
+      cli.searchRows = ValueAfter(arg, L"--search-rows=");
     } else if (arg == L"--self-check") {
       cli.selfCheck = true;
     } else if (StartsWith(arg, L"--scale=")) {
@@ -268,6 +273,31 @@ int wmain(int argc, wchar_t** argv) {
       }
     }
     fflush(stdout);
+    CoUninitialize();
+    return 0;
+  }
+  if (!cli.searchRows.empty()) {
+    LogInit(cli.app.logPath);
+    AppSettings settings;
+    SettingsStore::Load(&settings);
+    FileIndex index;
+    std::vector<std::wstring> roots = settings.fileRoots;
+    if (!cli.app.fileRoot.empty()) roots = {cli.app.fileRoot};
+    if (!roots.empty()) index.SetRoots(roots);
+    index.LoadCachedSnapshot();
+    const std::vector<AppEntry> apps = CollectAppEntries();
+    const std::vector<ResultRow> rows =
+        BuildMergedRows(apps, &index, nullptr, cli.searchRows, 40, false);
+    printf("roots=%zu files=%zu apps=%zu rows=%zu\n", index.roots().size(), index.size(),
+           apps.size(), rows.size());
+    for (const ResultRow& row : rows) {
+      wchar_t line[1024];
+      swprintf(line, ARRAYSIZE(line), L"tier=%u score=%zu %ls | %ls\n", row.tier, row.score,
+               row.title.c_str(), row.subtitle.c_str());
+      fputs(WideToUtf8(line).c_str(), stdout);
+    }
+    fflush(stdout);
+    LogShutdown();
     CoUninitialize();
     return 0;
   }

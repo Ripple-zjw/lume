@@ -58,11 +58,15 @@ size_t ScoreLowerText(std::wstring_view text, std::wstring_view queryLower) {
   return 300 + score;
 }
 
-size_t ScoreEntry(const AppEntry& entry, const std::wstring& query) {
+size_t ScoreEntry(const AppEntry& entry, const std::wstring& query, bool* matchedTitle) {
+  if (matchedTitle) *matchedTitle = false;
   if (query.empty()) return 1;
   const std::wstring needle = ToLower(query);
   const size_t titleScore = ScoreLowerText(ToLower(entry.title), needle);
-  if (titleScore > 0) return titleScore;
+  if (titleScore > 0) {
+    if (matchedTitle) *matchedTitle = true;
+    return titleScore;
+  }
 
   // 标题未命中时回退到详情/AUMID（例如 "calc" 命中 WindowsCalculator 的 AUMID），
   // 要求查询至少 3 个字符以避免过多噪声命中。

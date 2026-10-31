@@ -22,6 +22,7 @@ struct FileEntry {
 struct FileHit {
   FileEntry entry;
   size_t score = 0;
+  bool pathOnly = false;  // true = 仅路径命中（文件名没命中）
 };
 
 // 文件/文件夹索引：枚举配置根目录、快照缓存、目录 watcher 增量更新、查询。

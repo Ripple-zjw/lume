@@ -11,9 +11,28 @@ namespace {
 constexpr size_t kMaxFileHits = 80;
 constexpr size_t kDirectPathScore = 1000000;
 
+constexpr uint8_t kTierApplication = 0;  // 应用索引 + .exe/.lnk 等可执行文件
+constexpr uint8_t kTierFile = 1;         // 其他文件
+constexpr uint8_t kTierDirectory = 2;    // 目录
+constexpr uint8_t kTierPathOnly = 3;     // 仅路径命中（文件名没命中）
+
 std::wstring FileNameOf(const std::wstring& path) {
   const size_t slash = path.find_last_of(L"\\/");
   return slash == std::wstring::npos ? path : path.substr(slash + 1);
+}
+
+bool IsExecutablePath(const std::wstring& path) {
+  const size_t slash = path.find_last_of(L"\\/");
+  const size_t dot = path.find_last_of(L'.');
+  if (dot == std::wstring::npos) return false;
+  if (slash != std::wstring::npos && dot < slash + 1) return false;
+  const std::wstring extension = path.substr(dot);
+  static const wchar_t* kExtensions[] = {L".exe", L".lnk", L".bat", L".cmd",
+                                         L".com", L".msi", L".appref-ms"};
+  for (const wchar_t* candidate : kExtensions) {
+    if (_wcsicmp(extension.c_str(), candidate) == 0) return true;
+  }
+  return false;
 }
 
 std::wstring FirstGlyph(const std::wstring& text) {
@@ -22,7 +41,7 @@ std::wstring FirstGlyph(const std::wstring& text) {
   return text.substr(0, 1);
 }
 
-ResultRow MakeAppRow(const AppEntry& entry, size_t score) {
+ResultRow MakeAppRow(const AppEntry& entry, size_t score, uint8_t tier) {
   ResultRow row;
   row.title = entry.title;
   row.subtitle = entry.detail;
@@ -32,10 +51,11 @@ ResultRow MakeAppRow(const AppEntry& entry, size_t score) {
   row.target = entry.launchTarget;
   row.action = entry.IsUwp() ? RowAction::LaunchUwp : RowAction::LaunchApp;
   row.score = score;
+  row.tier = tier;
   return row;
 }
 
-ResultRow MakeFileRow(const FileEntry& entry, size_t score) {
+ResultRow MakeFileRow(const FileEntry& entry, size_t score, bool pathOnly) {
   ResultRow row;
   row.title = FileNameOf(entry.path);
   row.subtitle = entry.path;
@@ -45,6 +65,15 @@ ResultRow MakeFileRow(const FileEntry& entry, size_t score) {
   row.target = entry.path;
   row.action = entry.isDirectory ? RowAction::OpenFolder : RowAction::OpenFile;
   row.score = score;
+  if (pathOnly) {
+    row.tier = kTierPathOnly;
+  } else if (entry.isDirectory) {
+    row.tier = kTierDirectory;
+  } else if (IsExecutablePath(entry.path)) {
+    row.tier = kTierApplication;
+  } else {
+    row.tier = kTierFile;
+  }
   return row;
 }
 
@@ -59,6 +88,7 @@ ResultRow MakePathRow(const std::wstring& path, bool isDirectory) {
   row.target = path;
   row.action = isDirectory ? RowAction::OpenFolder : RowAction::OpenFile;
   row.score = kDirectPathScore;
+  row.tier = kTierApplication;
   return row;
 }
 
@@ -79,22 +109,28 @@ std::vector<ResultRow> BuildMergedRows(const std::vector<AppEntry>& apps, FileIn
   if (query.empty()) {
     for (const AppEntry* entry : FilterEntries(apps, L"")) {
       const size_t bonus = usage ? usage->Bonus(entry->launchTarget) : 0;
-      rows.push_back(MakeAppRow(*entry, bonus));
+      rows.push_back(MakeAppRow(*entry, bonus, kTierApplication));
     }
   } else {
     for (const AppEntry* entry : FilterEntries(apps, query)) {
       const size_t bonus = usage ? usage->Bonus(entry->launchTarget) : 0;
-      rows.push_back(MakeAppRow(*entry, ScoreEntry(*entry, query) + bonus));
+      bool titleHit = false;
+      const size_t score = ScoreEntry(*entry, query, &titleHit);
+      // 标题命中=应用优先级；只有详情/启动路径命中时按“路径命中”处理（UWP 的 AUMID 除外）。
+      const uint8_t tier =
+          (titleHit || entry->IsUwp()) ? kTierApplication : kTierPathOnly;
+      rows.push_back(MakeAppRow(*entry, score + bonus, tier));
     }
     if (files) {
       for (const FileHit& hit : files->Search(query, kMaxFileHits)) {
         const size_t bonus = usage ? usage->Bonus(hit.entry.path) : 0;
-        rows.push_back(MakeFileRow(hit.entry, hit.score + bonus));
+        rows.push_back(MakeFileRow(hit.entry, hit.score + bonus, hit.pathOnly));
       }
     }
   }
 
   std::stable_sort(rows.begin(), rows.end(), [](const ResultRow& a, const ResultRow& b) {
+    if (a.tier != b.tier) return a.tier < b.tier;
     return a.score > b.score;
   });
   if (rows.size() > limit) rows.resize(limit);
