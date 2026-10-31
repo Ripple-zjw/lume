@@ -2,7 +2,7 @@
 
 Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤出、输入即搜、回车启动应用与文件。C++20 + Win32 + Direct2D/DirectWrite + DirectComposition，免安装、免管理员、单 exe。
 
-**当前进度：P5.1 完成（图标磁盘缓存、自绘深色设置窗、自定义热键、真实会话自检）。**
+**当前进度：P5.1 完成，并已在真实桌面会话通过自检（hotkey / tray / autostart / open / settings_save 全部 PASS）。**
 
 ![自绘深色设置窗](docs/images/p5/settings-dark.png)
 
@@ -81,7 +81,7 @@ Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤�
 - 自定义热键：新增 `ParseHotkey`/`FormatHotkey`（Ctrl/Alt/Shift/Win + 字母/数字/F1–F24/方向键等），设置窗内点击热键框后直接按下组合键捕获，并用 `RegisterHotKey` 预检冲突；配置里可写任意组合（如 `Ctrl+Alt+K`）。
 - `--hotkey=<combo>` 可临时覆盖热键（不影响已保存设置），用于验证解析与注册。
 - `--self-check`：一次性检查热键注册、托盘、自启读写、文件打开、设置写入并输出 `PASS/FAIL`；配合 `tools/regression.ps1` 在**真实桌面会话**做回归。
-- 沙箱自检结果（预期）：热键 PASS、设置写入 PASS（回退到 exe 目录）、托盘/自启/文件打开 FAIL，需在真实会话运行脚本确认。
+- 真实会话自检（2026-10-31，Windows 11 25H2 26200）：`hotkey/tray/autostart/open/settings_save` 全部 PASS；沙箱里 tray/autostart/open 会失败属环境限制。
 
 ## 构建
 
@@ -185,13 +185,13 @@ docs/images/p5/            P5 动态高度截图
 - 组字渲染已通过注入验证，**真实微软拼音/搜狗输入法的候选窗位置仍需人工确认**（自动化无法安全驱动系统 IME）。
 - 云母背景下 `--glass` 看到的是壁纸模糊底而非桌面窗口内容，属预期。
 - **UWP 启动无法在本 agent 沙箱内验证**：`ActivateApplication` 与 `shell:AppsFolder\<AUMID>` 都被系统拒绝（Win32 5），连 PowerShell `Start-Process` 同样失败，属环境限制；普通 exe/.lnk 启动已实测成功。请在真实会话里用「记事本/计算器」确认。
-- **用 shell 打开文件/文件夹在沙箱里同样受限**：`.txt` 返回 Win32 5、`.exe` 返回 1223（取消），但 `--open` 单独调用能成功拉起进程；这是沙箱对 shell 关联/激活的限制，桌面会话应正常，需要你实测确认。
+- **用 shell 打开文件**：沙箱内 `.txt` 返回 Win32 5、`.exe` 返回 1223（取消）；**真实会话已通过**（`open=PASS`，默认编辑器成功打开自检文件）。
 - 文件索引只覆盖桌面/文档/下载（可 `--file-root` 覆盖），不是全盘；全盘秒搜需要 USN 日志/服务（管理员），与免安装定位冲突，后续可选接 Everything。
-- **托盘与开机自启在 agent 沙箱内被系统拒绝**：`Shell_NotifyIcon(NIM_ADD)` 返回失败、`HKCU\...\Run` 不可写；代码路径已就绪，需在真实会话验证（托盘右键可退出程序）。
+- **托盘与开机自启**：在 agent 沙箱内会被系统拒绝（`Shell_NotifyIcon` 返回失败、`HKCU\...\Run` 不可写），但**真实桌面会话已实测通过**（`regression.ps1` 五项全 PASS），不影响正常使用。
 - 设置窗已改为自绘深色（主题/强调色循环按钮、热键捕获、深色列表与按钮）；设置保存路径优先 `%APPDATA%\eTools\settings.conf`，不可写时退回 exe 同目录。
 - 图标缓存位于 `%LOCALAPPDATA%\eTools\icons`（沙箱等不可写环境退回 exe 同目录 `icons\`），按解析名哈希存 PNG；删掉目录会重新取图。
 - 动态面板高度已实现（1–6 行）；全盘/更多根目录的设置项、文件内容搜索、Everything 适配器仍未做。
-- **真实会话回归**：在普通桌面会话运行 `powershell -ExecutionPolicy Bypass -File tools\regression.ps1`（内部调用 `--self-check`），按提示人工确认托盘菜单、热键、自启与设置持久化。
+- **真实会话回归**：`powershell -ExecutionPolicy Bypass -File tools\regression.ps1` 已跑通（exit=0）；后续改托盘/自启/启动链路时重跑即可。人工项（托盘菜单、设置重启生效、注销后自启）仍建议过一遍。
 - 唤出淡入通过场景整体 alpha 实现（mingw 的 `dcomp.h` 漏声明 `IDCompositionVisual::SetOpacity`，未用 ABI hack）。
 
 ## 路线
@@ -204,5 +204,5 @@ docs/images/p5/            P5 动态高度截图
 | P3 ✅ | 应用索引（开始菜单/AppsFolder/App Paths）、评分、真实启动、shell 图标、索引缓存 |
 | P4 ✅ | 文件/文件夹索引、快照、watcher 增量、路径直通、异步图标 |
 | P5 ✅ | 托盘/设置窗/自启、动态高度、MRU 排序、快照多路径修复 |
-| P5.1 ✅ | 图标磁盘缓存、深色自绘设置窗、自定义热键、真实会话自检脚本 |
+| P5.1 ✅ | 图标磁盘缓存、深色自绘设置窗、自定义热键、真实会话自检全 PASS |
 | P6 | 全盘搜索（Everything 可选适配器）、文件内容搜索、打包与签名 |
