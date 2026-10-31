@@ -42,6 +42,7 @@ class Scene {
 
  private:
   void EnsureQueryLayout(const SceneState& state);
+  void UpdateCaretMetrics(const SceneState& state);
   void EnsureRowLayouts(const SceneState& state);
 
   Renderer* renderer_ = nullptr;
@@ -58,6 +59,7 @@ class Scene {
   ComPtr<IDWriteTextLayout> placeholderLayout_;
   float caretDipX_ = 0.0f;
   float scrollOffset_ = 0.0f;
+  size_t queryCaret_ = 0;
 
   std::vector<std::wstring> rowSignature_;
   std::vector<ComPtr<IDWriteTextLayout>> titleLayouts_;

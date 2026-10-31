@@ -95,11 +95,16 @@ void Scene::EnsureQueryLayout(const SceneState& state) {
   wchar_t tail[64];
   swprintf(tail, ARRAYSIZE(tail), L"|%zu|%zu", state.compositionStart, state.compositionLength);
   const std::wstring key = state.displayText + tail;
-  if (key == queryKey_ && queryLayout_) return;
+  if (key == queryKey_ && queryLayout_) {
+    const size_t caret = std::min(state.caretIndex, state.displayText.size());
+    if (caret != queryCaret_) UpdateCaretMetrics(state);
+    return;
+  }
   queryKey_ = key;
   queryLayout_.Reset();
   caretDipX_ = 0.0f;
   scrollOffset_ = 0.0f;
+  queryCaret_ = 0;
   if (state.displayText.empty()) return;
 
   const UINT32 length = static_cast<UINT32>(state.displayText.size());
@@ -113,16 +118,31 @@ void Scene::EnsureQueryLayout(const SceneState& state) {
     queryLayout_->SetUnderline(TRUE, DWRITE_TEXT_RANGE{static_cast<UINT32>(state.compositionStart),
                                                       static_cast<UINT32>(state.compositionLength)});
   }
+  UpdateCaretMetrics(state);
+}
+
+void Scene::UpdateCaretMetrics(const SceneState& state) {
+  if (!queryLayout_ || state.displayText.empty()) {
+    caretDipX_ = 0.0f;
+    scrollOffset_ = 0.0f;
+    queryCaret_ = 0;
+    return;
+  }
+  const UINT32 caret = static_cast<UINT32>(std::min(state.caretIndex, state.displayText.size()));
   DWRITE_HIT_TEST_METRICS metrics{};
   FLOAT x = 0.0f;
   FLOAT y = 0.0f;
-  const UINT32 caret = static_cast<UINT32>(std::min(state.caretIndex, state.displayText.size()));
   if (SUCCEEDED(queryLayout_->HitTestTextPosition(caret, FALSE, &x, &y, &metrics))) {
     caretDipX_ = x;
   }
-  if (caretDipX_ > kInputMaxWidth - 8.0f) {
-    scrollOffset_ = caretDipX_ - (kInputMaxWidth - 8.0f);
+  const float maxVisible = kInputMaxWidth - 8.0f;
+  if (caretDipX_ > scrollOffset_ + maxVisible) {
+    scrollOffset_ = caretDipX_ - maxVisible;
+  } else if (caretDipX_ < scrollOffset_) {
+    scrollOffset_ = caretDipX_;
   }
+  if (scrollOffset_ < 0.0f) scrollOffset_ = 0.0f;
+  queryCaret_ = caret;
 }
 
 void Scene::EnsureRowLayouts(const SceneState& state) {
