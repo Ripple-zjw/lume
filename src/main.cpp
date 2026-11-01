@@ -74,7 +74,9 @@ void PrintUsage() {
       "Options:\n"
       "  --theme=dark|light|system        Theme (default: system)\n"
       "  --accent=system|#RRGGBB          Accent color (default: design blue #6EA8FF)\n"
-      "  --log=<path>                     Write log to this file instead of %%LOCALAPPDATA%%\n"
+      "  --log=<path>                     Write log to this file instead of <exe dir>\\Lume.log\n"
+      "  --log-level=error|warn|info|debug  Log verbosity (default: info; debug = dev details)\n"
+      "  --debug                          Shorthand for --log-level=debug\n"
       "  --query=<text>                   Prefill query text\n"
       "  --scale=<factor>                 Screenshot scale (default 1.0)\n"
       "  --glass                          Lower panel opacity for backdrop inspection\n"
@@ -103,6 +105,7 @@ void PrintUsage() {
       "  --set-autostart=1|0              Enable/disable autostart and print state\n"
       "  --hotkey=<combo>                 Override hotkey for this run (e.g. Ctrl+Alt+K)\n"
       "  --settings                       Open the settings window at startup\n"
+      "  --settings-probe=id[,id...]      Open settings, post WM_COMMAND for each control id\n"
       "  --version                        Print version and exit\n"
       "  --clear-index                    Delete snapshots and rebuild at startup\n"
       "  --self-check                     Check hotkey/tray/autostart/file-open and print PASS/FAIL\n"
@@ -143,18 +146,33 @@ CliOptions Parse(int argc, wchar_t** argv) {
       cli.app.autostartLaunch = true;
     } else if (StartsWith(arg, L"--log=")) {
       cli.app.logPath = ValueAfter(arg, L"--log=");
+    } else if (StartsWith(arg, L"--log-level=")) {
+      LogLevel level = LogLevel::Info;
+      const std::wstring value = ValueAfter(arg, L"--log-level=");
+      if (ParseLogLevel(value, &level)) {
+        cli.app.logLevel = level;
+        cli.app.logLevelSpecified = true;
+      } else {
+        wprintf(L"--log-level=%ls 无法识别（可选 error/warn/info/debug），沿用 info\n", value.c_str());
+      }
+    } else if (arg == L"--debug") {
+      cli.app.logLevel = LogLevel::Debug;
+      cli.app.logLevelSpecified = true;
     } else if (StartsWith(arg, L"--file-root=")) {
       cli.app.fileRoot = ValueAfter(arg, L"--file-root=");
     } else if (StartsWith(arg, L"--open=")) {
       cli.openPath = ValueAfter(arg, L"--open=");
     } else if (StartsWith(arg, L"--set-autostart=")) {
       cli.setAutostart = ValueAfter(arg, L"--set-autostart=");
-    } else if (StartsWith(arg, L"--settings")) {
+    } else if (arg == L"--settings") {
       cli.app.openSettings = true;
     } else if (arg == L"--clear-index") {
       cli.app.clearIndexOnStart = true;
     } else if (StartsWith(arg, L"--test-capture=")) {
       cli.app.testCapture = ValueAfter(arg, L"--test-capture=");
+      cli.app.openSettings = true;
+    } else if (StartsWith(arg, L"--settings-probe=")) {
+      cli.app.settingsProbe = ValueAfter(arg, L"--settings-probe=");
       cli.app.openSettings = true;
     } else if (StartsWith(arg, L"--search-files=")) {
       cli.searchFiles = ValueAfter(arg, L"--search-files=");
@@ -240,6 +258,16 @@ CliOptions Parse(int argc, wchar_t** argv) {
       wprintf(L"未知参数: %ls\n", arg.c_str());
       PrintUsage();
       exit(2);
+    }
+  }
+  // 命令行没指定时看环境变量：LUME_LOG_LEVEL=debug Lume.exe ...
+  if (!cli.app.logLevelSpecified) {
+    wchar_t buffer[64] = {};
+    const DWORD length = GetEnvironmentVariableW(L"LUME_LOG_LEVEL", buffer, ARRAYSIZE(buffer));
+    LogLevel level = LogLevel::Info;
+    if (length > 0 && length < ARRAYSIZE(buffer) && ParseLogLevel(buffer, &level)) {
+      cli.app.logLevel = level;
+      cli.app.logLevelSpecified = true;
     }
   }
   return cli;
@@ -533,6 +561,7 @@ int RunMain(int argc, wchar_t** argv) {
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
   CliOptions cli = Parse(argc, argv);
+  LogSetLevel(cli.app.logLevel);
   int exitCode = 0;
   if (cli.listApps) {
     for (const AppEntry& entry : CollectAppEntries()) {

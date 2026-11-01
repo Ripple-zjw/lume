@@ -86,7 +86,10 @@ Windows 11 的快速启动器：Alt+Space 唤出，输入即搜应用和文件�
 - 启动会先读上次快照，同时在后台重建；首次或点「重建索引」会写入快照。
 - 索引数据默认在 %LOCALAPPDATA%\Lume（可在设置里改目录），
   设置在 %APPDATA%\Lume，使用记录在 %APPDATA%\Lume\usage.conf（退出时写入），
-  日志在 %LOCALAPPDATA%\Lume\logs。
+  日志在 Lume.exe 同目录的 Lume.log（该目录不可写时退回 %LOCALAPPDATA%\Lume\logs）。
+- 日志分四级，默认只记正常使用的轨迹；排查问题时把「设置 → 常规 → 详细日志（开发排查用）」
+  勾上（或命令行加 --debug），会额外记录每次按键、悬停与 Everything 往返。日志超过 2MB
+  会在下次启动时轮转为 Lume.log.1。
 - 旧的 eTools 配置会自动迁移到 Lume。
 
 关于页

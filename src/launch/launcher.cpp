@@ -59,9 +59,9 @@ bool ActivateUwp(const std::wstring& aumid, std::wstring* error) {
       Log(L"已启动 UWP 应用 pid=%lu", processId);
       return true;
     }
-    LogHr(L"ActivateApplication 失败，尝试 shell 回退", hr);
+    LogHr(L"ActivateApplication 失败，尝试 shell 回退", hr, LogLevel::Warn);
   } else {
-    LogHr(L"创建激活管理器失败，尝试 shell 回退", hr);
+    LogHr(L"创建激活管理器失败，尝试 shell 回退", hr, LogLevel::Warn);
   }
 
   // 回退：把激活交给 shell 的 AppsFolder 命名空间（受限令牌/沙箱下常能成功）

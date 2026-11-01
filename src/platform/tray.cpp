@@ -41,7 +41,7 @@ HICON CreateAppIcon() {
   HICON icon = LoadIconResource(2);
   if (!icon) icon = LoadIconResource(1);
   if (!icon) {
-    Log(L"托盘图标资源加载失败，改用系统图标");
+    LogWarn(L"托盘图标资源加载失败，改用系统图标");
     icon = LoadIconW(nullptr, IDI_APPLICATION);
   }
   return icon;
@@ -69,13 +69,13 @@ HWND CreateHostWindow(HWND owner) {
   wc.hInstance = GetModuleHandleW(nullptr);
   wc.lpszClassName = kHostClass;
   if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
-    Log(L"托盘宿主窗口注册失败: %lu", GetLastError());
+    LogError(L"托盘宿主窗口注册失败: %lu", GetLastError());
     return nullptr;
   }
   HWND host = CreateWindowExW(0, kHostClass, L"LumeTray", WS_POPUP, 0, 0, 0, 0, nullptr, nullptr,
                               GetModuleHandleW(nullptr), owner);
   if (!host) {
-    Log(L"托盘宿主窗口创建失败: %lu", GetLastError());
+    LogError(L"托盘宿主窗口创建失败: %lu", GetLastError());
   }
   return host;
 }
@@ -103,19 +103,19 @@ bool TrayIcon::Create(HWND owner) {
   data_.hIcon = icon_;
   lstrcpynW(data_.szTip, L"Lume（Alt+Space 唤出）", ARRAYSIZE(data_.szTip));
   data_.uVersion = NOTIFYICON_VERSION_4;
-  Log(L"托盘: icon=%p host=%p owner=%p shell=%p", static_cast<void*>(icon_),
-      static_cast<void*>(host_), static_cast<void*>(owner_),
-      static_cast<void*>(GetShellWindow()));
+  LogDebug(L"托盘: icon=%p host=%p owner=%p shell=%p", static_cast<void*>(icon_),
+           static_cast<void*>(host_), static_cast<void*>(owner_),
+           static_cast<void*>(GetShellWindow()));
   if (!Shell_NotifyIconW(NIM_ADD, &data_)) {
     const DWORD firstError = GetLastError();
     // 少数 shell 版本对 NIF_SHOWTIP/版本 4 不兼容，退一步再试。
     data_.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     if (!Shell_NotifyIconW(NIM_ADD, &data_)) {
-      Log(L"托盘图标创建失败 (Win32 %lu/%lu, shell=%p)", firstError, GetLastError(),
-          static_cast<void*>(GetShellWindow()));
+      LogError(L"托盘图标创建失败 (Win32 %lu/%lu, shell=%p)", firstError, GetLastError(),
+               static_cast<void*>(GetShellWindow()));
       if (IsLowIntegrityProcess()) {
-        Log(L"当前进程是低完整性 (Low IL)：UIPI 会阻止托盘。请把 Lume.exe 复制/解压到普通目录"
-            L"（如桌面或 C:\\Apps\\Lume）再运行，不要直接在受限工作区目录里运行。");
+        LogError(L"当前进程是低完整性 (Low IL)：UIPI 会阻止托盘。请把 Lume.exe 复制/解压到普通目录"
+                 L"（如桌面或 C:\\Apps\\Lume）再运行，不要直接在受限工作区目录里运行。");
       }
       return false;
     }

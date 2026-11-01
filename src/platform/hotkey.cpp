@@ -190,7 +190,8 @@ bool RegisterHotkeyBinding(HWND hwnd, int id, const HotkeyBinding& binding, std:
     return true;
   }
   const DWORD lastError = GetLastError();
-  Log(L"热键注册失败 (%ls): %lu", binding.name.c_str(), lastError);
+  // 注册失败最常见的原因是组合被占用（Alt+Space 就常被系统/输入法拿走），算「降级」而不是错误。
+  LogWarn(L"热键注册失败 (%ls): %lu", binding.name.c_str(), lastError);
   if (error) {
     wchar_t buffer[96];
     swprintf(buffer, ARRAYSIZE(buffer), L"热键 %ls 注册失败 (Win32 %lu)", binding.name.c_str(),

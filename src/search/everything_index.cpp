@@ -185,7 +185,7 @@ bool EverythingIndex::Request(const std::wstring& query, uint32_t generation,
   ApplySearchState(search, ToLower(StripQuotes(cleaned)), generation, true, filter);
   const BOOL ok = Everything_Query(FALSE);
   if (!ok) {
-    Log(L"Everything 查询请求失败: %ls", EverythingErrorText(Everything_GetLastError()).c_str());
+    LogError(L"Everything 查询请求失败: %ls", EverythingErrorText(Everything_GetLastError()).c_str());
   }
   return ok != FALSE;
 }
@@ -230,7 +230,7 @@ bool EverythingIndex::QueryBlocking(const std::wstring& query, std::vector<FileH
         static_cast<double>(frequency.QuadPart));
   }
   if (!ok) {
-    Log(L"Everything 阻塞查询失败: %ls", EverythingErrorText(Everything_GetLastError()).c_str());
+    LogError(L"Everything 阻塞查询失败: %ls", EverythingErrorText(Everything_GetLastError()).c_str());
     return false;
   }
   if (hits) {

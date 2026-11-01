@@ -162,7 +162,7 @@ bool LauncherWindow::Create(HINSTANCE instance, Renderer* renderer, Scene* scene
                                             GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
   wc.style = CS_HREDRAW | CS_VREDRAW;
   if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
-    Log(L"RegisterClassExW 失败: %lu", GetLastError());
+    LogError(L"RegisterClassExW 失败: %lu", GetLastError());
     return false;
   }
 
@@ -171,17 +171,17 @@ bool LauncherWindow::Create(HINSTANCE instance, Renderer* renderer, Scene* scene
       0, 0, static_cast<int>(widthPx_), static_cast<int>(heightPx_), nullptr, nullptr, instance,
       this);
   if (!hwnd_) {
-    Log(L"CreateWindowExW 失败: %lu", GetLastError());
+    LogError(L"CreateWindowExW 失败: %lu", GetLastError());
     return false;
   }
   if (!renderer_->AttachWindow(hwnd_, widthPx_, heightPx_)) {
-    Log(L"渲染目标绑定失败");
+    LogError(L"渲染目标绑定失败");
     return false;
   }
   ApplyBackdrop();
   SetTimer(hwnd_, kTimerFileRefresh, 1000, nullptr);
   if (settings_.tray && !tray_.Create(hwnd_)) {
-    Log(L"托盘初始化失败（继续运行），2 秒后重试");
+    LogWarn(L"托盘初始化失败（继续运行），2 秒后重试");
     trayRetries_ = 0;
     SetTimer(hwnd_, kTimerTrayRetry, 2000, nullptr);
   }
@@ -258,8 +258,9 @@ void LauncherWindow::ApplyDpi(UINT dpi) {
 void LauncherWindow::ApplyBackdrop() {
   if (!hwnd_) return;
   const BOOL dark = theme_.dark ? TRUE : FALSE;
-  LogHr(L"DwmSetWindowAttribute(dark)",
-        DwmSetWindowAttribute(hwnd_, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark)));
+  const HRESULT darkHr = DwmSetWindowAttribute(hwnd_, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark,
+                                               sizeof(dark));
+  if (FAILED(darkHr)) LogHr(L"DwmSetWindowAttribute(dark)", darkHr, LogLevel::Warn);
   // 不能开系统背景（Mica）。它填满的是**整个窗口矩形**（暗色下是 #202020），而我们的窗口比面板
   // 大整整一圈 shadowMargin：于是面板外面那圈透明区域被 Mica 涂成一个不透明的方框，
   // 看上去就是「搜索框外面又套了一个框」。实测（窗口背后垫一块纯品红）：带 Mica 时窗口边缘那一圈
@@ -267,7 +268,7 @@ void LauncherWindow::ApplyBackdrop() {
   const int backdrop = DWMSBT_NONE;
   const HRESULT backdropHr =
       DwmSetWindowAttribute(hwnd_, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, sizeof(backdrop));
-  if (FAILED(backdropHr)) LogHr(L"DwmSetWindowAttribute(backdrop)", backdropHr);
+  if (FAILED(backdropHr)) LogHr(L"DwmSetWindowAttribute(backdrop)", backdropHr, LogLevel::Warn);
   // 也不要 DWM 给窗口裁圆角（DWMWCP_ROUND）。它的半径是系统定的（约 8–10px），比面板的
   // theme.corner（16 DIP）小得多；裁剪会沿窗口矩形切掉自绘阴影的四角，看起来就像外框的圆角
   // 「比面板方」。窗口本身没有填充，形状全靠自绘的面板 + 阴影，所以不裁圆角没有任何副作用。
@@ -277,7 +278,7 @@ void LauncherWindow::ApplyBackdrop() {
   const COLORREF borderNone = static_cast<COLORREF>(DWMWA_COLOR_NONE);
   const HRESULT borderHr =
       DwmSetWindowAttribute(hwnd_, DWMWA_BORDER_COLOR, &borderNone, sizeof(borderNone));
-  if (FAILED(borderHr)) LogHr(L"DwmSetWindowAttribute(border)", borderHr);
+  if (FAILED(borderHr)) LogHr(L"DwmSetWindowAttribute(border)", borderHr, LogLevel::Warn);
 }
 
 void LauncherWindow::PositionOnCursorMonitor() {
@@ -288,7 +289,7 @@ void LauncherWindow::PositionOnCursorMonitor() {
   if (dpi != dpi_) {
     ApplyDpi(dpi);
     if (!renderer_->Resize(widthPx_, heightPx_)) {
-      Log(L"窗口尺寸切换失败 (dpi=%u)", dpi);
+      LogError(L"窗口尺寸切换失败 (dpi=%u)", dpi);
     }
   }
   const int workWidth = work.right - work.left;
@@ -352,6 +353,7 @@ void LauncherWindow::OpenSettings() {
   callbacks.onClearIndex = [this]() { ClearFileIndex(); };
   callbacks.onRebuildIndex = [this]() { RebuildFileIndex(); };
   callbacks.onOpenIndexDirectory = [this]() { OpenIndexDirectory(); };
+  callbacks.onOpenLog = [this]() { return OpenLogFile(); };
   settingsWindow_->Show(instance_, hwnd_, settings_, std::move(callbacks));
 }
 
@@ -405,17 +407,41 @@ void LauncherWindow::OpenIndexDirectory() {
   }
   std::wstring directory = files_.indexDirectory();
   if (directory.empty()) {
-    Log(L"打开索引目录失败: 目录为空");
+    LogWarn(L"打开索引目录失败: 目录为空");
     return;
   }
   if (!EnsureDirectory(directory)) {
-    Log(L"打开索引目录失败: 无法创建 %ls", directory.c_str());
+    LogError(L"打开索引目录失败: 无法创建 %ls", directory.c_str());
     return;
   }
   std::wstring error;
   if (!OpenPath(directory, &error)) {
-    Log(L"打开索引目录失败: %ls", error.c_str());
+    LogError(L"打开索引目录失败: %ls", error.c_str());
   }
+}
+
+bool LauncherWindow::OpenLogFile() {
+  const std::wstring path = LogPath();
+  if (path.empty()) {
+    LogWarn(L"打开日志失败: 还没有日志文件");
+    return false;
+  }
+  std::wstring error;
+  if (OpenPath(path, &error)) {
+    Log(L"打开日志: %ls", path.c_str());
+    return true;
+  }
+  // 文件还不存在（或没有关联程序）时退回打开所在目录。
+  const size_t slash = path.find_last_of(L"\\/");
+  if (slash != std::wstring::npos) {
+    const std::wstring directory = path.substr(0, slash);
+    if (OpenPath(directory, &error)) {
+      Log(L"打开日志目录: %ls", directory.c_str());
+      return true;
+    }
+  }
+  LogError(L"打开日志失败: %ls", error.c_str());
+  return false;
 }
 
 void LauncherWindow::TestHotkeyCapture(const std::wstring& combo) {
@@ -484,7 +510,7 @@ void LauncherWindow::TryDeleteSnapshotForEverything() {
   const EverythingStatus status = everything_.Status();
   if (!status.available || !status.dbLoaded) {
     pendingSnapshotDelete_ = true;
-    Log(L"文件搜索来源: Everything 不可用（%ls）；本地快照暂留", status.error.c_str());
+    LogWarn(L"文件搜索来源: Everything 不可用（%ls）；本地快照暂留", status.error.c_str());
     return;
   }
   const uint64_t bytes = files_.snapshotBytes();
@@ -497,12 +523,18 @@ void LauncherWindow::TryDeleteSnapshotForEverything() {
 void LauncherWindow::ApplySettings(const AppSettings& settings) {
   const bool wasEverything = FileSearchIsEverything();
   settings_ = settings;
+  // 日志等级随设置即时生效：设置窗里勾/不勾「详细日志」，不用重启进程。
+  const LogLevel wanted = LogLevelFromText(settings_.logLevel);
+  if (wanted != LogLevelCurrent()) {
+    Log(L"日志等级: %ls -> %ls（来自设置）", LogLevelName(LogLevelCurrent()), LogLevelName(wanted));
+    LogSetLevel(wanted);
+  }
   // 组被删/改过之后 active 可能越界：收敛到合法范围再查询。
   ClampFilterActive(&settings_.filters);
   SetTheme(MakeTheme(ParseThemeMode(settings_.theme), ParseAccent(settings_.accent)));
   std::wstring error;
   if (!SetAutostart(settings_.autostart, &error)) {
-    Log(L"应用自启设置失败: %ls", error.c_str());
+    LogError(L"应用自启设置失败: %ls", error.c_str());
   }
 
   if (FileSearchIsEverything()) {
@@ -553,7 +585,7 @@ void LauncherWindow::HandleTrayCommand(UINT command) {
       settings_.autostart = !settings_.autostart;
       std::wstring error;
       if (!SetAutostart(settings_.autostart, &error)) {
-        Log(L"切换自启失败: %ls", error.c_str());
+        LogError(L"切换自启失败: %ls", error.c_str());
       }
       if (onSettingsChanged_) onSettingsChanged_(settings_);
       break;
@@ -603,6 +635,7 @@ AboutInfo LauncherWindow::QueryAboutInfo() const {
   info.settingsPath = SettingsStore::Path();
   info.usagePath = UsageStore::DefaultPath();
   info.logPath = LogPath();
+  info.logLevel = LogLevelName(LogLevelCurrent());
   info.indexDir = files_.indexDirectory();
   info.fileSearch = FileSearchIsEverything() ? L"everything" : L"local";
   if (FileSearchIsEverything()) {
@@ -705,7 +738,7 @@ void LauncherWindow::RequestEverythingRows() {
     // 之前因 Everything 不可用而留下的快照，现在可以补删了。
     if (pendingSnapshotDelete_) TryDeleteSnapshotForEverything();
     if (sendMs >= 5.0) {
-      Log(L"Everything 发送偏慢: \"%ls\" %.1f ms", input_.text().c_str(), sendMs);
+      LogWarn(L"Everything 发送偏慢: \"%ls\" %.1f ms", input_.text().c_str(), sendMs);
     }
     return;
   }
@@ -713,7 +746,7 @@ void LauncherWindow::RequestEverythingRows() {
   const uint64_t now = GetTickCount64();
   if (now - lastEverythingErrorLogAt_ < 10000) return;
   lastEverythingErrorLogAt_ = now;
-  Log(L"Everything 不可用: %ls", everything_.Status().error.c_str());
+  LogWarn(L"Everything 不可用: %ls", everything_.Status().error.c_str());
 }
 
 void LauncherWindow::Refilter() {
@@ -723,8 +756,8 @@ void LauncherWindow::Refilter() {
   StartContentFade();
   UpdateSceneState();
   if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
-  Log(L"过滤: \"%ls\" -> %zu 条 (%.1f ms)", input_.text().c_str(), rows_.size(),
-      ElapsedMs(start));
+  LogDebug(L"过滤: \"%ls\" -> %zu 条 (%.1f ms)", input_.text().c_str(), rows_.size(),
+           ElapsedMs(start));
 }
 
 void LauncherWindow::UpdateSceneState() {
@@ -800,7 +833,7 @@ void LauncherWindow::MoveSelection(int delta) {
   selectionTo_ = static_cast<float>(selected_);
   QueryPerformanceCounter(&selectionStart_);
   selectionAnimating_ = true;
-  Log(L"选中: [%d] %ls", selected_, rows_[static_cast<size_t>(selected_)].title.c_str());
+  LogDebug(L"选中: [%d] %ls", selected_, rows_[static_cast<size_t>(selected_)].title.c_str());
   UpdateSceneState();
   if (!animating_) {
     animating_ = true;
@@ -889,7 +922,7 @@ void LauncherWindow::ShowFromTray() {
   // 通知，任何「切换」语义都会变成「显示 → 隐藏」，用户看到的就是搜索框闪一下消失。
   const uint64_t now = GetTickCount64();
   if (lastTrayClickAt_ != 0 && now - lastTrayClickAt_ < kTrayClickDebounceMs) {
-    Log(L"托盘左键: 忽略重复通知（距上次 %llu ms）", now - lastTrayClickAt_);
+    LogDebug(L"托盘左键: 忽略重复通知（距上次 %llu ms）", now - lastTrayClickAt_);
     return;
   }
   lastTrayClickAt_ = now;
@@ -903,6 +936,25 @@ void LauncherWindow::InjectTrayClick() {
   Log(L"注入托盘左键: NIN_SELECT + WM_LBUTTONUP");
   PostMessageW(hwnd_, kTrayMessage, 0, MAKELPARAM(NIN_SELECT, 1));
   PostMessageW(hwnd_, kTrayMessage, 0, MAKELPARAM(WM_LBUTTONUP, 1));
+}
+
+void LauncherWindow::ProbeSettingsCommands(const std::wstring& spec) {
+  if (!settingsWindow_ || !settingsWindow_->hwnd() || spec.empty()) return;
+  HWND target = settingsWindow_->hwnd();
+  size_t start = 0;
+  std::wstring sent;
+  while (start <= spec.size()) {
+    size_t comma = spec.find(L',', start);
+    if (comma == std::wstring::npos) comma = spec.size();
+    const std::wstring token = spec.substr(start, comma - start);
+    start = comma + 1;
+    if (token.empty()) continue;
+    const int id = static_cast<int>(wcstol(token.c_str(), nullptr, 10));
+    if (id <= 0) continue;
+    PostMessageW(target, WM_COMMAND, MAKEWPARAM(static_cast<WORD>(id), BN_CLICKED), 0);
+    sent += (sent.empty() ? L"" : L",") + std::to_wstring(id);
+  }
+  Log(L"设置窗探针: 发送控件命令 %ls", sent.c_str());
 }
 
 void LauncherWindow::Toggle() {
@@ -1008,7 +1060,7 @@ void LauncherWindow::InjectMouseRow(int row, bool click) {
   const int yPx =
       static_cast<int>(std::lround((theme_.shadowMargin + yDip) * scale));
   const LPARAM point = MAKELPARAM(xPx, yPx);
-  Log(L"注入鼠标: 行 %d -> 客户端 (%d, %d)%ls", row + 1, xPx, yPx, click ? L" + 单击" : L"");
+  LogDebug(L"注入鼠标: 行 %d -> 客户端 (%d, %d)%ls", row + 1, xPx, yPx, click ? L" + 单击" : L"");
   PostMessageW(hwnd_, WM_MOUSEMOVE, 0, point);
   if (click) {
     PostMessageW(hwnd_, WM_LBUTTONDOWN, MK_LBUTTON, point);
@@ -1066,14 +1118,14 @@ void LauncherWindow::ActivateRow(int index, bool shift, bool ctrl) {
           mode == LaunchMode::Reveal ? L"定位"
                                      : (mode == LaunchMode::Elevated ? L"管理员" : L"普通"));
     } else {
-      Log(L"启动失败: %ls -> %ls", row.title.c_str(), error.c_str());
+      LogError(L"启动失败: %ls -> %ls", row.title.c_str(), error.c_str());
     }
   } else {
     ok = shift ? RevealPath(row.target, &error) : OpenPath(row.target, &error);
     if (ok) {
       Log(L"%ls: %ls", shift ? L"定位" : L"打开", row.target.c_str());
     } else {
-      Log(L"打开失败: %ls -> %ls", row.target.c_str(), error.c_str());
+      LogError(L"打开失败: %ls -> %ls", row.target.c_str(), error.c_str());
     }
   }
   if (ok) {
@@ -1118,7 +1170,7 @@ bool LauncherWindow::HandleKeyDown(WPARAM key) {
       if (input_.Backspace()) {
         Refilter();
         UpdateImeWindow();
-        Log(L"查询: \"%ls\"", input_.text().c_str());
+        LogDebug(L"查询: \"%ls\"", input_.text().c_str());
       }
       return true;
     case VK_DELETE:
@@ -1168,7 +1220,7 @@ bool LauncherWindow::HandleKeyDown(WPARAM key) {
         if (input_.PasteFromClipboard(hwnd_)) {
           Refilter();
           UpdateImeWindow();
-          Log(L"粘贴: \"%ls\"", input_.text().c_str());
+          LogDebug(L"粘贴: \"%ls\"", input_.text().c_str());
         }
         return true;
       }
@@ -1182,7 +1234,7 @@ bool LauncherWindow::HandleChar(wchar_t ch) {
   if (!input_.InsertChar(ch)) return false;
   Refilter();
   UpdateImeWindow();
-  Log(L"查询: \"%ls\" (caret=%zu)", input_.text().c_str(), input_.caret());
+  LogDebug(L"查询: \"%ls\" (caret=%zu)", input_.text().c_str(), input_.caret());
   return true;
 }
 
@@ -1214,7 +1266,7 @@ bool LauncherWindow::HandleIme(UINT message, WPARAM wParam, LPARAM lParam) {
       ImmGetCompositionStringW(context, GCS_RESULTSTR, result.data(), bytes);
       input_.CommitComposition(std::move(result));
       committed = true;
-      Log(L"IME 上屏: \"%ls\"", input_.text().c_str());
+      LogDebug(L"IME 上屏: \"%ls\"", input_.text().c_str());
     }
   } else if (lParam & GCS_COMPSTR) {
     const LONG bytes = ImmGetCompositionStringW(context, GCS_COMPSTR, nullptr, 0);
@@ -1280,8 +1332,8 @@ LRESULT LauncherWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         const std::wstring key = input_.text() + L'\n' + (filter ? filter->name : L"");
         if (fileHits_.empty() && everything_.lastRequestHadFilter() && key != pushdownRetryKey_) {
           pushdownRetryKey_ = key;
-          Log(L"Everything 下推 ext: 后 0 条，改用本地过滤重试: \"%ls\"",
-              everything_.lastSearch().c_str());
+          LogWarn(L"Everything 下推 ext: 后 0 条，改用本地过滤重试: \"%ls\"",
+                  everything_.lastSearch().c_str());
           // 重试必须延后到消息循环里：这里直接 Request 会与 Everything 互相等待，
           // 最后只能等它的 3 秒投递超时，表现为切换筛选组时卡顿。
           PostMessageW(hwnd_, kMsgEverythingRetry, 0, 0);
@@ -1296,8 +1348,8 @@ LRESULT LauncherWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         StartContentFade();
         UpdateSceneState();
         InvalidateRect(hwnd_, nullptr, FALSE);
-        Log(L"Everything 结果: %zu 条（往返 %.1f ms）", fileHits_.size(),
-            ElapsedMs(everythingRequestedAt_));
+        LogDebug(L"Everything 结果: %zu 条（往返 %.1f ms）", fileHits_.size(),
+                 ElapsedMs(everythingRequestedAt_));
       }
       return 0;
     }
@@ -1311,7 +1363,7 @@ LRESULT LauncherWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
       // 等），高字是图标 id。一次左键点击 shell 会**先后**送来两条（NIN_SELECT + WM_LBUTTONUP），
       // 因此这里绝不能直接 Toggle()：那会「显示 → 隐藏」，用户看到的就是搜索框闪一下没了。
       const UINT event = LOWORD(lParam);
-      Log(L"托盘通知: event=%u wParam=%llu", event, static_cast<unsigned long long>(wParam));
+      LogDebug(L"托盘通知: event=%u wParam=%llu", event, static_cast<unsigned long long>(wParam));
       if (event == WM_LBUTTONUP || event == NIN_SELECT || event == NIN_KEYSELECT) {
         ShowFromTray();
       } else if (event == WM_RBUTTONUP || event == WM_CONTEXTMENU) {
@@ -1324,7 +1376,7 @@ LRESULT LauncherWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
       PAINTSTRUCT ps;
       BeginPaint(hwnd_, &ps);
       const bool wasFirstFrame = measureFirstFrame_;
-      if (wasFirstFrame) Log(L"WM_PAINT 到达: %.1f ms", ElapsedMs(showRequestedAt_));
+      if (wasFirstFrame) LogDebug(L"WM_PAINT 到达: %.1f ms", ElapsedMs(showRequestedAt_));
       RenderNow();
       if (wasFirstFrame) {
         Log(L"首帧耗时: %.1f ms", ElapsedMs(showRequestedAt_));
@@ -1387,7 +1439,7 @@ LRESULT LauncherWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
       const int row = RowAtPoint(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
       if (chip != hoverChip_ || row != hoverRow_) {
         if (row != hoverRow_ && row >= 0 && row < static_cast<int>(rows_.size())) {
-          Log(L"悬停: 行 %d %ls", row + 1, rows_[static_cast<size_t>(row)].title.c_str());
+          LogDebug(L"悬停: 行 %d %ls", row + 1, rows_[static_cast<size_t>(row)].title.c_str());
         }
         hoverChip_ = chip;
         hoverRow_ = row;
@@ -1433,7 +1485,7 @@ LRESULT LauncherWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         const uint64_t now = GetTickCount64();
         if (lastTrayClickAt_ != 0 && now - lastTrayClickAt_ < kTrayDeactivateGraceMs &&
             IsShellSurface(GetForegroundWindow())) {
-          Log(L"托盘左键: 忽略 shell 抢前台导致的失活（%llu ms）", now - lastTrayClickAt_);
+          LogDebug(L"托盘左键: 忽略 shell 抢前台导致的失活（%llu ms）", now - lastTrayClickAt_);
           return 0;
         }
         Hide();
@@ -1446,7 +1498,7 @@ LRESULT LauncherWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
           trayRetries_ = 0;
         } else if (++trayRetries_ >= 5) {
           KillTimer(hwnd_, kTimerTrayRetry);
-          Log(L"托盘初始化放弃（已重试 5 次）");
+          LogWarn(L"托盘初始化放弃（已重试 5 次）");
         }
         return 0;
       }
@@ -1467,7 +1519,7 @@ LRESULT LauncherWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
           StartContentFade();
           UpdateSceneState();
           InvalidateRect(hwnd_, nullptr, FALSE);
-          Log(L"文件索引已更新，当前结果 %zu 条", rows_.size());
+          LogDebug(L"文件索引已更新，当前结果 %zu 条", rows_.size());
         }
         return 0;
       }

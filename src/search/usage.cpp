@@ -129,7 +129,7 @@ bool UsageStore::Save() const {
   HANDLE file = CreateFileW(DefaultPath().c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                             FILE_ATTRIBUTE_NORMAL, nullptr);
   if (file == INVALID_HANDLE_VALUE) {
-    Log(L"使用记录写入失败: %lu", GetLastError());
+    LogError(L"使用记录写入失败: %lu", GetLastError());
     return false;
   }
   const std::string utf8 = WideToUtf8(text);

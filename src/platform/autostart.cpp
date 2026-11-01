@@ -41,7 +41,7 @@ bool SetAutostart(bool enabled, std::wstring* error) {
   RegCloseKey(key);
   if (status != ERROR_SUCCESS) {
     if (error) *error = L"写入自启注册表失败";
-    Log(L"自启设置失败: %ld", status);
+    LogError(L"自启设置失败: %ld", status);
     return false;
   }
   Log(enabled ? L"已开启开机自启" : L"已关闭开机自启");

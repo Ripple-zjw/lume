@@ -91,7 +91,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 6. **强调色决策**：本机系统强调色为 `#D0000C`（红），直接跟随会把选中行染成酒红，破坏启动器观感；因此默认用设计蓝，`--accent=system` 供原生观感需求。
 7. **系统门禁**：`RtlGetVersion` 取 build，< 22621 弹 MessageBox 退出；`--shot`/`--shot-matrix` 不校验，便于任意机器生成设计图。
 8. **单实例**：命名互斥体 + `FindWindowW` + `WM_APP+1` 唤起；实测第二实例 1.2s 内退出，第一实例日志出现"显示窗口"。
-9. **日志**：默认 `%LOCALAPPDATA%\Lume\logs\lume.log`；沙箱/受限账户下 AppData 不可写时自动退回 exe 同目录（本机验证触发过），`--log=` 可显式指定。
+9. **日志**：默认写在 exe 同目录的 `Lume.log`（该目录不可写时退回 `%LOCALAPPDATA%\Lume\logs\lume.log`），`--log=` 可显式指定；分 error/warn/info/debug 四级，正常使用只记 info，排查用 `--debug`（详见 §13.9）。
 10. **沙箱限制**：本环境无法执行 `Add-Type`（csc 阻塞），交互测试改用"启动第二实例 + 读日志"的方式，不依赖 P/Invoke。
 
 ## 8. P2 实测结论
@@ -279,6 +279,17 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 3. **第二层原因**：即使只处理一条通知，托盘点击收尾时 shell 会把前台抢回任务栏，紧跟的 `WM_ACTIVATE(WA_INACTIVE)` 仍会把刚显示的窗口藏掉。现在 `WM_ACTIVATE` 里加了一条放行条件：「刚处理过托盘左键 600ms 内」且「新前台是 shell 自己的界面」（`Shell_TrayWnd` / `Shell_SecondaryTrayWnd` / `NotifyIconOverflowWindow` / `TopLevelWindowForOverflowXamlIsland`）。用户真的去点别的应用时，前台不是这些窗口，照常隐藏。
 4. **新语义**：左键 = **只打开、不切换**（`ShowFromTray()`），并做 400ms 去抖；隐藏仍走 Esc / 点到别处 / 热键，热键仍是 Toggle。这样连点两下托盘也只是「保持在屏幕上」，不会闪。
 5. **验证手段**：加了 `--tray-click`（进程内 `PostMessage` 两条 v4 通知，顺序与真实 shell 一致），日志里能看到「显示窗口」一次、无「隐藏窗口」。托盘本身在沙箱里 `NIM_ADD` 会被 UIPI 拒绝（`tray=FAIL`），所以真机手感仍需人工确认：`tools\regression.ps1` 的手检清单第 1 条已改成「左键应让搜索框停在屏幕上」。
+
+## 13.9 日志落点与等级（2026-11-01）
+
+1. **改造前的三点问题**：① 落点固定 `%LOCALAPPDATA%\Lume\logs\lume.log`，只有 AppData 写不进去才退回 exe 目录——绿色运行/免安装时最该看的那份日志反而在 AppData 深处；② 行首只有 `[HH:MM:SS.mmm]`，文件是追加的，跨天根本分不清哪段是这次启动；③ 没有等级，188 处 `Log()` 全量输出，一次普通使用（唤出 + 打 7 个字符 + 退出）387KB，绝大部分是每次按键的 `查询` / `过滤`、鼠标 `悬停`、`托盘通知 event=…`。
+2. **落点**：`LogInit` 按 `--log=` → `exe 目录\Lume.log` → `%LOCALAPPDATA%\Lume\logs\lume.log` 依次尝试，每个候选先 `EnsureDirectory`，打不开就换下一个；全部失败才只留调试器输出（`OutputDebugStringW`）。`--log=` 只给文件名时按 exe 目录解析，避免双击启动时当前目录是别处。
+3. **格式**：`[YYYY-MM-DD HH:MM:SS.mmm][级别] 正文`，UTF-8、每行 `fflush`（常驻进程可边跑边 tail），控制台/调试器同步输出。每次启动第一行是不受过滤的横幅：`[*] ===== Lume 0.2.3 启动 2026-11-01 21:46:35 等级=info pid=4180 =====`。
+4. **等级**：`enum class LogLevel { Error, Warn, Info, Debug }`，数值越大越啰嗦，`LogEnabled()` 用 `int(level) <= 当前等级` 做一次比较即可短路，热路径没有格式化开销。四个入口 `LogError/LogWarn/Log/LogDebug`，`LogHr(what, hr, level = Error)` 供 HRESULT 用（DWM 属性这类非致命调用传 `Warn`）。分级口径：Info = 会话/设置/唤出/启动/切组/索引重建完成，Warn = 自动降级（热键回退、托盘重试、Everything 不可用、索引截断），Error = 初始化失败与写盘失败，Debug = 每次按键、悬停、托盘通知码、Everything 往返、索引内存统计。
+5. **配置优先级**：`--log-level=` / `--debug` > `LUME_LOG_LEVEL` > `settings.conf` 的 `logLevel=` > `info`。设置窗「常规」页加了「详细日志（开发排查用）」勾选框（`BS_OWNERDRAW`，勾选状态直接读 `settings_.logLevel`，与「开机自动启动」同一套自绘分支）和「打开日志」按钮（`onOpenLog` 回调：先 `OpenPath(Lume.log)`，失败再打开其所在目录），点「应用 / 保存」时 `ApplySettings()` 里调 `LogSetLevel()` 即时生效，日志自己记一行 `日志等级: info -> debug（来自设置）`；`SettingsStore::Save` 写回 `logLevel=`。
+6. **轮转**：`LogInit` 打开前检查现有文件大小，超过 2MB 就 `MoveFileEx` 成 `Lume.log.1`（覆盖旧的再新建）。实测 2,098,921 字节 → 轮转后 `.1` 保持 2,098,921 字节、新文件从横幅重新开始。
+7. **与索引互不干扰**：`Lume.log` 在 exe 目录里，而 exe 目录常落在索引根内；`FileIndex::ShouldIgnoreSnapshotName()`（watcher 与枚举共用）把 `lume.log` / `lume.log.1` / `etools.log` 加进忽略名单，否则常驻进程每写一行都会触发 `文件索引: 增量更新`。
+8. **验证**：`tools/regression.ps1` 加了一组 `log_*` 自动检查（默认 22 行里没有 `[D]`、`--debug` 有 `[D]`、`--log-level=error` 只剩 `[E]` + 横幅）；设置窗勾选框用新增的 `--settings-probe=<控件 id,…>`（进程内 `PostMessage(WM_COMMAND)`）验证：`--settings-probe=148,130` 打出 `设置窗日志开关: debug` → `日志等级: info -> debug（来自设置）` → `设置已保存`，并且 `settings.conf` 里出现 `logLevel=debug`。
 
 ## 14. 后续方向
 

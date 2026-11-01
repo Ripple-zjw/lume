@@ -133,7 +133,7 @@ void CollectStartMenu(Collector* collector) {
 void CollectAppsFolder(Collector* collector) {
   PIDLIST_ABSOLUTE folderPidl = nullptr;
   if (FAILED(SHParseDisplayName(L"shell:AppsFolder", nullptr, &folderPidl, 0, nullptr))) {
-    Log(L"AppsFolder 解析失败");
+    LogError(L"AppsFolder 解析失败");
     return;
   }
   ComPtr<IShellFolder> folder;
@@ -323,7 +323,7 @@ bool LoadCache(std::vector<AppEntry>* entries) {
     if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &cacheData)) continue;
     if (newest.dwLowDateTime != 0 &&
         CompareFileTime(&cacheData.ftLastWriteTime, &newest) < 0) {
-      Log(L"索引缓存早于开始菜单变更，重建: %ls", path.c_str());
+      LogDebug(L"索引缓存早于开始菜单变更，重建: %ls", path.c_str());
       continue;
     }
     HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
@@ -397,7 +397,7 @@ void SaveCache(const std::vector<AppEntry>& entries) {
       return;
     }
   }
-  Log(L"索引缓存写入失败: %lu", GetLastError());
+  LogError(L"索引缓存写入失败: %lu", GetLastError());
 }
 
 }  // namespace

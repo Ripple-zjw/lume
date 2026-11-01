@@ -2,6 +2,7 @@
 
 #include <string>
 
+#include "core/log.h"
 #include "ui/theme.h"
 
 struct AppOptions {
@@ -13,6 +14,10 @@ struct AppOptions {
   bool autostartLaunch = false;
   std::wstring query;
   std::wstring logPath;
+  // 日志等级：--log-level=<error|warn|info|debug> / --debug / 环境变量 LUME_LOG_LEVEL 覆盖；
+  // 都没有时用 settings.conf 里的 logLevel=（默认 info）。
+  LogLevel logLevel = LogLevel::Info;
+  bool logLevelSpecified = false;
   std::wstring fileRoot;  // 测试用：覆盖文件索引根目录
   bool showAtStart = false;
   int autoExitMs = 0;
@@ -30,6 +35,8 @@ struct AppOptions {
   bool noHotkey = false;
   bool glass = false;
   bool openSettings = false;
+  // 测试钩子：打开设置窗后按逗号分隔的控件 id 逐个投 WM_COMMAND（验证勾选框/应用按钮）。
+  std::wstring settingsProbe;
   bool clearIndexOnStart = false;
   size_t indexSizeMB = 0;  // 0 = 使用设置里的索引大小上限
   std::wstring indexDir;   // 覆盖索引快照目录（测试用）

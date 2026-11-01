@@ -24,6 +24,12 @@ constexpr int kHotkeyId = 1;
 constexpr UINT_PTR kTimerCapture = 0x10;
 constexpr UINT_PTR kTimerExit = 0x11;
 
+// 先定等级再开文件，保证最早那几行也按目标等级过滤。
+void StartLogging(const AppOptions& options) {
+  LogSetLevel(options.logLevel);
+  LogInit(options.logPath);
+}
+
 UINT PanelCanvasWidth(const Theme& theme, float scale) {
   return static_cast<UINT>(std::lround((theme.panelWidth + theme.shadowMargin * 2.0f) * scale));
 }
@@ -50,14 +56,15 @@ bool RegisterConfiguredHotkey(HWND hwnd, const AppSettings& settings, int id,
     }
     if (RegisterHotkeyBinding(hwnd, id, *fallback, nullptr)) {
       if (usedName) *usedName = fallback->name;
-      Log(L"已回退到热键: %ls", fallback->name.c_str());
+      LogWarn(L"已回退到热键: %ls", fallback->name.c_str());
       return true;
     }
   }
   return false;
 }
 
-WPARAM KeyTokenToVk(const std::wstring& token) {  if (token == L"up") return VK_UP;
+WPARAM KeyTokenToVk(const std::wstring& token) {
+  if (token == L"up") return VK_UP;
   if (token == L"down") return VK_DOWN;
   if (token == L"left") return VK_LEFT;
   if (token == L"right") return VK_RIGHT;
@@ -75,10 +82,10 @@ WPARAM KeyTokenToVk(const std::wstring& token) {  if (token == L"up") return VK_
 }  // namespace
 
 int RunScreenshot(const AppOptions& options, const std::wstring& path, float scale) {
-  LogInit(options.logPath);
+  StartLogging(options);
   Renderer renderer;
   if (!renderer.Init()) {
-    Log(L"渲染器初始化失败");
+    LogError(L"渲染器初始化失败");
     return 2;
   }
   Theme theme = MakeTheme(options.themeMode, ParseAccent(options.accent));
@@ -86,7 +93,7 @@ int RunScreenshot(const AppOptions& options, const std::wstring& path, float sca
   icons.Init(&renderer);
   Scene scene;
   if (!scene.Init(renderer, theme, &icons)) {
-    Log(L"场景初始化失败");
+    LogError(L"场景初始化失败");
     return 2;
   }
   const std::vector<AppEntry> apps = CollectAppEntries();
@@ -99,7 +106,7 @@ int RunScreenshot(const AppOptions& options, const std::wstring& path, float sca
       filters.enabled = enabled;
       filters.active = index;
     } else {
-      Log(L"--filter=%ls 无法识别，截图沿用「全部」", options.filterSpec.c_str());
+      LogWarn(L"--filter=%ls 无法识别，截图沿用「全部」", options.filterSpec.c_str());
     }
   }
   ClampFilterActive(&filters);
@@ -113,7 +120,7 @@ int RunScreenshot(const AppOptions& options, const std::wstring& path, float sca
   const int visibleRows = std::clamp(static_cast<int>(rows.size()), 1, Scene::kMaxVisibleRows);
   if (!renderer.AttachOffscreen(PanelCanvasWidth(theme, scale),
                                 PanelCanvasHeight(theme, visibleRows, scale, filters.enabled))) {
-    Log(L"离屏目标创建失败");
+    LogError(L"离屏目标创建失败");
     return 2;
   }
   if (!renderer.BeginFrame()) return 2;
@@ -145,7 +152,7 @@ int RunScreenshot(const AppOptions& options, const std::wstring& path, float sca
 
 int RunScreenshotMatrix(const AppOptions& options, const std::wstring& directory) {
   if (!EnsureDirectory(directory)) {
-    Log(L"无法创建目录: %ls", directory.c_str());
+    LogError(L"无法创建目录: %ls", directory.c_str());
     return 2;
   }
   const float scales[] = {1.0f, 1.5f, 2.0f};
@@ -160,7 +167,7 @@ int RunScreenshotMatrix(const AppOptions& options, const std::wstring& directory
       swprintf(name, ARRAYSIZE(name), L"%ls\\baseline-%ls-%d.png", directory.c_str(),
                ThemeModeName(mode), dpi);
       if (RunScreenshot(single, name, scale) != 0) {
-        Log(L"生成失败: %ls", name);
+        LogError(L"生成失败: %ls", name);
         ++failures;
       }
     }
@@ -170,8 +177,8 @@ int RunScreenshotMatrix(const AppOptions& options, const std::wstring& directory
 }
 
 int RunLauncher(const AppOptions& options) {
-  if (!EnablePerMonitorDpi()) Log(L"Per-Monitor V2 DPI 感知设置失败");
-  LogInit(options.logPath);
+  if (!EnablePerMonitorDpi()) LogWarn(L"Per-Monitor V2 DPI 感知设置失败");
+  StartLogging(options);
 
   const OsVersion version = QueryOsVersion();
   Log(L"Windows %ls", FormatOsVersion(version).c_str());
@@ -192,6 +199,15 @@ int RunLauncher(const AppOptions& options) {
 
   AppSettings settings;
   SettingsStore::Load(&settings);
+  // 命令行 / 环境变量没有指定等级时，用设置里的（默认 info）。
+  if (!options.logLevelSpecified) {
+    const LogLevel configured = LogLevelFromText(settings.logLevel);
+    if (configured != LogLevelCurrent()) {
+      Log(L"日志等级: %ls -> %ls（来自设置）", LogLevelName(LogLevelCurrent()),
+          LogLevelName(configured));
+      LogSetLevel(configured);
+    }
+  }
   if (options.themeSpecified) settings.theme = ThemeModeName(options.themeMode);
   if (options.accentSpecified) settings.accent = options.accent;
   if (!options.hotkeyOverride.empty()) settings.hotkey = options.hotkeyOverride;
@@ -207,7 +223,7 @@ int RunLauncher(const AppOptions& options) {
       settings.filters.enabled = enabled;
       settings.filters.active = index;
     } else {
-      Log(L"--filter=%ls 无法识别，沿用设置值", options.filterSpec.c_str());
+      LogWarn(L"--filter=%ls 无法识别，沿用设置值", options.filterSpec.c_str());
     }
   }
   ClampFilterActive(&settings.filters);
@@ -226,17 +242,17 @@ int RunLauncher(const AppOptions& options) {
 
   Theme theme = MakeTheme(ParseThemeMode(settings.theme), ParseAccent(settings.accent));
   if (!renderer.Init()) {
-    Log(L"渲染器初始化失败");
+    LogError(L"渲染器初始化失败");
     exitCode = 2;
   } else if (!icons.Init(&renderer)) {
-    Log(L"图标缓存初始化失败");
+    LogError(L"图标缓存初始化失败");
     exitCode = 2;
   } else if (!scene.Init(renderer, theme, &icons)) {
-    Log(L"场景初始化失败");
+    LogError(L"场景初始化失败");
     exitCode = 2;
   } else if (!window.Create(GetModuleHandleW(nullptr), &renderer, &scene, &icons, settings,
                             options.fileRoot)) {
-    Log(L"窗口创建失败");
+    LogError(L"窗口创建失败");
     exitCode = 2;
   }
 
@@ -248,7 +264,7 @@ int RunLauncher(const AppOptions& options) {
     std::wstring hotkeyName;
     if (!options.noHotkey &&
         !RegisterConfiguredHotkey(window.hwnd(), settings, kHotkeyId, &hotkeyName)) {
-      Log(L"没有可用的全局热键，仅能通过 --show 测试");
+      LogError(L"没有可用的全局热键，仅能通过 --show 测试");
     }
 
     window.SetOnHotkey([&window]() { window.Toggle(); });
@@ -257,7 +273,7 @@ int RunLauncher(const AppOptions& options) {
       UnregisterHotkey(window.hwnd(), kHotkeyId);
       std::wstring used;
       if (!RegisterConfiguredHotkey(window.hwnd(), updated, kHotkeyId, &used)) {
-        Log(L"新热键注册失败");
+        LogError(L"新热键注册失败");
       }
     });
     window.SetOnSettingsChanged(
@@ -266,6 +282,9 @@ int RunLauncher(const AppOptions& options) {
       window.OpenSettings();
       if (!options.testCapture.empty()) {
         window.TestHotkeyCapture(options.testCapture);
+      }
+      if (!options.settingsProbe.empty()) {
+        window.ProbeSettingsCommands(options.settingsProbe);
       }
     }
     if (options.clearIndexOnStart) {
@@ -277,7 +296,7 @@ int RunLauncher(const AppOptions& options) {
       if (id == kTimerCapture) {
         KillTimer(window.hwnd(), kTimerCapture);
         if (!options.capturePath.empty() && !renderer.CaptureWindowToPng(options.capturePath)) {
-          Log(L"截图失败");
+          LogError(L"截图失败");
         }
         PostQuitMessage(0);
       } else if (id == kTimerExit) {

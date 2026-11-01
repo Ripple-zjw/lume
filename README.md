@@ -156,6 +156,18 @@ Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤�
 
   整段日志里没有「隐藏窗口」。托盘在本 agent 沙箱里建不出来（`NIM_ADD` 被 UIPI 拒），所以真机上的手感仍需你确认一次。
 
+**P6.7：日志落点与等级（2026-11-01）**
+
+- **改造前**：日志固定写 `%LOCALAPPDATA%\Lume\logs\lume.log`（AppData 不可写时才退回 exe 目录），188 处调用一把梭全量输出，行首只有 `[HH:MM:SS.mmm]`——没有日期（文件是追加的，跨天分不清）、没有等级、也没有「正常使用」与「排查」的区别。实测一次普通使用（唤出 + 打 7 个字符 + 退出）就写 387KB，里面大半是每次按键的 `查询` / `过滤`、鼠标 `悬停`、`托盘通知 event=…` 和 Everything 往返。
+- **落点改为 exe 同目录**：`Lume.log` 就在 `Lume.exe` 旁边（免安装/绿色运行最常见的位置），`--log=<路径>` 优先；该目录不可写（装进 `Program Files`、只读介质）时自动退回 `%LOCALAPPDATA%\Lume\logs\lume.log`，两个候选都失败才只输出到调试器。每行 `[YYYY-MM-DD HH:MM:SS.mmm][I] 正文`，UTF-8、逐行 `fflush`，常驻进程运行中可以直接用编辑器/`Get-Content -Tail` 跟着看。
+- **会话横幅**：每次启动第一行是 `[*] ===== Lume 0.2.3 启动 2026-11-01 21:46:35 等级=info pid=4180 =====`，不受等级过滤；`--log-level=error` 的日志里也一定有这一行，方便确认「这几行是哪次启动的」。
+- **四个等级**：`error < warn < info（默认）< debug`，行首单字母 `E/W/I/D`，横幅用 `*`。同一段 `--show --type=notepad` 会话实测 **info 22 行、debug 40 行**：debug 多出来的正是每次按键的 `过滤: "not" -> 22 条 (0.6 ms)` + `查询: "not" (caret=3)`、`WM_PAINT 到达`、`Everything 结果: 80 条（往返 56.1 ms）`、`图标缓存: 磁盘命中 19, shell 取图 11`。
+- **分级口径**：Info = 会话开始、设置、唤出/隐藏（含定位/Show/首帧耗时）、启动/打开、切筛选组、索引重建完成；Warn = 自动降级（热键被占用后回退、托盘重试、Everything 不可用或发送偏慢、索引触顶截断、DWM 属性设置失败）；Error = 初始化失败、启动/打开失败、写盘失败、托盘/热键彻底不可用；Debug = 每次按键的查询与过滤、鼠标悬停、托盘通知码、Everything 往返、文件索引内存/统计、图标缓存命中率。
+- **等级怎么定**：`--log-level=error|warn|info|debug`（或 `--debug`）> 环境变量 `LUME_LOG_LEVEL` > `settings.conf` 的 `logLevel=` > 默认 `info`。设置窗「常规」页新增 **「详细日志（开发排查用）」** 勾选框 + **「打开日志」** 按钮（用默认程序打开 `Lume.log`，文件还不存在时打开所在目录），勾上=debug、不勾=info，点「应用 / 保存」即时生效、不用重启：`日志等级: info -> debug（来自设置）`，同时写回 `settings.conf`。关于页的「日志」一行现在会带等级：`…\Lume.log（debug）`。
+- **轮转**：启动时若现有文件超过 **2MB**，改名成 `Lume.log.1`（旧的 `.1` 直接覆盖）再新建。实测把文件撑到 2,098,921 字节后启动：`.1` 保留了 2,098,921 字节，新 `Lume.log` 从横幅重新开始（419 字节）。
+- **不和索引打架**：`Lume.log` 通常在 exe 目录里，而 exe 目录很可能就在索引根内；watcher 把 `lume.log` / `lume.log.1` 加进忽略名单（和 `files.idx`、`settings.conf` 同级），否则常驻进程每写一行都会触发一次「增量更新」。
+- **验证**：`tools/regression.ps1` 新增一组自动检查 `log_banner` / `log_info` / `log_no_debug_by_default` / `log_debug` / `log_error_only`（分别跑默认、`--debug`、`--log-level=error` 三次并检查行前缀）；设置窗交互用新增的 `--settings-probe=<控件 id,…>` 验证（`--settings-probe=148,130` = 勾「详细日志」+ 点「应用」，日志出现 `设置窗日志开关: debug` → `日志等级: info -> debug（来自设置）` → `设置已保存`）。
+
 **P6（进行中）：搜索质量修复**
 
 ![层级排序：game](docs/images/p6/game-ranking.png)
@@ -214,7 +226,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Recompile -Package
 
 ### 低完整性环境（DSH/受限工作区）
 
-如果直接从 `D:\projects\eTools` 这类被标记为 **Low Integrity** 的工作区运行，Windows 的 UIPI 会阻止 `Shell_NotifyIcon`，表现为没有托盘、日志里 `托盘图标创建失败 (Win32 5)`，且日志落在 exe 同目录而不是 `%LOCALAPPDATA%\Lume\logs`。
+如果直接从 `D:\projects\eTools` 这类被标记为 **Low Integrity** 的工作区运行，Windows 的 UIPI 会阻止 `Shell_NotifyIcon`，表现为没有托盘、日志里 `[E] 托盘图标创建失败 (Win32 5)` 加一句「当前进程是低完整性 (Low IL)」的提示（日志本身就在 exe 同目录的 `Lume.log`）。
 
 解决办法：双击发布包里的 **`Install.cmd`**，它会复制到 `%LOCALAPPDATA%\Programs\Lume` 并从普通目录启动；或手动把 `Lume.exe` 复制到桌面/`C:\Apps\Lume` 再运行。普通用户目录下不会有这个问题。
 
@@ -275,9 +287,12 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Recompile -Package
 | `--bench-iters=<n>` | 每个基准用例的迭代次数（默认 5） |
 | `--everything-check[=<query>]` | 检查 Everything 连接/版本，跑一次查询并打印命中与合并结果 |
 | `--settings` | 启动时打开设置窗 |
+| `--settings-probe=id[,id…]` | 测试用：打开设置窗并按控件 id 投 `WM_COMMAND`（如 `148,130` = 详细日志 + 应用） |
 | `--self-check` | 检查热键/托盘/自启/打开文件/设置写入并打印 PASS/FAIL |
 | `--no-hotkey` | 不注册全局热键 |
-| `--log=<path>` | 指定日志文件（默认 `%LOCALAPPDATA%\Lume\logs`，不可写时退回 exe 同目录） |
+| `--log=<path>` | 指定日志文件（默认 exe 同目录的 `Lume.log`，该目录不可写时退回 `%LOCALAPPDATA%\Lume\logs`） |
+| `--log-level=error\|warn\|info\|debug` | 日志等级（默认 `info`；`debug` = 开发排查，含每次按键/悬停/Everything 往返） |
+| `--debug` | `--log-level=debug` 的简写；环境变量 `LUME_LOG_LEVEL` 同样生效 |
 
 ## 压力测试（内存合成数据）
 
@@ -343,7 +358,7 @@ src/search/usage.cpp       使用频次/最近性（usage.conf）
 src/search/result.h        显示层结果行
 src/ui/icon_cache.cpp      异步 shell 图标加载（worker 取图 + UI 转 D2D）
 src/launch/launcher.cpp    ShellExecuteEx / UWP 激活 / 定位 / 管理员运行 / 打开路径
-src/core/log.*             日志（文件/调试器/控制台，UTF-8）与通用工具
+src/core/log.*             日志（等级 error/warn/info/debug，exe 同目录 Lume.log，UTF-8）与通用工具
 assets/app.rc              版本/清单资源
 assets/app.manifest        Per-Monitor V2、长路径、UTF-8、asInvoker
 tools/fetch-toolchain.mjs  工具链获取与校验（锁定版本）

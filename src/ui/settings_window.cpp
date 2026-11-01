@@ -68,6 +68,8 @@ enum ControlId {
   kIdFilterDown = 145,
   kIdFilterReset = 146,
   kIdFilterHint = 147,
+  kIdLogLevel = 148,
+  kIdOpenLog = 149,
 };
 
 constexpr UINT kCaptureComboMessage = WM_APP + 20;
@@ -142,7 +144,7 @@ void InstallKeyboardHook(HWND capture) {
                         },
                         GetModuleHandleW(nullptr), 0);
   if (!g_keyboardHook) {
-    Log(L"热键捕获钩子安装失败: %lu（回退到普通按键消息）", GetLastError());
+    LogWarn(L"热键捕获钩子安装失败: %lu（回退到普通按键消息）", GetLastError());
     g_captureHwnd = nullptr;
   }
 }
@@ -309,7 +311,7 @@ bool SettingsWindow::Show(HINSTANCE instance, HWND owner, const AppSettings& cur
   wc.lpszClassName = kClassName;
   wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
   if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
-    Log(L"设置窗注册失败: %lu", GetLastError());
+    LogError(L"设置窗注册失败: %lu", GetLastError());
     return false;
   }
   RegisterCaptureClass(instance);
@@ -328,7 +330,7 @@ bool SettingsWindow::Show(HINSTANCE instance, HWND owner, const AppSettings& cur
                           WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_VISIBLE, x, y, width,
                           height, owner, nullptr, instance, this);
   if (!hwnd_) {
-    Log(L"设置窗创建失败: %lu", GetLastError());
+    LogError(L"设置窗创建失败: %lu", GetLastError());
     return false;
   }
   CreateControls();
@@ -431,12 +433,20 @@ void SettingsWindow::CreateControls() {
       Scale(20), Scale(184), Scale(300), Scale(26), hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdAutostart)), nullptr, nullptr));
   applyFont(autostartCheck_);
+  // 日志等级开关：勾上 = debug（每次按键/悬停都记），不勾 = info（正常使用）。
+  logLevelCheck_ = addGeneral(CreateWindowExW(
+      0, L"BUTTON", L"详细日志（开发排查用）", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+      Scale(20), Scale(216), Scale(300), Scale(26), hwnd_,
+      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdLogLevel)), nullptr, nullptr));
+  applyFont(logLevelCheck_);
+  openLogButton_ = addGeneral(button(L"打开日志", kIdOpenLog, 330, 216, 110, 26));
   addGeneral(CreateWindowExW(
       0, L"STATIC",
       L"设置保存后立即生效；搜索热键在任何窗口下都可用。\n"
-      L"索引大小上限、快照目录、清除 / 重建索引都在「索引」页；版本与数据目录在「关于」页。",
-      WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX, Scale(20), Scale(228), Scale(500),
-      Scale(48), hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdGeneralHint)), nullptr,
+      L"索引大小上限、快照目录、清除 / 重建索引都在「索引」页；版本与数据目录在「关于」页。\n"
+      L"日志写在程序同目录的 Lume.log（超过 2MB 自动轮转为 Lume.log.1）。",
+      WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX, Scale(20), Scale(250), Scale(500),
+      Scale(66), hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdGeneralHint)), nullptr,
       nullptr));
 
   // ---- 索引页 ----
@@ -592,6 +602,7 @@ void SettingsWindow::Populate() {
   RebuildIndexDirChoices(currentDir);
   // 该控件是 BS_OWNERDRAW：BM_SETCHECK/BM_GETCHECK 对它无效，勾选状态直接取自设置。
   InvalidateRect(autostartCheck_, nullptr, FALSE);
+  InvalidateRect(logLevelCheck_, nullptr, FALSE);
 
   SendMessageW(rootsList_, LB_RESETCONTENT, 0, 0);
   for (const std::wstring& root : roots_) {
@@ -729,7 +740,8 @@ std::wstring SettingsWindow::BuildAboutText() const {
   text += L"\n";
   text += L"设置文件　" + info.settingsPath + L"\n";
   text += L"使用记录　" + info.usagePath + L"\n";
-  text += L"日志　　　" + info.logPath + L"\n";
+  text += L"日志　　　" + info.logPath + L"（" +
+          (info.logLevel.empty() ? L"info" : info.logLevel) + L"）\n";
   text += L"索引目录　" + info.indexDir + L"\n";
   text += L"\n";
   text += L"组件　Direct2D / DirectWrite / DirectComposition；Everything SDK v2 源码内嵌\n";
@@ -1005,7 +1017,7 @@ bool SettingsWindow::ApplyConfiguration(bool close) {
     std::wstring error;
     if (!ValidateIndexDirectory(indexDir, &error)) {
       SetWindowTextW(status_, error.c_str());
-      Log(L"索引目录校验失败: %ls", error.c_str());
+      LogWarn(L"索引目录校验失败: %ls", error.c_str());
       return false;
     }
     // 与默认目录相同时存空值，保持“跟随默认目录”的语义（默认目录随环境变化）。
@@ -1037,7 +1049,7 @@ bool SettingsWindow::ApplyConfiguration(bool close) {
   std::wstring filterError;
   if (!SanitizeFilterSet(&filters, &filterError)) {
     SetWindowTextW(status_, filterError.c_str());
-    Log(L"筛选组校验失败: %ls", filterError.c_str());
+    LogWarn(L"筛选组校验失败: %ls", filterError.c_str());
     return false;
   }
   updated.filters = filters;
@@ -1065,13 +1077,15 @@ void SettingsWindow::DrawButton(const DRAWITEMSTRUCT* item) {
   FillRect(dc, &rect, background);
   DeleteObject(background);
 
-  if (id == kIdAutostart || id == kIdFilterEnable || id == kIdFilterApps ||
+  if (id == kIdAutostart || id == kIdLogLevel || id == kIdFilterEnable || id == kIdFilterApps ||
       id == kIdFilterFolders || id == kIdFilterNoExt) {
     // 自绘勾选框：勾选状态来自设置/工作副本，未勾选时按下也立即用强调色描边，
     // 让点击有明确反馈（BS_OWNERDRAW 控件不会自己切换状态）。
     bool checked = false;
     if (id == kIdAutostart) {
       checked = settings_.autostart;
+    } else if (id == kIdLogLevel) {
+      checked = _wcsicmp(settings_.logLevel.c_str(), L"debug") == 0;
     } else if (id == kIdFilterEnable) {
       checked = filters_.enabled;
     } else if (FilterGroup* group = SelectedFilterGroup()) {
@@ -1273,6 +1287,22 @@ LRESULT SettingsWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         settings_.autostart = !settings_.autostart;
         InvalidateRect(autostartCheck_, nullptr, FALSE);
         Log(L"设置窗自启开关: %ls", settings_.autostart ? L"开" : L"关");
+        return 0;
+      }
+      if (id == kIdLogLevel) {
+        settings_.logLevel = _wcsicmp(settings_.logLevel.c_str(), L"debug") == 0 ? L"info"
+                                                                                 : L"debug";
+        InvalidateRect(logLevelCheck_, nullptr, FALSE);
+        Log(L"设置窗日志开关: %ls（点「应用」或「保存」生效）", settings_.logLevel.c_str());
+        SetWindowTextW(status_, _wcsicmp(settings_.logLevel.c_str(), L"debug") == 0
+                                    ? L"已选详细日志（debug），点「应用」或「保存」生效"
+                                    : L"已切回正常日志（info），点「应用」或「保存」生效");
+        return 0;
+      }
+      if (id == kIdOpenLog) {
+        const bool ok = callbacks_.onOpenLog ? callbacks_.onOpenLog() : false;
+        SetWindowTextW(status_, ok ? L"已打开日志文件（Lume.log）"
+                                   : L"打不开日志文件：路径见「关于」页");
         return 0;
       }
       if (id == kIdClearIndex) {
@@ -1497,7 +1527,9 @@ LRESULT SettingsWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
       return 0;
     case WM_DESTROY:
       status_ = nullptr;
-      themeButton_ = accentButton_ = hotkeyCapture_ = autostartCheck_ = rootsList_ = nullptr;
+      themeButton_ = accentButton_ = hotkeyCapture_ = autostartCheck_ = logLevelCheck_ = nullptr;
+      rootsList_ = nullptr;
+      openLogButton_ = nullptr;
       capEdit_ = indexInfo_ = nullptr;
       indexDirCombo_ = nullptr;
       clearIndexButton_ = rebuildIndexButton_ = tabGeneral_ = tabIndex_ = nullptr;

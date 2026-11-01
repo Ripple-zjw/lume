@@ -69,6 +69,9 @@ class LauncherWindow {
   void InjectMouseRow(int row, bool click);
   // 测试钩子：模拟一次托盘左键（v4 会先后送来 NIN_SELECT 与 WM_LBUTTONUP 两条通知）。
   void InjectTrayClick();
+  // 测试钩子：按逗号分隔的控件 id 给设置窗投 WM_COMMAND（BN_CLICKED），
+  // 用来在没有跨进程 UI 自动化时验证勾选框 / 应用按钮这类交互。
+  void ProbeSettingsCommands(const std::wstring& spec);
   bool visible() const { return visible_; }
   HWND hwnd() const { return hwnd_; }
   const AppSettings& settings() const { return settings_; }
@@ -103,6 +106,8 @@ class LauncherWindow {
   void Refilter();
   void PreloadIcons(bool warm);
   void ApplySettings(const AppSettings& settings);
+  // 打开日志文件（文件还不存在或没有关联程序时退回打开所在目录）。
+  bool OpenLogFile();
   void HandleTrayCommand(UINT command);
   // 客户端像素坐标 → 面板相对 DIP（扣掉阴影边距与 DPI 缩放）。
   void ToPanelDip(int clientX, int clientY, float* xDip, float* yDip) const;

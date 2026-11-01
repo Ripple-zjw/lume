@@ -192,7 +192,7 @@ void IconCache::Shutdown() {
   cv_.notify_all();
   if (worker_.joinable()) worker_.join();
   std::lock_guard<std::mutex> lock(mutex_);
-  Log(L"图标缓存: 磁盘命中 %d, shell 取图 %d", diskHits_.load(), shellLoads_.load());
+  LogDebug(L"图标缓存: 磁盘命中 %d, shell 取图 %d", diskHits_.load(), shellLoads_.load());
   completed_.clear();
   queue_.clear();
   queued_.clear();

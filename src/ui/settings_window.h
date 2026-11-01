@@ -39,6 +39,7 @@ struct AboutInfo {
   std::wstring settingsPath;  // settings.conf
   std::wstring usagePath;     // usage.conf
   std::wstring logPath;       // 当前日志文件
+  std::wstring logLevel;      // 当前日志等级（error/warn/info/debug）
   std::wstring indexDir;      // 索引/快照目录
   std::wstring fileSearch;    // local / everything
   std::wstring everything;    // "1.4.1.1028（已连接，索引就绪）" 等
@@ -56,6 +57,7 @@ class SettingsWindow {
     std::function<void()> onClearIndex;           // 删除快照 + 清空内存索引
     std::function<void()> onRebuildIndex;         // 立即后台重建
     std::function<void()> onOpenIndexDirectory;   // 用资源管理器打开快照目录
+    std::function<bool()> onOpenLog;              // 打开当前日志文件（返回是否成功）
   };
 
   ~SettingsWindow();
@@ -118,6 +120,8 @@ class SettingsWindow {
   HWND accentButton_ = nullptr;
   HWND hotkeyCapture_ = nullptr;
   HWND autostartCheck_ = nullptr;
+  HWND logLevelCheck_ = nullptr;  // 「详细日志」勾选：info <-> debug
+  HWND openLogButton_ = nullptr;  // 打开 Lume.log
 
   // 索引页
   HWND searchSourceButton_ = nullptr;  // 文件搜索来源（本地索引 / Everything）

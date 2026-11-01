@@ -85,6 +85,11 @@ bool ShouldIgnoreSnapshotName(const std::wstring& fullPath) {
       EndsWith(lower, L"\\settings.conf")) {
     return true;
   }
+  // 日志默认落在 exe 同目录（常驻进程每写一行都会改 mtime），轮转出的 .1 也一并忽略。
+  if (EndsWith(lower, L"\\lume.log") || EndsWith(lower, L"\\lume.log.1") ||
+      EndsWith(lower, L"\\etools.log")) {
+    return true;
+  }
   if (lower.find(L"\\lume\\logs\\") != std::wstring::npos ||
       lower.find(L"\\lume\\icons\\") != std::wstring::npos ||
       lower.find(L"\\etools\\logs\\") != std::wstring::npos ||
@@ -381,7 +386,7 @@ void FileIndex::EnumerateRoot(const std::wstring& root, uint64_t byteQuota, Root
 bool FileIndex::Start() {
   EnsureRoots();
   if (roots_.empty()) {
-    Log(L"文件索引: 没有可用根目录");
+    LogWarn(L"文件索引: 没有可用根目录");
     return false;
   }
 
@@ -512,13 +517,13 @@ void FileIndex::RebuildAndSwap() {
   }
   for (std::thread& thread : threads) thread.join();
   if (stop_.load()) {
-    Log(L"文件索引: 重建已取消");
+    LogWarn(L"文件索引: 重建已取消");
     return;
   }
   for (size_t i = 0; i < roots_.size(); ++i) {
     if (truncated[i]) {
-      Log(L"文件索引: %ls 达到预算 %.0f MB，已截断", roots_[i].c_str(),
-          static_cast<double>(perRootBytes) / (1024.0 * 1024.0));
+      LogWarn(L"文件索引: %ls 达到预算 %.0f MB，已截断", roots_[i].c_str(),
+              static_cast<double>(perRootBytes) / (1024.0 * 1024.0));
     }
   }
 
@@ -553,7 +558,7 @@ void FileIndex::RebuildAndSwap() {
   }
   // 清除索引时点下去的重建：结果丢弃，索引保持空，等用户显式重建。
   if (discardBuild_.exchange(false)) {
-    Log(L"文件索引: 重建结果已丢弃（清除索引）");
+    LogWarn(L"文件索引: 重建结果已丢弃（清除索引）");
     return;
   }
   {
@@ -568,9 +573,9 @@ void FileIndex::RebuildAndSwap() {
 
   PROCESS_MEMORY_COUNTERS memory{};
   if (K32GetProcessMemoryInfo(GetCurrentProcess(), &memory, sizeof(memory))) {
-    Log(L"文件索引内存: 当前 %.0f MB, 峰值 %.0f MB",
-        static_cast<double>(memory.WorkingSetSize) / (1024.0 * 1024.0),
-        static_cast<double>(memory.PeakWorkingSetSize) / (1024.0 * 1024.0));
+    LogDebug(L"文件索引内存: 当前 %.0f MB, 峰值 %.0f MB",
+             static_cast<double>(memory.WorkingSetSize) / (1024.0 * 1024.0),
+             static_cast<double>(memory.PeakWorkingSetSize) / (1024.0 * 1024.0));
   }
   {
     size_t nameChars = 0;
@@ -587,13 +592,13 @@ void FileIndex::RebuildAndSwap() {
       dirChars += directory.path.size();
       dirLowerChars += directory.lowerPath.size();
     }
-    Log(L"索引统计: 条目 %zu, 目录 %zu, 名称字符 %zu, 小写名 %zu, 同形 %zu, "
-        L"目录路径 %zu, 小写目录 %zu, 预算累计(按完整路径保守估算) %.1f MB, "
-        L"sizeof(Entry)=%zu, sizeof(Dir)=%zu",
-        storage_.entries.size(), storage_.directories.size(), nameChars, lowerChars, sameNames,
-        dirChars, dirLowerChars,
-        static_cast<double>(storage_.serializedBytes) / (1024.0 * 1024.0), sizeof(Entry),
-        sizeof(Directory));
+    LogDebug(L"索引统计: 条目 %zu, 目录 %zu, 名称字符 %zu, 小写名 %zu, 同形 %zu, "
+             L"目录路径 %zu, 小写目录 %zu, 预算累计(按完整路径保守估算) %.1f MB, "
+             L"sizeof(Entry)=%zu, sizeof(Dir)=%zu",
+             storage_.entries.size(), storage_.directories.size(), nameChars, lowerChars, sameNames,
+             dirChars, dirLowerChars,
+             static_cast<double>(storage_.serializedBytes) / (1024.0 * 1024.0), sizeof(Entry),
+             sizeof(Directory));
   }
   Log(L"文件索引: 重建完成 %zu 条", size());
 }
@@ -640,7 +645,7 @@ void FileIndex::WatchLoop(std::wstring root) {
                                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                                  OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
   if (directory == INVALID_HANDLE_VALUE) {
-    Log(L"文件监听打开失败: %ls (%lu)", root.c_str(), GetLastError());
+    LogError(L"文件监听打开失败: %ls (%lu)", root.c_str(), GetLastError());
     return;
   }
   {
@@ -717,7 +722,7 @@ void FileIndex::HandleNotifications(const std::wstring& root, const char* buffer
     if (info->NextEntryOffset == 0) break;
     offset += info->NextEntryOffset;
   }
-  if (changed) Log(L"文件索引: 增量更新");
+  if (changed) LogDebug(L"文件索引: 增量更新");
 }
 
 void FileIndex::AddEntryLocked(const std::wstring& path, bool isDirectory) {
@@ -779,7 +784,7 @@ std::vector<std::wstring> FileIndex::SnapshotPaths() const {
     if (EnsureDirectory(indexDir_)) {
       paths.push_back(indexDir_ + L"\\files.idx");
     } else {
-      Log(L"文件索引: 索引目录不可用 %ls", indexDir_.c_str());
+      LogError(L"文件索引: 索引目录不可用 %ls", indexDir_.c_str());
     }
     return paths;
   }
@@ -1044,19 +1049,19 @@ bool FileIndex::SaveSnapshot() const {
     CloseHandle(file);
     if (!ok) {
       DeleteFileW(temp.c_str());
-      Log(L"文件索引快照写入中断: %ls", temp.c_str());
+      LogError(L"文件索引快照写入中断: %ls", temp.c_str());
       return false;
     }
     if (!MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
       DeleteFileW(temp.c_str());
-      Log(L"文件索引快照替换失败: %lu", GetLastError());
+      LogError(L"文件索引快照替换失败: %lu", GetLastError());
       continue;
     }
     Log(L"文件索引快照已写入: %ls (%zu 条, %.1f MB)", path.c_str(), storage_.entries.size(),
         static_cast<double>(writtenTotal) / (1024.0 * 1024.0));
     return true;
   }
-  Log(L"文件索引快照写入失败: %lu", GetLastError());
+  LogError(L"文件索引快照写入失败: %lu", GetLastError());
   return false;
 }
 

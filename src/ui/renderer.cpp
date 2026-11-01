@@ -38,7 +38,7 @@ bool Renderer::CreateDeviceIndependent() {
       LogHr(L"D3D11CreateDevice(warp)", hr);
       return false;
     }
-    Log(L"图形: WARP 软件渲染");
+    LogWarn(L"图形: WARP 软件渲染");
   } else {
     Log(L"图形: 硬件设备, feature level 0x%X", static_cast<unsigned>(level));
   }
@@ -271,7 +271,7 @@ bool Renderer::SavePng(const std::wstring& path, UINT width, UINT height, const 
   hr = frame->SetPixelFormat(&format);
   if (FAILED(hr)) return false;
   if (!IsEqualGUID(format, pixelFormat)) {
-    Log(L"WIC 改写了像素格式，中止保存");
+    LogError(L"WIC 改写了像素格式，中止保存");
     return false;
   }
   hr = frame->WritePixels(height, stride, stride * height, const_cast<BYTE*>(pixels));

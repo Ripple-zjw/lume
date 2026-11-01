@@ -88,7 +88,7 @@ bool Scene::Init(Renderer& renderer, const Theme& theme, IconCache* icons) {
 
   if (FAILED(factory->CreateTextLayout(L"搜索应用与文件", 7, placeholderFormat_.Get(), 560.0f,
                                        40.0f, placeholderLayout_.Put()))) {
-    Log(L"占位文本布局创建失败");
+    LogError(L"占位文本布局创建失败");
     return false;
   }
   return true;
@@ -120,7 +120,7 @@ void Scene::EnsureQueryLayout(const SceneState& state) {
   if (FAILED(renderer_->dwrite()->CreateTextLayout(state.displayText.c_str(), length,
                                                    queryFormat_.Get(), 2400.0f, 40.0f,
                                                    queryLayout_.Put()))) {
-    Log(L"查询文本布局创建失败");
+    LogError(L"查询文本布局创建失败");
     return;
   }
   if (state.compositionLength > 0) {

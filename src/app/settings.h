@@ -17,6 +17,9 @@ struct AppSettings {
   std::vector<std::wstring> fileRoots;  // 空 = 桌面/文档/下载
   std::wstring fileSearch = L"local";   // local = Lume 本地索引；everything = 全盘走 Everything
   FilterSet filters = DefaultFilterSet();  // 搜索框下方的筛选组（含内置「全部」）
+  // 日志等级：error / warn / info（默认，正常使用）/ debug（开发排查）。
+  // exe 同目录的 Lume.log；settings.conf 里也有 logLevel= 一行，命令行可临时覆盖。
+  std::wstring logLevel = L"info";
 };
 
 // settings.conf：UTF-8 行式 key=value；fileRoot / filterGroup 可重复。

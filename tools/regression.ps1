@@ -114,6 +114,41 @@ if ($SkipBench) {
 }
 
 Write-Host ''
+Write-Host 'Log checks:' -ForegroundColor Cyan
+$logInfo = Join-Path $env:TEMP 'lume-log-info.log'
+$logDebug = Join-Path $env:TEMP 'lume-log-debug.log'
+$logError = Join-Path $env:TEMP 'lume-log-error.log'
+foreach ($path in @($logInfo, $logDebug, $logError)) {
+    if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+}
+cmd /c "`"$exe`" --ms=700 --log=`"$logInfo`" > NUL 2>&1"
+cmd /c "`"$exe`" --ms=700 --debug --log=`"$logDebug`" > NUL 2>&1"
+cmd /c "`"$exe`" --ms=700 --log-level=error --log=`"$logError`" > NUL 2>&1"
+$infoLines = @(Get-Content -LiteralPath $logInfo -Encoding UTF8 -ErrorAction SilentlyContinue)
+$debugLines = @(Get-Content -LiteralPath $logDebug -Encoding UTF8 -ErrorAction SilentlyContinue)
+$errorLines = @(Get-Content -LiteralPath $logError -Encoding UTF8 -ErrorAction SilentlyContinue)
+$logFailures = 0
+$logChecks = @(
+    @{ Label = 'log_banner'; Ok = ($infoLines.Count -gt 0 -and $infoLines[0] -match '^\[.+\]\[\*\] ===== Lume ') },
+    @{ Label = 'log_info'; Ok = [bool]($infoLines -match '\]\[I\] ') },
+    @{ Label = 'log_no_debug_by_default'; Ok = -not [bool]($infoLines -match '\]\[D\] ') },
+    @{ Label = 'log_debug'; Ok = [bool]($debugLines -match '\]\[D\] ') },
+    @{ Label = 'log_error_only'; Ok = ($errorLines.Count -gt 0 -and -not [bool]($errorLines -match '\]\[[IDW]\] ')) }
+)
+foreach ($check in $logChecks) {
+    if ($check.Ok) {
+        Write-Host ("{0}=PASS" -f $check.Label) -ForegroundColor Green
+    } else {
+        Write-Host ("{0}=FAIL" -f $check.Label) -ForegroundColor Red
+        $logFailures++
+    }
+}
+foreach ($path in @($logInfo, $logDebug, $logError)) {
+    if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+}
+if ($logFailures -gt 0 -and $code -eq 0) { $code = 2 }
+
+Write-Host ''
 Write-Host 'Manual checks (not covered by self-check):' -ForegroundColor Yellow
 Write-Host '  1. Tray: a Lume icon appears; right-click shows Show / Autostart / Settings / Exit;'
 Write-Host '     left-click opens the launcher and it stays on screen (no flash-and-hide).'
@@ -135,6 +170,11 @@ Write-Host '     only for slow hosts, or pass -SkipBench to skip).'
 Write-Host '  9. Mouse: hovering a result row highlights it (hand cursor); clicking launches it'
 Write-Host '     (Shift+click = reveal, Ctrl+click = elevated). `Lume.exe --click-row=2 --query=notepad`'
 Write-Host '     runs the same path with synthetic mouse messages; the log shows 悬停 / 点击 / 激活 lines.'
+Write-Host ' 10. Log: Lume.log sits next to Lume.exe (fallback %LOCALAPPDATA%\Lume\logs when that folder is'
+Write-Host '     read-only); each run starts with a "===== Lume ... =====" banner line. Normal use logs'
+Write-Host '     info only; tick 设置 → 常规 → 详细日志（开发排查用）or pass --debug to get per-keystroke'
+Write-Host '     and Everything round-trip lines. Over 2 MB the file rotates to Lume.log.1 on next start.'
+Write-Host '     `Lume.exe --log-level=error` keeps only failures; --log=<path> writes elsewhere.'
 Write-Host ''
 $status = "self-check exit=$code"
 if ($benchFailures -gt 0) {

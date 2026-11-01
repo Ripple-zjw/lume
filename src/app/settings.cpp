@@ -146,6 +146,13 @@ bool SettingsStore::Load(AppSettings* settings) {
     } else if (key == L"fileSearch") {
       // 只接受已知取值，避免手写配置把来源写坏。
       settings->fileSearch = (value == L"everything") ? L"everything" : L"local";
+    } else if (key == L"logLevel") {
+      LogLevel level = LogLevel::Info;
+      if (ParseLogLevel(value, &level)) {
+        settings->logLevel = LogLevelName(level);
+      } else {
+        LogWarn(L"设置: 无法识别的日志等级 \"%ls\"（可选 error/warn/info/debug）", value.c_str());
+      }
     } else if (key == L"filterEnabled") {
       settings->filters.enabled =
           !(value == L"0" || value == L"false" || value == L"off" || value == L"no");
@@ -159,16 +166,16 @@ bool SettingsStore::Load(AppSettings* settings) {
       }
       FilterGroup group;
       if (!DecodeFilterGroup(value, &group)) {
-        Log(L"设置: 忽略无法解析的筛选组 \"%ls\"", value.c_str());
+        LogWarn(L"设置: 忽略无法解析的筛选组 \"%ls\"", value.c_str());
       } else {
         bool duplicate = false;
         for (const FilterGroup& existing : settings->filters.groups) {
           if (_wcsicmp(existing.name.c_str(), group.name.c_str()) == 0) duplicate = true;
         }
         if (duplicate) {
-          Log(L"设置: 忽略重名的筛选组 \"%ls\"", group.name.c_str());
+          LogWarn(L"设置: 忽略重名的筛选组 \"%ls\"", group.name.c_str());
         } else if (settings->filters.groups.size() >= kMaxFilterGroups) {
-          Log(L"设置: 筛选组超过上限 %zu，忽略 \"%ls\"", kMaxFilterGroups, group.name.c_str());
+          LogWarn(L"设置: 筛选组超过上限 %zu，忽略 \"%ls\"", kMaxFilterGroups, group.name.c_str());
         } else {
           settings->filters.groups.push_back(std::move(group));
         }
@@ -199,6 +206,7 @@ bool SettingsStore::Save(const AppSettings& settings, std::wstring* savedPath) {
   }
   text += std::wstring(L"fileSearch=") +
           (settings.fileSearch == L"everything" ? L"everything" : L"local") + L"\n";
+  text += std::wstring(L"logLevel=") + LogLevelName(LogLevelFromText(settings.logLevel)) + L"\n";
   text += std::wstring(L"filterEnabled=") + (settings.filters.enabled ? L"1" : L"0") + L"\n";
   text += L"filterActive=" + std::to_wstring(settings.filters.active) + L"\n";
   for (const FilterGroup& group : settings.filters.groups) {
@@ -214,6 +222,6 @@ bool SettingsStore::Save(const AppSettings& settings, std::wstring* savedPath) {
       return true;
     }
   }
-  Log(L"设置写入失败: %ls", Path().c_str());
+  LogError(L"设置写入失败: %ls", Path().c_str());
   return false;
 }
