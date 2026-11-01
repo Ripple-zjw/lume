@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Build Lume with the portable MinGW-w64 toolchain.
@@ -12,7 +12,10 @@
 param(
   [ValidateSet('Debug', 'Release', 'Test')][string]$Config = 'Release',
   [switch]$Run,
-  [switch]$Recompile
+  [switch]$Recompile,
+  # 打发布包：dist\Lume-<Version>-win64\{Lume.exe, Install.cmd, README.txt} + 同名 zip
+  [switch]$Package,
+  [string]$Version = '0.1.1'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -149,4 +152,36 @@ $appExe = Invoke-BuildTarget -Name 'Lume' -Sources $appSources -ExePath (Join-Pa
 if ($Run) {
   Write-Host ("Launching {0}" -f $appExe) -ForegroundColor Cyan
   Start-Process -FilePath $appExe -WorkingDirectory $BuildDir
+}
+
+if ($Package) {
+  if ($Config -ne 'Release') { throw '-Package 需要 Release 构建' }
+  # exe 版本资源必须与包版本一致，避免把旧构建打进去
+  $exeVersion = (Get-Item -LiteralPath $appExe).VersionInfo.ProductVersion
+  if ($exeVersion -notlike "$Version*") {
+    throw "Lume.exe 版本 '$exeVersion' 与 -Version '$Version' 不一致（检查 assets/app.rc 并 -Recompile）"
+  }
+  $readme = Join-Path $Root 'packaging\README.txt'
+  $install = Join-Path $Root 'packaging\Install.cmd'
+  foreach ($required in @($readme, $install)) {
+    if (-not (Test-Path -LiteralPath $required)) { throw "发布包缺少文件: $required" }
+  }
+
+  $dist = Join-Path $Root 'dist'
+  $stageName = "Lume-$Version-win64"
+  $stage = Join-Path $dist $stageName
+  if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
+  New-Item -ItemType Directory -Force -Path $stage | Out-Null
+  Copy-Item -LiteralPath $appExe -Destination (Join-Path $stage 'Lume.exe')
+  Copy-Item -LiteralPath $install -Destination $stage
+  Copy-Item -LiteralPath $readme -Destination $stage
+
+  $zip = Join-Path $dist "$stageName.zip"
+  if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
+  Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -CompressionLevel Optimal
+
+  $zipSize = [math]::Round((Get-Item -LiteralPath $zip).Length / 1KB, 1)
+  $sha = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
+  Write-Host ("Packaged: {0}  ({1} KB, Lume.exe {2})" -f $zip, $zipSize, $exeVersion) -ForegroundColor Green
+  Write-Host ("SHA256:   {0}" -f $sha)
 }

@@ -167,9 +167,10 @@ int RunLauncher(const AppOptions& options) {
   if (options.accentSpecified) settings.accent = options.accent;
   if (!options.hotkeyOverride.empty()) settings.hotkey = options.hotkeyOverride;
   if (options.indexSizeMB > 0) settings.indexSizeMB = static_cast<int>(options.indexSizeMB);
-  Log(L"设置: theme=%ls accent=\"%ls\" hotkey=%ls autostart=%d roots=%zu", settings.theme.c_str(),
-      settings.accent.c_str(), settings.hotkey.c_str(), settings.autostart ? 1 : 0,
-      settings.fileRoots.size());
+  if (!options.indexDir.empty()) settings.indexDir = options.indexDir;
+  Log(L"设置: theme=%ls accent=\"%ls\" hotkey=%ls autostart=%d roots=%zu indexDir=\"%ls\"",
+      settings.theme.c_str(), settings.accent.c_str(), settings.hotkey.c_str(),
+      settings.autostart ? 1 : 0, settings.fileRoots.size(), settings.indexDir.c_str());
 
   Renderer renderer;
   IconCache icons;
@@ -222,7 +223,9 @@ int RunLauncher(const AppOptions& options) {
       }
     }
     if (options.clearIndexOnStart) {
+      // CLI 的 --clear-index 语义仍是「删快照并立即重建」。
       window.ClearFileIndex();
+      window.RebuildFileIndex();
     }
     window.SetOnTimer([&](UINT_PTR id) {
       if (id == kTimerCapture) {

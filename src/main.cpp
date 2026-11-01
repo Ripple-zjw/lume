@@ -50,7 +50,7 @@ struct CliOptions {
 
 void PrintUsage() {
   fputs(
-      "Lume 0.1.0\n"
+      "Lume 0.1.1\n"
       "\n"
       "Usage:\n"
       "  Lume.exe                       Run in tray-less resident mode (hotkey toggles)\n"
@@ -75,6 +75,7 @@ void PrintUsage() {
       "  --list-files                     Rebuild the file index, print stats and sample paths\n"
       "  --file-stats                     Rebuild the file index and print stats only\n"
       "  --index-size-mb=<n>              Override max index file size in MB (64–262144)\n"
+      "  --index-dir=<dir>                Override the index snapshot directory\n"
       "  --search-files=<query>           Search the file index and print top results with scores\n"
       "  --search-rows=<query>            Print merged app/file rows with tier and score\n"
       "  --search-live=<query>            Rebuild index now and search it (diagnostics)\n"
@@ -145,6 +146,8 @@ CliOptions Parse(int argc, wchar_t** argv) {
       cli.indexSizeMB = static_cast<size_t>(_wcstoui64(
           ValueAfter(arg, L"--index-size-mb=").c_str(), nullptr, 10));
       cli.app.indexSizeMB = cli.indexSizeMB;
+    } else if (StartsWith(arg, L"--index-dir=")) {
+      cli.app.indexDir = ValueAfter(arg, L"--index-dir=");
     } else if (arg == L"--self-check") {
       cli.selfCheck = true;
     } else if (StartsWith(arg, L"--scale=")) {
@@ -180,7 +183,7 @@ CliOptions Parse(int argc, wchar_t** argv) {
       PrintUsage();
       exit(0);
     } else if (arg == L"--version" || arg == L"-v") {
-      printf("Lume 0.1.0\n");
+      printf("Lume 0.1.1\n");
       exit(0);
     } else {
       wprintf(L"未知参数: %ls\n", arg.c_str());
@@ -284,6 +287,7 @@ int RunMain(int argc, wchar_t** argv) {
   if (cli.listFiles || cli.fileStats) {
     FileIndex files;
     if (cli.indexSizeMB > 0) files.SetMaxIndexBytes(cli.indexSizeMB * 1024ull * 1024ull);
+    files.SetIndexDirectory(cli.app.indexDir);
     if (!cli.app.fileRoot.empty()) files.SetRoots({cli.app.fileRoot});
     const ULONGLONG start = GetTickCount64();
     const size_t count = files.RebuildSynchronously();
@@ -292,6 +296,8 @@ int RunMain(int argc, wchar_t** argv) {
       const std::string line = "root: " + WideToUtf8(root) + "\n";
       fputs(line.c_str(), stdout);
     }
+    const std::string indexLine = "index: " + WideToUtf8(files.snapshotPath()) + "\n";
+    fputs(indexLine.c_str(), stdout);
     char summary[192];
     snprintf(summary, sizeof(summary), "files: %zu, rebuild: %llu ms, peak_ws: %.0f MB\n", count,
              static_cast<unsigned long long>(elapsed), PeakWorkingSetMb());
@@ -315,13 +321,15 @@ int RunMain(int argc, wchar_t** argv) {
     FileIndex index;
     index.SetMaxIndexBytes(sizeMB * 1024ull * 1024ull);
     index.SetPersistSnapshot(false);
+    index.SetIndexDirectory(cli.app.indexDir);
     std::vector<std::wstring> roots = settings.fileRoots;
     if (!cli.app.fileRoot.empty()) roots = {cli.app.fileRoot};
     if (!roots.empty()) index.SetRoots(roots);
     const ULONGLONG start = GetTickCount64();
     const size_t count = index.RebuildSynchronously();
-    printf("roots=%zu files=%zu size=%zu MB rebuild=%llu ms\n", index.roots().size(), count,
-           sizeMB, static_cast<unsigned long long>(GetTickCount64() - start));
+    printf("roots=%zu files=%zu size=%zu MB rebuild=%llu ms index=%ls\n", index.roots().size(),
+           count, sizeMB, static_cast<unsigned long long>(GetTickCount64() - start),
+           index.snapshotPath().c_str());
     LARGE_INTEGER frequency{};
     LARGE_INTEGER searchStart{};
     LARGE_INTEGER searchEnd{};
@@ -359,6 +367,7 @@ int RunMain(int argc, wchar_t** argv) {
     SettingsStore::Load(&settings);
     FileIndex index;
     if (cli.indexSizeMB > 0) index.SetMaxIndexBytes(cli.indexSizeMB * 1024ull * 1024ull);
+    index.SetIndexDirectory(cli.app.indexDir);
     std::vector<std::wstring> roots = settings.fileRoots;
     if (!cli.app.fileRoot.empty()) roots = {cli.app.fileRoot};
     if (!roots.empty()) index.SetRoots(roots);
@@ -366,8 +375,8 @@ int RunMain(int argc, wchar_t** argv) {
     const std::vector<AppEntry> apps = CollectAppEntries();
     const std::vector<ResultRow> rows =
         BuildMergedRows(apps, &index, nullptr, cli.searchRows, 40, false);
-    printf("roots=%zu files=%zu apps=%zu rows=%zu\n", index.roots().size(), index.size(),
-           apps.size(), rows.size());
+    printf("roots=%zu files=%zu apps=%zu rows=%zu index=%ls\n", index.roots().size(),
+           index.size(), apps.size(), rows.size(), index.snapshotPath().c_str());
     for (const ResultRow& row : rows) {
       wchar_t line[1024];
       swprintf(line, ARRAYSIZE(line), L"tier=%u quality=%u score=%zu %ls | %ls\n", row.tier,
@@ -383,14 +392,16 @@ int RunMain(int argc, wchar_t** argv) {
     LogInit(cli.app.logPath);
     FileIndex index;
     if (cli.indexSizeMB > 0) index.SetMaxIndexBytes(cli.indexSizeMB * 1024ull * 1024ull);
+    index.SetIndexDirectory(cli.app.indexDir);
     AppSettings settings;
     SettingsStore::Load(&settings);
     std::vector<std::wstring> roots = settings.fileRoots;
     if (!cli.app.fileRoot.empty()) roots = {cli.app.fileRoot};
     if (!roots.empty()) index.SetRoots(roots);
     const bool loaded = index.LoadCachedSnapshot();
-    printf("roots=%zu files=%zu snapshot=%d\n", index.roots().size(), index.size(),
-           loaded ? 1 : 0);
+    printf("roots=%zu files=%zu snapshot=%d bytes=%llu index=%ls\n", index.roots().size(),
+           index.size(), loaded ? 1 : 0, static_cast<unsigned long long>(index.snapshotBytes()),
+           index.snapshotPath().c_str());
     LARGE_INTEGER frequency{};
     LARGE_INTEGER started{};
     LARGE_INTEGER finished{};

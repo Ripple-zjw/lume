@@ -136,6 +136,10 @@ bool SettingsStore::Load(AppSettings* settings) {
     } else if (key == L"indexSizeMB") {
       const int megabytes = _wtoi(value.c_str());
       if (megabytes >= 64 && megabytes <= 262144) settings->indexSizeMB = megabytes;
+    } else if (key == L"indexDir" && !value.empty()) {
+      settings->indexDir = value;
+    } else if (key == L"indexDirHistory" && !value.empty()) {
+      if (settings->indexDirHistory.size() < 5) settings->indexDirHistory.push_back(value);
     } else if (key == L"fileRoot" && !value.empty()) {
       settings->fileRoots.push_back(value);
     }
@@ -157,6 +161,10 @@ bool SettingsStore::Save(const AppSettings& settings, std::wstring* savedPath) {
   text += std::wstring(L"autostart=") + (settings.autostart ? L"1" : L"0") + L"\n";
   text += std::wstring(L"tray=") + (settings.tray ? L"1" : L"0") + L"\n";
   text += L"indexSizeMB=" + std::to_wstring(settings.indexSizeMB) + L"\n";
+  if (!settings.indexDir.empty()) text += L"indexDir=" + settings.indexDir + L"\n";
+  for (const std::wstring& dir : settings.indexDirHistory) {
+    if (!dir.empty()) text += L"indexDirHistory=" + dir + L"\n";
+  }
   for (const std::wstring& root : settings.fileRoots) {
     text += L"fileRoot=" + root + L"\n";
   }

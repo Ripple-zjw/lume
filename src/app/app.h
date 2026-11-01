@@ -27,6 +27,7 @@ struct AppOptions {
   bool openSettings = false;
   bool clearIndexOnStart = false;
   size_t indexSizeMB = 0;  // 0 = 使用设置里的索引大小上限
+  std::wstring indexDir;   // 覆盖索引快照目录（测试用）
   std::wstring testCapture;
 };
 

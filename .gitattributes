@@ -3,3 +3,6 @@
 *.ico binary
 *.exe binary
 *.zip binary
+
+# Packaged text files are checked out with CRLF for Windows users
+packaging/*.txt text eol=crlf

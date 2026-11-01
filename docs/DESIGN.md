@@ -137,7 +137,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 3. **自启**：写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Lume = "<exe>" --autostart`；沙箱中 `RegOpenKeyExW(KEY_SET_VALUE)` 被拒绝（Win32 5），真实会话自检 `autostart=PASS (set=1 read=1 restore=1)`。
 4. **设置窗**：P5 为原生 Win32 控件（ComboBox/Checkbox/ListBox/Button），按 `DpiForPoint` 缩放；P5.1 已替换为自绘深色控件（见 §12），保存回调链不变：窗口 `ApplySettings` → 主题重绘、`files_.Stop/SetRoots/Start`、`SetAutostart`，再由 app 持久化并重注册热键。
 5. **动态高度**：`visibleRows_ = clamp(rows.size(),1,6)`，变化时 `ResizeBuffers + SetWindowPos`；实测 3 条结果窗口 960×360（125% DPI），6 条 960×540。结果为空且有查询时给占位行，高度 1 行。
-6. **MRU**：`usage.conf` 每行 `count\tlastUnix\t<target>`；`Bonus` = `min(120, count*6)` + 近期加分（1 天 +80 / 7 天 +40 / 30 天 +10）。空查询按 Bonus 降序（同分按名称），非空查询叠加到应用/文件评分。实测启动 7-Zip 后写入一条记录。
+6. **MRU**：`usage.conf` 每行 `count\tlastUnix\t<target>`；`UsageStore::UsageScore` = `min(120, count*6)` + 近期加分（1 天 +80 / 7 天 +40 / 30 天 +10），`Bonus()` 与非空查询加分同口径。**空查询不再列出全部应用**，改为 `Top()`（按 score 降序、同分更近优先）逐条还原：命中应用 `launchTarget` → 应用行（带图标与「应用 · 」副标题），否则目标仍是现存文件/目录 → 文件行，已删除的目标跳过；没有使用记录时返回空列表。非空查询仍按 `quality/tier/score` 排序并叠加 Bonus。启动 7-Zip 后写入一条记录。
 7. **快照多路径修复**：`files.idx` 可能同时存在于 AppData 与 exe 目录（根目录不同）。原先只读第一份，根不匹配就放弃；现改为逐个候选解析并只在根目录列表匹配时采用。
 8. **体积/回归**：21 个编译单元，exe 约 1.72MB；设置加载后首帧仍 ~13ms；查询 0.3–2ms（含图标命中差异）。
 9. **P5.1 已完成**：图标磁盘缓存、深色自绘设置窗、自定义热键、自检脚本；剩余：索引目录选择器内联校验、内存/CPU 基线。
@@ -167,6 +167,26 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 10. **紧凑索引**：目录表 `{path, lowerPath}` 每目录一份；条目 32 字节 `{父目录 id, nameOffset/len, lowerOffset/len, charMask, pathHash32, isDirectory}`。文件名/小写名放连续 `wchar_t` arena，`name == lowerName` 时（本机 78%）复用同一 offset。目录索引从字符串 map 换成 64 位哈希 `unordered_multimap` + 路径校验；路径哈希压到 32 位。并行枚举各根用本地 `RootData`，合并时逐个根重映射并立即释放，峰值从 130MB 降到 109MB。Entry 从 96B 降到 32B。
 11. **“C 盘内容”解释**：应用索引与文件索引分离——`apps.idx` 收集开始菜单/AppsFolder/App Paths（含 C 盘系统应用），应用行副标题前缀 `应用 · `；`files.idx` 只扫设置根目录（C/F/E/D）。启动逐条打印 `文件索引根: …`。`--file-stats/--list-files` 未指定根时仍用默认桌面/文档/下载（C 盘），属诊断命令默认值。
 12. **存储占用（512MB 预算、999,842 条）**：ETF4 快照 **124.4MB**（130,480,000 字节：目录树 + 名字 arena + 条目数组）、`apps.idx` 48KB、图标/日志/配置 0.83MB，正常会话总计约 **125MB**。加载 656ms。沙箱写不进 AppData 时落在 exe 同目录，且可能残留旧 AppData 快照（启动取最新一份）。进一步可用 UTF-8 名字/压缩把快照压到 <100MB。
+
+## 13.1 设置窗「索引」页（2026-11-01）
+
+1. **拆分原因**：设置窗原来是单页，索引上限、根目录、清除按钮和主题/热键挤在一起；索引相关的管理动作（状态、路径、清除、重建、打开目录）需要独立空间，因此改成「常规 / 索引」两页的自绘页签（同一窗口 `540x545`，`SetPage()` 用 `ShowWindow` 显隐两组控件，选中页签文字高亮 + 2px 强调色下划线），窗口尺寸与 DPI 缩放逻辑不变。
+2. **接口**：`SettingsWindow::Show(instance, owner, current, Callbacks)`，`Callbacks{onSave, queryIndex, onClearIndex, onRebuildIndex, onOpenIndexDirectory}`。`IndexStatus` 是只读视图模型（`directory/defaultDirectory/snapshotPath/snapshotBytes/entries/limitMB/lastRebuildDurationMs/rebuilding/snapshotWritable`），由 `LauncherWindow::QueryIndexStatus()` 从 `FileIndex` 汇总，UI 不直接依赖 `FileIndex`。
+3. **索引层新增 API**：`SetIndexDirectory/indexDirectory/snapshotPath/snapshotBytes/snapshotWritable`、`ClearIndex()`（删快照 + 清内存，**不**重建）、`RebuildIndex()`（请求重建，**跳过** 60s 冷却）、`rebuilding()/lastRebuildDurationMs()`；删除 `ClearAndRebuild()`。`SnapshotPaths()` 在配置了自定义目录时只认该目录（不静默回退默认目录），默认目录仍保留 `%LOCALAPPDATA%\Lume` → exe 目录 → 旧 eTools 三个候选。
+4. **并发细节**：`WorkerLoop` 用 `rebuilding_` 标记在跑的重建，并记录本次耗时；`ClearIndex()` 若在重建途中被点下则置 `discardBuild_`，`RebuildAndSwap()` 在**交换 storage 之前**检查并丢弃该次结果，避免索引“自己回来”。手动重建把 `lastRebuildMs_` 归零以绕过冷却（该时间戳同时是冷却基准）。
+5. **配置**：`settings.conf` 新增 `indexDir=`（留空不写）与 `indexDirHistory=`（可重复，最多 5 条，按最近使用排序），`--index-dir=<dir>` 可临时覆盖；应用前校验绝对路径、目标是目录、`EnsureDirectory` 成功、并写一个 `FILE_FLAG_DELETE_ON_CLOSE` 探针文件确认可写，失败则拒绝应用并在状态行提示。
+6. **索引目录下拉框**：`CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS`——不可手打、鼠标可选中；`WM_MEASUREITEM` 定行高（`Scale(24)`），`WM_DRAWITEM`（`ODT_COMBOBOX`）自绘深色项，配合 `SetWindowTheme(combo, L"DarkMode_CFD")` 让关闭态也是深色。候选项 = 当前值（即使目录暂时不可用也显示）+ 默认目录 + 最近使用中**仍然存在**的目录（`GetFileAttributes` 过滤，去重、大小写不敏感）；「修改目录」会把选中的新目录插到历史最前并重建候选列表并选中它。
+7. **应用 / 保存 / 取消**：`ApplyConfiguration(close)` 统一校验并写回 `settings_.*`，再回调 `onSave`（→ `LauncherWindow::ApplySettings` + 热键重注册 + 持久化）；「应用」`close=false` 只提示「已应用」并刷新一次状态块，「保存」`close=true` 应用后 `DestroyWindow`，「取消」丢弃副本。索引目录等于默认目录时归一化为空值；历史在应用时按「存在的目录 + 前 5 条」重写。
+8. **状态刷新（手动）**：早期版本在索引页可见时用 `SetTimer(500ms)` 轮询状态，但每次 `SetWindowTextW` 都会重绘静态文本框，状态块（快照/大小/状态/目录四行）一直闪烁。现在**不自动刷新**：只在打开页面、点「清除索引 / 重建索引 / 刷新状态」、应用配置后读一次 `FileIndex`。watcher 的忽略规则额外判断“路径是否在快照目录之下”，自定义目录落在被监听根内部时不会自触发重建。
+9. **验证**：`build/probe/probe_settings_pages.cpp`（gitignored，带 app 清单以便渲染 comctl32 v6 下拉框）用真实鼠标消息驱动两页：页签切换、状态文本、三个动作回调、下拉框只读/候选过滤（不存在的历史不进列表）/选中应用、应用不关窗且记录历史、保存关窗且默认目录归一化为空，以及索引层「自定义目录写入 → 清除 → 立即重建（47–63ms，绕过冷却）」全部通过；CLI `--index-dir` 实测 `--file-stats` 写在自定义目录、`--search-files` 从该目录读回（`snapshot=1`），默认目录行为不变。
+
+## 13.2 空查询推荐 = 最近常用（2026-11-01）
+
+1. **行为**：空查询（刚唤出、Esc 清空、删光输入）只显示使用记录里的条目，按“频次 + 近期”排序；**没有使用记录时一行都不显示**，面板收缩成只有输入框。想浏览全部应用请直接输入（子串/前缀匹配）。
+2. **还原规则**（`BuildMergedRows`，merge.cpp）：`UsageStore::Top()` 逐条还原，`launchTarget` 与某条应用记录大小写不敏感相等 → 复用应用行（图标、`应用 · ` 副标题、UWP 动作）；否则目标仍是现存文件/目录 → 文件行（目录给文件夹图标与 `OpenFolder`）；目标已删除 → 跳过。命中前 50 条即停，空查询分支直接按使用热度返回，不再参与 `quality/tier` 重排。
+3. **0 行面板**：`PanelHeight(theme, 0) = listTop + bottomPadding`（72 输入区 + 28 空白）；`Scene::Draw` 的 `visibleRows` 下界从 1 改成 0，分隔线只在 `state.rows` 非空时绘制；`LauncherWindow::UpdateLayoutForRows` 的 `clamp` 下界同样改成 0，窗口高度随行数 0–6 收缩/展开。
+4. **唤出时刷新**：`UsageStore::Record` 发生在启动成功之后、`usage.conf` 在退出时落盘；`ShowAndFocus()` 在空查询时先 `RebuildRows()`，保证推荐顺序是刚刚用过的顺序，而不是上次隐藏时的快照。
+5. **验证**：`build/probe/probe_suggestions.cpp`（gitignored）覆盖 空记录→0 行、应用/文件还原、缺失目标跳过、热度排序（count 6 次 > 1 次）、`PanelHeight(0)=100 < PanelHeight(1)=144`、非空查询与占位行不变；真实进程 `--capture` 两张图：无 `usage.conf` 时面板仅 960×185（只有输入框），预置 3 条记录时 960×360（notepad.exe 7 次 / eTools 目录 4 次 / explorer.exe 2 次，按热度排列）。
 
 ## 14. 后续方向
 

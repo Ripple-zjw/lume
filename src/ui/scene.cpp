@@ -197,7 +197,7 @@ float Scene::CaretX(const SceneState& state) {
 
 void Scene::Draw(const Theme& theme, const SceneState& state, bool fakeWallpaper, float scale) {
   ID2D1DeviceContext* ctx = renderer_->context();
-  const int visibleRows = std::clamp(state.visibleRows, 1, kMaxVisibleRows);
+  const int visibleRows = std::clamp(state.visibleRows, 0, kMaxVisibleRows);
   const float panelHeight = PanelHeight(theme, visibleRows);
   const float canvasWidth = theme.panelWidth + theme.shadowMargin * 2.0f;
   const float canvasHeight = panelHeight + theme.shadowMargin * 2.0f;
@@ -313,12 +313,14 @@ void Scene::Draw(const Theme& theme, const SceneState& state, bool fakeWallpaper
         brush_.Get());
   }
 
-  // 分隔线
-  brush_->SetColor(ScaleAlpha(theme.divider, bodyAlpha));
-  ctx->FillRectangle(
-      D2D1::RectF(panel.x + 20.0f, panel.y + 72.0f, panel.x + theme.panelWidth - 20.0f,
-                  panel.y + 73.0f),
-      brush_.Get());
+  // 分隔线：没有推荐/结果时不画，空查询就只剩输入框
+  if (!state.rows.empty()) {
+    brush_->SetColor(ScaleAlpha(theme.divider, bodyAlpha));
+    ctx->FillRectangle(
+        D2D1::RectF(panel.x + 20.0f, panel.y + 72.0f, panel.x + theme.panelWidth - 20.0f,
+                    panel.y + 73.0f),
+        brush_.Get());
+  }
 
   // 选中态（位置可动画）
   const float selectionOffset =

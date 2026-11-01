@@ -39,6 +39,20 @@ std::wstring Sanitize(const std::wstring& value) {
   return out;
 }
 
+size_t UsageScore(uint32_t count, uint64_t last, uint64_t now) {
+  constexpr uint64_t kDay = 24 * 60 * 60;
+  const uint64_t age = now > last ? now - last : 0;
+  size_t score = std::min<size_t>(120, static_cast<size_t>(count) * 6);
+  if (age <= kDay) {
+    score += 80;
+  } else if (age <= 7 * kDay) {
+    score += 40;
+  } else if (age <= 30 * kDay) {
+    score += 10;
+  }
+  return score;
+}
+
 }  // namespace
 
 std::wstring UsageStore::Path() const {
@@ -139,15 +153,25 @@ size_t UsageStore::Bonus(const std::wstring& target) const {
   const auto found = entries_.find(target);
   if (found == entries_.end()) return 0;
   const uint64_t now = static_cast<uint64_t>(std::time(nullptr));
-  const uint64_t age = now > found->second.last ? now - found->second.last : 0;
-  size_t bonus = std::min<size_t>(120, found->second.count * 6);
-  constexpr uint64_t kDay = 24 * 60 * 60;
-  if (age <= kDay) {
-    bonus += 80;
-  } else if (age <= 7 * kDay) {
-    bonus += 40;
-  } else if (age <= 30 * kDay) {
-    bonus += 10;
+  return UsageScore(found->second.count, found->second.last, now);
+}
+
+std::vector<UsageRecord> UsageStore::Top(size_t limit) const {
+  const uint64_t now = static_cast<uint64_t>(std::time(nullptr));
+  std::vector<UsageRecord> records;
+  records.reserve(entries_.size());
+  for (const auto& pair : entries_) {
+    UsageRecord record;
+    record.target = pair.first;
+    record.count = pair.second.count;
+    record.last = pair.second.last;
+    record.score = UsageScore(pair.second.count, pair.second.last, now);
+    records.push_back(std::move(record));
   }
-  return bonus;
+  std::stable_sort(records.begin(), records.end(), [](const UsageRecord& a, const UsageRecord& b) {
+    if (a.score != b.score) return a.score > b.score;
+    return a.last > b.last;  // 同分时更近的在前
+  });
+  if (records.size() > limit) records.resize(limit);
+  return records;
 }

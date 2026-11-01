@@ -10,6 +10,8 @@ struct AppSettings {
   bool autostart = false;
   bool tray = true;
   int indexSizeMB = 512;              // 索引快照最大大小（MB，64–262144）
+  std::wstring indexDir;              // 快照目录；空 = %LOCALAPPDATA%\Lume（失败回退 exe 目录）
+  std::vector<std::wstring> indexDirHistory;  // 最近用过的自定义快照目录（最多 5 条）
   std::vector<std::wstring> fileRoots;  // 空 = 桌面/文档/下载
 };
 

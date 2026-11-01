@@ -77,7 +77,7 @@ bool EndsWith(const std::wstring& text, const wchar_t* suffix) {
 }
 
 // 快照/日志/图标本身在索引根内时，避免写文件触发 watcher 再触发重建的死循环。
-bool ShouldIgnoreWatchPath(const std::wstring& fullPath) {
+bool ShouldIgnoreSnapshotName(const std::wstring& fullPath) {
   const std::wstring lower = ToLower(fullPath);
   if (EndsWith(lower, L"\\files.idx") || EndsWith(lower, L"\\files.idx.tmp") ||
       EndsWith(lower, L"\\apps.idx") || EndsWith(lower, L"\\usage.conf") ||
@@ -92,6 +92,24 @@ bool ShouldIgnoreWatchPath(const std::wstring& fullPath) {
     return true;
   }
   return false;
+}
+
+// path 是否位于 directory 之下（大小写不敏感，要求分隔符边界）。
+bool IsUnderDirectory(const std::wstring& path, const std::wstring& directory) {
+  if (path.empty() || directory.empty() || path.size() <= directory.size()) return false;
+  if (_wcsnicmp(path.c_str(), directory.c_str(), directory.size()) != 0) return false;
+  const wchar_t next = path[directory.size()];
+  return next == L'\\' || next == L'/';
+}
+
+// 去掉首尾空白与末尾路径分隔符，方便比较/拼接。
+std::wstring TrimDirectory(std::wstring value) {
+  const size_t first = value.find_first_not_of(L" \t\r\n");
+  if (first == std::wstring::npos) return {};
+  const size_t last = value.find_last_not_of(L" \t\r\n");
+  value = value.substr(first, last - first + 1);
+  while (value.size() > 1 && (value.back() == L'\\' || value.back() == L'/')) value.pop_back();
+  return value;
 }
 
 bool IsPathBoundary(wchar_t ch) {
@@ -428,9 +446,49 @@ bool FileIndex::Start() {
   return true;
 }
 
-void FileIndex::ClearAndRebuild() {
+void FileIndex::SetIndexDirectory(std::wstring directory) {
+  directory = TrimDirectory(std::move(directory));
+  indexDir_ = directory.empty() ? std::wstring() : ExpandEnv(directory);
+}
+
+std::wstring FileIndex::DefaultIndexDirectory() {
+  const std::wstring base = GetEnv(L"LOCALAPPDATA");
+  if (!base.empty()) {
+    const std::wstring directory = base + L"\\Lume";
+    if (EnsureDirectory(directory)) return directory;
+  }
+  return ExeDirectory();
+}
+
+std::wstring FileIndex::indexDirectory() const {
+  return indexDir_.empty() ? DefaultIndexDirectory() : indexDir_;
+}
+
+std::wstring FileIndex::snapshotPath() const { return indexDirectory() + L"\\files.idx"; }
+
+uint64_t FileIndex::snapshotBytes() const {
+  uint64_t bytes = 0;
+  ULARGE_INTEGER newest{};
+  for (const std::wstring& path : SnapshotPaths()) {
+    WIN32_FILE_ATTRIBUTE_DATA data{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data)) continue;
+    ULARGE_INTEGER modified{};
+    modified.LowPart = data.ftLastWriteTime.dwLowDateTime;
+    modified.HighPart = data.ftLastWriteTime.dwHighDateTime;
+    if (modified.QuadPart < newest.QuadPart) continue;
+    newest = modified;
+    bytes = (static_cast<uint64_t>(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
+  }
+  return bytes;
+}
+
+bool FileIndex::snapshotWritable() const { return !SnapshotPaths().empty(); }
+
+void FileIndex::ClearIndex() {
+  size_t removed = 0;
   for (const std::wstring& path : SnapshotPaths()) {
     if (DeleteFileW(path.c_str())) {
+      ++removed;
       Log(L"文件索引: 已删除快照 %ls", path.c_str());
     }
   }
@@ -439,11 +497,20 @@ void FileIndex::ClearAndRebuild() {
     storage_ = Storage{};
     version_.fetch_add(1);
   }
-  rebuildRequested_.store(true);
+  saveSnapshotAfterRebuild_.store(true);
+  // 清除时正好有重建在跑：丢弃那次结果，否则索引会“自己回来”。
+  if (rebuilding_.load()) discardBuild_.store(true);
+  Log(L"文件索引: 已清除（未重建），删除快照 %zu 个", removed);
+}
+
+void FileIndex::RebuildIndex() {
+  discardBuild_.store(false);
+  // 手动重建不受 60s 冷却限制（lastRebuildMs_ 同时是冷却时间戳）。
   lastRebuildMs_.store(0);
   saveSnapshotAfterRebuild_.store(true);
+  rebuildRequested_.store(true);
   workerCv_.notify_all();
-  Log(L"文件索引: 手动清除，开始重建");
+  Log(L"文件索引: 手动重建已请求");
 }
 
 void FileIndex::Stop() {
@@ -525,6 +592,11 @@ void FileIndex::RebuildAndSwap() {
     fresh.directoryIndex.emplace(Fnv1a(fresh.directories[i].lowerPath),
                                  static_cast<uint32_t>(i));
   }
+  // 清除索引时点下去的重建：结果丢弃，索引保持空，等用户显式重建。
+  if (discardBuild_.exchange(false)) {
+    Log(L"文件索引: 重建结果已丢弃（清除索引）");
+    return;
+  }
   {
     std::lock_guard<std::mutex> lock(entriesMutex_);
     storage_ = std::move(fresh);
@@ -590,8 +662,11 @@ void FileIndex::WorkerLoop() {
         continue;
       }
       const ULONGLONG start = GetTickCount64();
+      rebuilding_.store(true);
       RebuildAndSwap();
+      rebuilding_.store(false);
       lastRebuildMs_.store(GetTickCount64());
+      lastRebuildDurationMs_.store(GetTickCount64() - start);
       Log(L"文件索引重建耗时: %llu ms", GetTickCount64() - start);
     }
     std::unique_lock<std::mutex> lock(workerMutex_);
@@ -740,6 +815,15 @@ void FileIndex::RemoveEntryLocked(const std::wstring& path) {
 
 std::vector<std::wstring> FileIndex::SnapshotPaths() const {
   std::vector<std::wstring> paths;
+  // 用户指定了快照目录时只认它：不静默回退到默认目录，避免读到旧快照造成误解。
+  if (!indexDir_.empty()) {
+    if (EnsureDirectory(indexDir_)) {
+      paths.push_back(indexDir_ + L"\\files.idx");
+    } else {
+      Log(L"文件索引: 索引目录不可用 %ls", indexDir_.c_str());
+    }
+    return paths;
+  }
   const std::wstring base = GetEnv(L"LOCALAPPDATA");
   if (!base.empty()) {
     const std::wstring directory = base + L"\\Lume";
@@ -755,6 +839,12 @@ std::vector<std::wstring> FileIndex::SnapshotPaths() const {
   // 旧 eTools 快照只用于首次迁移读取；写入仍优先 Lume。
   if (!base.empty()) paths.push_back(base + L"\\eTools\\files.idx");
   return paths;
+}
+
+bool FileIndex::ShouldIgnoreWatchPath(const std::wstring& fullPath) const {
+  if (ShouldIgnoreSnapshotName(fullPath)) return true;
+  // 自定义索引目录常见于监听根内部：该目录下的写入同样不能触发重建。
+  return IsUnderDirectory(fullPath, indexDirectory());
 }
 
 bool FileIndex::LoadSnapshot() {

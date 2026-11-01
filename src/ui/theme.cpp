@@ -15,8 +15,9 @@ D2D1_COLOR_F Rgba(UINT32 rgb, float alpha) {
 }  // namespace
 
 float PanelHeight(const Theme& theme, int rows) {
-  const int safeRows = rows < 1 ? 1 : rows;
-  return theme.listTop + safeRows * (theme.rowHeight + theme.rowGap) - theme.rowGap +
+  // rows == 0：没有推荐/结果时面板只留输入框（列表起点 + 底部内边距）。
+  if (rows < 1) return theme.listTop + theme.bottomPadding;
+  return theme.listTop + rows * (theme.rowHeight + theme.rowGap) - theme.rowGap +
          theme.bottomPadding;
 }
 

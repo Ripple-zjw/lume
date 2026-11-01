@@ -34,11 +34,25 @@ class FileIndex {
   bool Start();
   void Stop();
 
-  // 手动清除内存索引与快照，并立即触发后台重建（设置窗按钮）。
-  void ClearAndRebuild();
+  // 仅清除：删除快照文件并清空内存索引，不自动重建（设置窗「清除索引」）。
+  void ClearIndex();
+  // 手动重建：请求后台重建并写回快照，不受 60s 冷却限制（设置窗「重建索引」）。
+  void RebuildIndex();
 
   // 测试/CLI 指定根目录（需在 Start 前调用；空表示使用默认桌面/文档/下载）。
   void SetRoots(std::vector<std::wstring> roots);
+
+  // 快照目录（需在 Start 前调用；空表示默认 %LOCALAPPDATA%\Lume）。
+  void SetIndexDirectory(std::wstring directory);
+  // 解析后的快照目录（绝对路径；默认目录不可用时回退 exe 目录）。
+  static std::wstring DefaultIndexDirectory();
+  std::wstring indexDirectory() const;
+  // 当前快照文件路径（<indexDirectory>\files.idx）。
+  std::wstring snapshotPath() const;
+  // 现有快照的字节数（取候选里 mtime 最新的那份；不存在 = 0）。
+  uint64_t snapshotBytes() const;
+  // 快照目录是否可用（能创建/已存在）。
+  bool snapshotWritable() const;
 
   // 索引快照允许的最大字节数（默认 512MB，最大 256GB）。
   void SetMaxIndexBytes(size_t value);
@@ -49,6 +63,10 @@ class FileIndex {
   std::vector<FileHit> Search(const std::wstring& query, size_t limit) const;
   size_t size() const;
   uint64_t version() const { return version_.load(); }
+  // 是否正在后台重建（设置窗状态用）。
+  bool rebuilding() const { return rebuilding_.load(); }
+  // 上次重建耗时（毫秒；0 = 尚未完成过一次重建）。
+  uint64_t lastRebuildDurationMs() const { return lastRebuildDurationMs_.load(); }
 
   // 加载快照但不启动后台线程（截图/诊断用）。
   bool LoadCachedSnapshot();
@@ -109,10 +127,13 @@ class FileIndex {
   bool LoadSnapshot();
   bool SaveSnapshot() const;
   std::vector<std::wstring> SnapshotPaths() const;
+  // 快照/日志/图标本身在索引根内时，避免写文件触发 watcher 再触发重建的死循环。
+  bool ShouldIgnoreWatchPath(const std::wstring& fullPath) const;
 
   mutable std::mutex entriesMutex_;
   Storage storage_;
   std::vector<std::wstring> roots_;
+  std::wstring indexDir_;  // 空 = 默认目录
   size_t maxIndexBytes_ = 512ull * 1024 * 1024;
   bool persistSnapshot_ = true;
 
@@ -124,7 +145,10 @@ class FileIndex {
   std::condition_variable workerCv_;
   std::atomic<bool> stop_{false};
   std::atomic<bool> rebuildRequested_{false};
+  std::atomic<bool> rebuilding_{false};    // RebuildAndSwap 执行中
+  std::atomic<bool> discardBuild_{false};  // 清除索引时丢弃正在跑的重建结果
   std::atomic<uint64_t> version_{0};
   std::atomic<uint64_t> lastRebuildMs_{0};
+  std::atomic<uint64_t> lastRebuildDurationMs_{0};
   std::atomic<bool> saveSnapshotAfterRebuild_{true};
 };

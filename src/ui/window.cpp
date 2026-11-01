@@ -96,6 +96,8 @@ bool LauncherWindow::Create(HINSTANCE instance, Renderer* renderer, Scene* scene
   usage_.Load();
   files_.SetMaxIndexBytes(static_cast<size_t>(std::clamp(settings_.indexSizeMB, 64, 262144)) *
                           1024ull * 1024ull);
+  files_.SetIndexDirectory(settings_.indexDir);
+  Log(L"索引目录: %ls", files_.indexDirectory().c_str());
   if (!fileRoot.empty()) {
     files_.SetRoots({fileRoot});
   } else if (!settings_.fileRoots.empty()) {
@@ -267,7 +269,7 @@ void LauncherWindow::PreloadIcons(bool warm) {
 }
 
 void LauncherWindow::UpdateLayoutForRows() {
-  const int wanted = std::clamp(static_cast<int>(rows_.size()), 1, Scene::kMaxVisibleRows);
+  const int wanted = std::clamp(static_cast<int>(rows_.size()), 0, Scene::kMaxVisibleRows);
   if (wanted == visibleRows_) return;
   visibleRows_ = wanted;
   const float scale = static_cast<float>(dpi_) / 96.0f;
@@ -286,22 +288,60 @@ void LauncherWindow::UpdateLayoutForRows() {
 
 void LauncherWindow::OpenSettings() {
   if (!settingsWindow_) settingsWindow_ = std::make_unique<SettingsWindow>();
-  settingsWindow_->Show(
-      instance_, hwnd_, settings_,
-      [this](const AppSettings& updated) {
-        ApplySettings(updated);
-        if (onHotkeyRequest_) onHotkeyRequest_(updated);
-        if (onSettingsChanged_) onSettingsChanged_(updated);
-      },
-      [this]() { ClearFileIndex(); });
+  SettingsWindow::Callbacks callbacks;
+  callbacks.onSave = [this](const AppSettings& updated) {
+    ApplySettings(updated);
+    if (onHotkeyRequest_) onHotkeyRequest_(updated);
+    if (onSettingsChanged_) onSettingsChanged_(updated);
+  };
+  callbacks.queryIndex = [this]() { return QueryIndexStatus(); };
+  callbacks.onClearIndex = [this]() { ClearFileIndex(); };
+  callbacks.onRebuildIndex = [this]() { RebuildFileIndex(); };
+  callbacks.onOpenIndexDirectory = [this]() { OpenIndexDirectory(); };
+  settingsWindow_->Show(instance_, hwnd_, settings_, std::move(callbacks));
+}
+
+IndexStatus LauncherWindow::QueryIndexStatus() const {
+  IndexStatus status;
+  status.directory = files_.indexDirectory();
+  status.defaultDirectory = FileIndex::DefaultIndexDirectory();
+  status.snapshotPath = files_.snapshotPath();
+  status.snapshotBytes = files_.snapshotBytes();
+  status.entries = files_.size();
+  status.lastRebuildDurationMs = files_.lastRebuildDurationMs();
+  status.limitMB = settings_.indexSizeMB;
+  status.rebuilding = files_.rebuilding();
+  status.snapshotWritable = files_.snapshotWritable();
+  return status;
 }
 
 void LauncherWindow::ClearFileIndex() {
-  Log(L"用户手动清除文件索引");
-  files_.ClearAndRebuild();
+  Log(L"用户手动清除文件索引（不重建）");
+  files_.ClearIndex();
   RebuildRows();
   StartContentFade();
   if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void LauncherWindow::RebuildFileIndex() {
+  Log(L"用户手动重建文件索引");
+  files_.RebuildIndex();
+}
+
+void LauncherWindow::OpenIndexDirectory() {
+  std::wstring directory = files_.indexDirectory();
+  if (directory.empty()) {
+    Log(L"打开索引目录失败: 目录为空");
+    return;
+  }
+  if (!EnsureDirectory(directory)) {
+    Log(L"打开索引目录失败: 无法创建 %ls", directory.c_str());
+    return;
+  }
+  std::wstring error;
+  if (!OpenPath(directory, &error)) {
+    Log(L"打开索引目录失败: %ls", error.c_str());
+  }
 }
 
 void LauncherWindow::TestHotkeyCapture(const std::wstring& combo) {
@@ -371,9 +411,11 @@ void LauncherWindow::ApplySettings(const AppSettings& settings) {
   files_.Stop();
   files_.SetMaxIndexBytes(static_cast<size_t>(std::clamp(settings_.indexSizeMB, 64, 262144)) *
                           1024ull * 1024ull);
+  files_.SetIndexDirectory(settings_.indexDir);
   files_.SetRoots(settings_.fileRoots);
   files_.Start();
   fileVersionSeen_ = files_.version();
+  Log(L"索引目录: %ls", files_.indexDirectory().c_str());
   RebuildRows();
   StartContentFade();
   if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
@@ -588,6 +630,8 @@ void LauncherWindow::Toggle() {
 
 void LauncherWindow::ShowAndFocus() {
   if (visible_) return;
+  // 空查询的推荐来自使用记录，每次唤出前重建，保证是最近用过的顺序。
+  if (input_.text().empty()) RebuildRows();
   LARGE_INTEGER positionStart{};
   QueryPerformanceCounter(&positionStart);
   PositionOnCursorMonitor();

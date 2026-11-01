@@ -2,7 +2,7 @@
 
 Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤出、输入即搜、回车启动应用与文件。C++20 + Win32 + Direct2D/DirectWrite + DirectComposition，免安装、免管理员、单 exe。
 
-**当前版本：0.1.0。**Windows 11（build 22621+）x64，免安装单 exe；发布包在 `dist\Lume-0.1.0-win64.zip`。
+**当前版本：0.1.1。**Windows 11（build 22621+）x64，免安装单 exe；发布包在 `dist\Lume-0.1.1-win64.zip`。
 
 **当前进度：P6 搜索质量修复（紧凑索引、按大小限制、精确匹配优先），P5.1 已完成。**
 
@@ -54,7 +54,7 @@ Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤�
 - 模糊评分：子串命中（前缀加分）、子序列命中（连续/词首加分）、长度惩罚；`--list-apps` 可直接检查索引内容。
 - 真实启动：Shell 条目走 `ShellExecuteEx`（`.lnk` 保留参数/工作目录/清单），商店应用走 `IApplicationActivationManager::ActivateApplication`（失败回退 `shell:AppsFolder\<AUMID>`）；`Ctrl+Enter` 以管理员运行，`Shift+Enter` 打开所在位置。
 - shell 图标：`IShellItemImageFactory` 取 32px → WIC 转 `32bppPBGRA` → D2D 位图，内存缓存（失败也缓存避免重试），无图标时回退首字色块。
-- 过滤结果实时刷新，空查询按名称列出全部应用；无匹配时显示占位行。
+- 过滤结果实时刷新，无匹配时显示占位行。
 
 **P4：文件/文件夹搜索**
 
@@ -72,7 +72,7 @@ Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤�
 - 设置持久化 `settings.conf`（UTF-8 key=value，AppData 不可写时退回 exe 同目录）；改动即时应用：主题/强调色重绘、热键重新注册、文件索引按新根目录重建。
 - 开机自启写 `HKCU\...\Run`（命令 `"Lume.exe" --autostart`）。
 - 动态面板高度：结果 1–6 行时窗口高度跟随收缩/展开，不再固定留白。
-- MRU：`usage.conf` 记录目标的使用次数与最近时间；空查询按常用/最近排序，非空查询叠加 0–200 分。
+- MRU：`usage.conf` 记录目标的使用次数与最近时间；**空查询只推荐使用记录里“最常用 + 最近”的条目**（应用与文件都在内，按热度排序，每次唤出前重建），没有使用记录时列表为空、面板只剩输入框；非空查询叠加 0–200 分。
 - 修复：多份索引快照并存时，按“根目录匹配”逐个尝试，而不是读到第一份就放弃。
 - 说明：本 agent 沙箱内 `Shell_NotifyIcon` 与 `HKCU\...\Run` 写入被系统拒绝（托盘/自启代码路径需在真实会话验证）；设置窗仍是原生浅色控件，深色主题留作 P5.1。
 
@@ -100,7 +100,8 @@ Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤�
 - 注意：`--file-stats` / `--list-files` 在未指定 `--file-root` 时使用默认的桌面/文档/下载（C 盘），这是诊断命令的默认值；要验证实际索引请用 `--search-live=<query>` 或 `--file-root=`。
 - **上限改为“索引文件大小”**：设置窗“索引大小”以 MB 为单位，默认 **512**，范围 **64–262144**（最大 256GB）；也支持 `settings.conf` 的 `indexSizeMB=` 或 `--index-size-mb`。4 个根平均分配预算（512MB → 每根 128MB），按“4 字节长度 + UTF-16 路径 + 1 字节类型”的序列化大小累计，达到预算即停。旧的 `fileCap` 条目上限已移除，老配置直接使用 512MB 默认。
 - **快照优先 + 后台重建**：启动先读最新的 `files.idx`（ETF4 紧凑格式，100 万条 **656ms** 可用），随后后台全量重建（512MB 预算下约 **20.8s**）。启动不删除/重写快照；首次或“清除索引并重建”才写回。写快照不会再触发自己的 watcher，目录高频变化有 60s 冷却，退出可取消，快照流式写临时文件后原子替换。
-- **手动清除**：设置窗“清除索引并重建”会删除所有快照、清空内存并立即重建（重置冷却）。
+- **手动清除**：设置窗「索引」页的「清除索引」只删快照并清空内存（不自动重建），「重建索引」立即后台重建并写回快照（会跳过 watcher 的 60s 冷却）；两者替代了原来的「清除索引并重建」，`--clear-index` 仍按“删快照并重建”执行。
+- **索引页（P6.1）**：设置窗拆成「常规 / 索引」两页。索引页集中索引大小上限、索引文件目录、索引状态（快照大小 / 条目数 / 上限占用率 / 重建中 / 上次重建耗时）、文件索引根目录增删，以及清除 / 重建 / 刷新状态三个动作。索引文件目录是**只读下拉框**（不能手打，鼠标可选中），列出当前目录、默认目录和最近用过的 5 个目录（**已经不存在的不显示**），下面一行是「修改目录 / 打开索引目录 / 恢复默认」。状态**不自动轮询**，需要时点「刷新状态」（避免状态块反复重绘闪烁）。窗口底部有 **应用 / 保存 / 取消**：应用=立即应用配置但不关窗，保存=应用并关闭，取消=丢弃本次修改。索引文件目录写入 `settings.conf` 的 `indexDir=`，历史写入 `indexDirHistory=`（最多 5 条；填默认目录会归一化成空值，留空 = `%LOCALAPPDATA%\Lume`；应用前校验绝对路径、可创建与可写）。
 - **快照格式 ETF4**：目录按“父目录 id + 组件名”存，条目不存完整路径；名称放在连续 arena，条目固定 29 字节字段。**230MB → 124.4MB**（999,842 条，130,480,000 字节）。
 - **512MB 预算实测**：999,842 条、快照 **124.4MB**（预算按完整路径保守估算，所以实际文件小于 512MB），重建 20.8s；进程 **323MB 常驻 / 410MB 峰值**（无快照首次），读快照后再重建峰值约 560MB。查询 `AlanWake2.exe` **4.8ms**。
 - **存储占用**：`files.idx` **124.4MB**、`apps.idx` **48KB**、日志/图标/配置 **0.83MB**，正常会话总计约 **125MB**。沙箱写不进 AppData 时快照落在 exe 同目录（本机还残留旧的 170MB AppData 快照，所以看起来更大）；启动取最新修改时间的那份，正常会话只有一份。
@@ -130,11 +131,12 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Run
 ## 发布包
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\build.ps1 -Recompile
-# 产物：dist\Lume-0.1.0-win64.zip
+# 编译 + 打 zip 发布包（版本号同时用于目录/文件名，需与 assets/app.rc 一致）
+powershell -ExecutionPolicy Bypass -File .\build.ps1 -Recompile -Package
+# 产物：dist\Lume-0.1.1-win64.zip（以及同名目录，便于先本地试跑）
 ```
 
-压缩包内容：`Lume.exe`（单文件、静态链接）+ `Install.cmd` + `README.txt`（系统要求、快捷键、首次索引、卸载）。解压即用，不需要安装。
+压缩包内容：`Lume.exe`（单文件、静态链接）+ `Install.cmd` + `README.txt`（系统要求、快捷键、首次索引、卸载）。解压即用，不需要安装。`README.txt` 模板在 `packaging\README.txt`；`-Package` 会校验 exe 的 `ProductVersion` 与 `-Version`（默认 `0.1.1`）一致，并打印 zip 的 SHA256。
 
 ### 低完整性环境（DSH/受限工作区）
 
@@ -182,6 +184,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Recompile
 | `--search-files=<query>` | 搜索文件索引并打印耗时与前 20 条（分数+路径） |
 | `--search-rows=<query>` | 打印合并后的 tier/分数/标题/路径（验证排序） |
 | `--index-size-mb=<n>` | 覆盖索引大小上限（64–262144 MB，测试/调优） |
+| `--index-dir=<dir>` | 覆盖索引快照目录（默认 `%LOCALAPPDATA%\Lume`） |
 | `--search-live=<query>` | 现场重建索引并搜索（诊断上限/排序） |
 | `--settings` | 启动时打开设置窗 |
 | `--self-check` | 检查热键/托盘/自启/打开文件/设置写入并打印 PASS/FAIL |
@@ -195,7 +198,7 @@ src/main.cpp               CLI 解析与入口分发
 src/app/                   常驻应用：单实例、热键、显示/隐藏、截图模式、测试注入
 src/app/settings.cpp       设置读写（settings.conf，多路径回退）
 src/ui/window.cpp          窗口、托盘、设置入口、定位/激活、输入与 IME、键盘、动效、动态高度
-src/ui/settings_window.cpp 设置窗（主题/强调色/热键/自启/索引目录）
+src/ui/settings_window.cpp 设置窗（常规 / 索引两页）
 src/ui/input.cpp           单行输入状态（码点移动、粘贴、组字）
 src/ui/renderer.cpp        D3D11/DXGI/DirectComposition/D2D/DWrite/WIC 与出图
 src/ui/scene.cpp           面板绘制（阴影、输入、虚拟化列表、组字下划线、动画 Alpha）
@@ -254,4 +257,5 @@ docs/images/p5/            P5 动态高度截图
 | P4 ✅ | 文件/文件夹索引、快照、watcher 增量、路径直通、异步图标 |
 | P5 ✅ | 托盘/设置窗/自启、动态高度、MRU 排序、快照多路径修复 |
 | P5.1 ✅ | 图标磁盘缓存、深色自绘设置窗、自定义热键、真实会话自检全 PASS |
+| P6.1 ✅ | 设置窗「索引」页：索引文件目录可配置、快照大小/条目/重建状态、清除与重建分离、打开索引目录 |
 | P6（进行中） | 搜索质量修复（配额/路径降权/稳定排序/预筛）、全盘搜索（Everything 可选适配器）、文件内容搜索、打包与签名 |
