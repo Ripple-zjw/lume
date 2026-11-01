@@ -18,7 +18,9 @@ struct Theme {
   float rowHeight = 44.0f;
   float rowGap = 4.0f;
   float bottomPadding = 16.0f;
-  float shadowMargin = 24.0f;
+  // 面板四周留给自绘阴影的透明边距（窗口 = 面板 + 2×shadowMargin，按 DPI 缩放）。
+  // 24 时面板外会留一圈 24–30px 的透明带、看着像多套了一个框；8 是「有呼吸感但不抢眼」的取值。
+  float shadowMargin = 8.0f;
   float corner = 16.0f;
   float rowCorner = 10.0f;
   float tileCorner = 7.0f;

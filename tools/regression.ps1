@@ -130,6 +130,9 @@ Write-Host '     works; 设置 → 筛选 can add/rename/reorder groups and 恢�
 Write-Host '  8. Benchmark: bench_report / bench_a_1char above are med latencies over the synthetic'
 Write-Host '     entries; FAIL means search got noticeably slower (raise -BenchMs/-BenchShortMs'
 Write-Host '     only for slow hosts, or pass -SkipBench to skip).'
+Write-Host '  9. Mouse: hovering a result row highlights it (hand cursor); clicking launches it'
+Write-Host '     (Shift+click = reveal, Ctrl+click = elevated). `Lume.exe --click-row=2 --query=notepad`'
+Write-Host '     runs the same path with synthetic mouse messages; the log shows 悬停 / 点击 / 激活 lines.'
 Write-Host ''
 $status = "self-check exit=$code"
 if ($benchFailures -gt 0) {

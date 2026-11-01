@@ -28,11 +28,20 @@
 #ifndef DWMWA_SYSTEMBACKDROP_TYPE
 #define DWMWA_SYSTEMBACKDROP_TYPE 38
 #endif
-#ifndef DWMSBT_MAINWINDOW
-#define DWMSBT_MAINWINDOW 2
+// 注意 DWMSBT_NONE 是 1 不是 0（0 = DWMSBT_AUTO，交给 DWM 自己挑，等于没关）。
+// 2 = DWMSBT_MAINWINDOW（Mica），P6.5 起刻意不用，原因见 ApplyBackdrop()。
+#ifndef DWMSBT_NONE
+#define DWMSBT_NONE 1
 #endif
 #ifndef DWMWCP_ROUND
 #define DWMWCP_ROUND 2
+#endif
+// 窗口描边颜色：DWMWA_COLOR_NONE 让 DWM 不画那圈 1px 边框。
+#ifndef DWMWA_BORDER_COLOR
+#define DWMWA_BORDER_COLOR 34
+#endif
+#ifndef DWMWA_COLOR_NONE
+#define DWMWA_COLOR_NONE 0xFFFFFFFE
 #endif
 
 namespace {
@@ -236,12 +245,21 @@ void LauncherWindow::ApplyBackdrop() {
   const BOOL dark = theme_.dark ? TRUE : FALSE;
   LogHr(L"DwmSetWindowAttribute(dark)",
         DwmSetWindowAttribute(hwnd_, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark)));
-  const int backdrop = DWMSBT_MAINWINDOW;
+  // 不能开系统背景（Mica）。它填满的是**整个窗口矩形**（暗色下是 #202020），而我们的窗口比面板
+  // 大整整一圈 shadowMargin（24 DIP）：于是面板外面那圈透明区域被 Mica 涂成一个不透明的方框，
+  // 看上去就是「搜索框外面又套了一个框」。实测（窗口背后垫一块纯品红）：带 Mica 时窗口边缘那一圈
+  // 是 (32,32,32) 的死色（品红完全透不出来），关掉后同一圈变成品红被自绘阴影压暗的渐变。
+  const int backdrop = DWMSBT_NONE;
   const HRESULT backdropHr =
       DwmSetWindowAttribute(hwnd_, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, sizeof(backdrop));
   if (FAILED(backdropHr)) LogHr(L"DwmSetWindowAttribute(backdrop)", backdropHr);
   const int corner = DWMWCP_ROUND;
   DwmSetWindowAttribute(hwnd_, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
+  // 系统背景还会沿窗口矩形画一圈 1px 描边，同样多余（阴影是我们自己画的）。
+  const COLORREF borderNone = static_cast<COLORREF>(DWMWA_COLOR_NONE);
+  const HRESULT borderHr =
+      DwmSetWindowAttribute(hwnd_, DWMWA_BORDER_COLOR, &borderNone, sizeof(borderNone));
+  if (FAILED(borderHr)) LogHr(L"DwmSetWindowAttribute(border)", borderHr);
 }
 
 void LauncherWindow::PositionOnCursorMonitor() {
@@ -587,6 +605,8 @@ void LauncherWindow::RebuildRows() {
   selected_ = 0;
   scroll_ = 0;
   selectionRow_ = 0.0f;
+  hoverRow_ = -1;  // 行集合换了，旧的悬停序号不再有效
+  pressedRow_ = -1;
   UpdateLayoutForRows();
   EnsureSelectionVisible();
   PreloadIcons(false);
@@ -609,6 +629,8 @@ void LauncherWindow::SelectFilter(int index) {
   RefreshResults();
   StartContentFade();
   hoverChip_ = -1;
+  hoverRow_ = -1;
+  pressedRow_ = -1;
   UpdateSceneState();
   if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
   Log(L"筛选: %ls（第 %d 组）-> %zu 条 (%.1f ms)", label.c_str(), index + 1, rows_.size(),
@@ -688,7 +710,8 @@ void LauncherWindow::Refilter() {
 }
 
 void LauncherWindow::UpdateSceneState() {
-  sceneState_.displayText = input_.DisplayText();  sceneState_.caretIndex = input_.DisplayCaret();
+  sceneState_.displayText = input_.DisplayText();
+  sceneState_.caretIndex = input_.DisplayCaret();
   sceneState_.compositionStart = input_.composing() ? input_.compositionStart() : 0;
   sceneState_.compositionLength = input_.composing() ? input_.composition().size() : 0;
   sceneState_.caretVisible = caretVisible_;
@@ -705,6 +728,7 @@ void LauncherWindow::UpdateSceneState() {
     }
   }
   sceneState_.hoverChip = hoverChip_;
+  sceneState_.hoverRow = hoverRow_;
   sceneState_.selected = selected_;
   sceneState_.scroll = scroll_;
   sceneState_.visibleRows = visibleRows_;
@@ -892,6 +916,8 @@ void LauncherWindow::Hide() {
   if (visible_) Log(L"隐藏窗口");
   visible_ = false;
   hoverChip_ = -1;
+  hoverRow_ = -1;
+  pressedRow_ = -1;
   mouseTracking_ = false;
   KillTimer(hwnd_, kTimerCaret);
   KillTimer(hwnd_, kTimerAnim);
@@ -902,6 +928,119 @@ void LauncherWindow::Hide() {
   contentAnimating_ = false;
   showAlpha_ = 1.0f;
   ResetQuery();
+}
+
+void LauncherWindow::ToPanelDip(int clientX, int clientY, float* xDip, float* yDip) const {
+  const float scale = static_cast<float>(dpi_) / 96.0f;
+  if (xDip) *xDip = static_cast<float>(clientX) / scale - theme_.shadowMargin;
+  if (yDip) *yDip = static_cast<float>(clientY) / scale - theme_.shadowMargin;
+}
+
+int LauncherWindow::ChipAtPoint(int clientX, int clientY) {
+  if (!scene_ || sceneState_.chips.empty()) return -1;
+  float x = 0.0f;
+  float y = 0.0f;
+  ToPanelDip(clientX, clientY, &x, &y);
+  return scene_->ChipAt(sceneState_, x, y);
+}
+
+int LauncherWindow::RowAtPoint(int clientX, int clientY) {
+  if (!scene_ || sceneState_.rows.empty()) return -1;
+  float x = 0.0f;
+  float y = 0.0f;
+  ToPanelDip(clientX, clientY, &x, &y);
+  return scene_->RowAt(sceneState_, x, y);
+}
+
+bool LauncherWindow::RowIsActionable(int index) const {
+  if (index < 0 || index >= static_cast<int>(rows_.size())) return false;
+  return rows_[static_cast<size_t>(index)].action != RowAction::None;
+}
+
+void LauncherWindow::InjectMouseRow(int row, bool click) {
+  if (!hwnd_ || row < 0) return;
+  const float scale = static_cast<float>(dpi_) / 96.0f;
+  const float listTop = theme_.listTop + (sceneState_.chips.empty() ? 0.0f : theme_.filterRow);
+  const float xDip = theme_.panelWidth * 0.5f;
+  const float yDip =
+      listTop + static_cast<float>(row) * (theme_.rowHeight + theme_.rowGap) + theme_.rowHeight * 0.5f;
+  const int xPx =
+      static_cast<int>(std::lround((theme_.shadowMargin + xDip) * scale));
+  const int yPx =
+      static_cast<int>(std::lround((theme_.shadowMargin + yDip) * scale));
+  const LPARAM point = MAKELPARAM(xPx, yPx);
+  Log(L"注入鼠标: 行 %d -> 客户端 (%d, %d)%ls", row + 1, xPx, yPx, click ? L" + 单击" : L"");
+  PostMessageW(hwnd_, WM_MOUSEMOVE, 0, point);
+  if (click) {
+    PostMessageW(hwnd_, WM_LBUTTONDOWN, MK_LBUTTON, point);
+    PostMessageW(hwnd_, WM_LBUTTONUP, 0, point);
+  }
+}
+
+void LauncherWindow::ClickRow(int index, bool shift, bool ctrl) {
+  if (!RowIsActionable(index)) return;
+  Log(L"点击: [%d] %ls", index, rows_[static_cast<size_t>(index)].title.c_str());
+  if (index != selected_) {
+    // 点击直接把选中挪过去：不滑动，指针已经在目标行上了。
+    selected_ = index;
+    EnsureSelectionVisible();
+    selectionRow_ = static_cast<float>(selected_);
+    selectionFrom_ = selectionRow_;
+    selectionTo_ = selectionRow_;
+    selectionAnimating_ = false;
+    hoverRow_ = index;
+    UpdateSceneState();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+  }
+  ActivateRow(index, shift, ctrl);
+}
+
+void LauncherWindow::ActivateRow(int index, bool shift, bool ctrl) {
+  if (index < 0 || index >= static_cast<int>(rows_.size())) {
+    Log(L"激活: 当前没有可启动项");
+    return;
+  }
+  const ResultRow& row = rows_[static_cast<size_t>(index)];
+  Log(L"激活: [%d] %ls action=%d target=%ls", index, row.title.c_str(),
+      static_cast<int>(row.action), row.target.c_str());
+  if (row.action == RowAction::None) {
+    Log(L"激活: 当前行为占位提示");
+    return;
+  }
+  std::wstring error;
+  bool ok = false;
+  if (row.action == RowAction::LaunchApp || row.action == RowAction::LaunchUwp) {
+    AppEntry entry;
+    entry.title = row.title;
+    entry.detail = row.subtitle;
+    entry.launchTarget = row.target;
+    entry.iconKey = row.iconKey;
+    entry.glyph = row.glyph;
+    entry.color = row.color;
+    entry.kind = (row.action == RowAction::LaunchUwp) ? LaunchKind::AppUserModelId
+                                                      : LaunchKind::Shell;
+    const LaunchMode mode =
+        shift ? LaunchMode::Reveal : (ctrl ? LaunchMode::Elevated : LaunchMode::Normal);
+    ok = LaunchEntry(entry, mode, &error);
+    if (ok) {
+      Log(L"启动: %ls (%ls)", row.title.c_str(),
+          mode == LaunchMode::Reveal ? L"定位"
+                                     : (mode == LaunchMode::Elevated ? L"管理员" : L"普通"));
+    } else {
+      Log(L"启动失败: %ls -> %ls", row.title.c_str(), error.c_str());
+    }
+  } else {
+    ok = shift ? RevealPath(row.target, &error) : OpenPath(row.target, &error);
+    if (ok) {
+      Log(L"%ls: %ls", shift ? L"定位" : L"打开", row.target.c_str());
+    } else {
+      Log(L"打开失败: %ls -> %ls", row.target.c_str(), error.c_str());
+    }
+  }
+  if (ok) {
+    usage_.Record(row.target);
+    Hide();
+  }
 }
 
 bool LauncherWindow::HandleKeyDown(WPARAM key) {
@@ -932,52 +1071,8 @@ bool LauncherWindow::HandleKeyDown(WPARAM key) {
       }
       return true;
     case VK_RETURN: {
-      if (selected_ < 0 || selected_ >= static_cast<int>(rows_.size())) {
-        Log(L"回车: 当前没有可启动项");
-        return true;
-      }
-      const ResultRow& row = rows_[static_cast<size_t>(selected_)];
-      Log(L"回车: [%d] %ls action=%d target=%ls", selected_, row.title.c_str(),
-          static_cast<int>(row.action), row.target.c_str());
-      if (row.action == RowAction::None) {
-        Log(L"回车: 当前行为占位提示");
-        return true;
-      }
       const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-      std::wstring error;
-      bool ok = false;
-      if (row.action == RowAction::LaunchApp || row.action == RowAction::LaunchUwp) {
-        AppEntry entry;
-        entry.title = row.title;
-        entry.detail = row.subtitle;
-        entry.launchTarget = row.target;
-        entry.iconKey = row.iconKey;
-        entry.glyph = row.glyph;
-        entry.color = row.color;
-        entry.kind = (row.action == RowAction::LaunchUwp) ? LaunchKind::AppUserModelId
-                                                          : LaunchKind::Shell;
-        const LaunchMode mode =
-            shift ? LaunchMode::Reveal : (ctrl ? LaunchMode::Elevated : LaunchMode::Normal);
-        ok = LaunchEntry(entry, mode, &error);
-        if (ok) {
-          Log(L"启动: %ls (%ls)", row.title.c_str(),
-              mode == LaunchMode::Reveal ? L"定位"
-                                         : (mode == LaunchMode::Elevated ? L"管理员" : L"普通"));
-        } else {
-          Log(L"启动失败: %ls -> %ls", row.title.c_str(), error.c_str());
-        }
-      } else {
-        ok = shift ? RevealPath(row.target, &error) : OpenPath(row.target, &error);
-        if (ok) {
-          Log(L"%ls: %ls", shift ? L"定位" : L"打开", row.target.c_str());
-        } else {
-          Log(L"打开失败: %ls -> %ls", row.target.c_str(), error.c_str());
-        }
-      }
-      if (ok) {
-        usage_.Record(row.target);
-        Hide();
-      }
+      ActivateRow(selected_, shift, ctrl);
       return true;
     }
     case VK_BACK:
@@ -1208,20 +1303,35 @@ LRESULT LauncherWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
       if (HandleIme(message, wParam, lParam)) return 0;
       break;
     case WM_LBUTTONDOWN: {
-      // 只有筛选芯片一行吃鼠标；其余区域保持纯键盘交互（与旧版一致）。
-      if (!scene_ || sceneState_.chips.empty()) break;
-      const float scale = static_cast<float>(dpi_) / 96.0f;
-      const float x = static_cast<float>(GET_X_LPARAM(lParam)) / scale - theme_.shadowMargin;
-      const float y = static_cast<float>(GET_Y_LPARAM(lParam)) / scale - theme_.shadowMargin;
-      const int chip = scene_->ChipAt(sceneState_, x, y);
+      // 芯片切组，结果行直接启动；面板其它区域（含空白处）仍然什么都不做。
+      if (!scene_) break;
+      const int x = GET_X_LPARAM(lParam);
+      const int y = GET_Y_LPARAM(lParam);
+      const int chip = ChipAtPoint(x, y);
       if (chip >= 0) {
         SelectFilter(chip);
         return 0;
       }
+      const int row = RowAtPoint(x, y);
+      if (row >= 0) {
+        // 按下只记住按下的是哪一行，真正的启动放到抬起：启动后鼠标抬起才不会落进新打开的窗口。
+        pressedRow_ = row;
+        return 0;
+      }
       break;
     }
+    case WM_LBUTTONUP: {
+      const int pressed = pressedRow_;
+      pressedRow_ = -1;
+      if (pressed < 0) break;
+      if (RowAtPoint(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)) != pressed) break;
+      const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+      const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+      ClickRow(pressed, shift, ctrl);
+      return 0;
+    }
     case WM_MOUSEMOVE: {
-      if (!scene_ || sceneState_.chips.empty()) break;
+      if (!scene_) break;
       if (!mouseTracking_) {
         TRACKMOUSEEVENT track{};
         track.cbSize = sizeof(track);
@@ -1230,22 +1340,41 @@ LRESULT LauncherWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         TrackMouseEvent(&track);
         mouseTracking_ = true;
       }
-      const float scale = static_cast<float>(dpi_) / 96.0f;
-      const float x = static_cast<float>(GET_X_LPARAM(lParam)) / scale - theme_.shadowMargin;
-      const float y = static_cast<float>(GET_Y_LPARAM(lParam)) / scale - theme_.shadowMargin;
-      const int chip = scene_->ChipAt(sceneState_, x, y);
-      if (chip != hoverChip_) {
+      const int chip = ChipAtPoint(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+      const int row = RowAtPoint(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+      if (chip != hoverChip_ || row != hoverRow_) {
+        if (row != hoverRow_ && row >= 0 && row < static_cast<int>(rows_.size())) {
+          Log(L"悬停: 行 %d %ls", row + 1, rows_[static_cast<size_t>(row)].title.c_str());
+        }
         hoverChip_ = chip;
-        UpdateSceneState();
+        hoverRow_ = row;
+        // 只改 hover 字段：不重抄 rows_（200 行带字符串的副本），悬停要跟手。
+        sceneState_.hoverChip = hoverChip_;
+        sceneState_.hoverRow = hoverRow_;
         InvalidateRect(hwnd_, nullptr, FALSE);
       }
       return 0;
     }
+    case WM_SETCURSOR: {
+      // 指针落在芯片 / 可启动的行上时给手型，其它地方保持箭头。
+      if (LOWORD(lParam) != HTCLIENT || !scene_) break;
+      POINT cursor{};
+      if (!GetCursorPos(&cursor)) break;
+      ScreenToClient(hwnd_, &cursor);
+      if (ChipAtPoint(cursor.x, cursor.y) >= 0 || RowAtPoint(cursor.x, cursor.y) >= 0) {
+        SetCursor(LoadCursorW(nullptr, IDC_HAND));
+        return TRUE;
+      }
+      break;
+    }
     case WM_MOUSELEAVE:
       mouseTracking_ = false;
-      if (hoverChip_ != -1) {
+      pressedRow_ = -1;
+      if (hoverChip_ != -1 || hoverRow_ != -1) {
         hoverChip_ = -1;
-        UpdateSceneState();
+        hoverRow_ = -1;
+        sceneState_.hoverChip = hoverChip_;
+        sceneState_.hoverRow = hoverRow_;
         InvalidateRect(hwnd_, nullptr, FALSE);
       }
       return 0;

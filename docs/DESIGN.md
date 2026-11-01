@@ -17,7 +17,7 @@
 | 图形 | D3D11 + DXGI 翻转模型**合成**交换链 + DirectComposition + Direct2D 1.1 DeviceContext | 逐像素 alpha、圆角/半透明、平滑动画；DeviceContext 可绑定 WIC/纹理做离屏自检 |
 | 文本 | DirectWrite（`Segoe UI Variable Text`，灰度抗锯齿） | 中文回退与字重控制；透明背景必须灰度 AA |
 | 窗口 | `WS_POPUP` + `WS_EX_NOREDIRECTIONBITMAP|TOOLWINDOW|TOPMOST` | 无 GDI 重定向表面的合成窗口 |
-| 背景 | 首选 DWM 云母（`DWMWA_SYSTEMBACKDROP_TYPE`），回退自绘 | 原生 Win11 观感；云母不可用时用实色/渐变 |
+| 背景 | 自绘面板 + 自绘柔和阴影，**不用**系统云母（13.7 起；`DWMWA_SYSTEMBACKDROP_TYPE = DWMSBT_NONE`） | 云母填满整个窗口矩形，会在面板外留一圈实色「框」（窗口比面板大 `shadowMargin`，当时是 24 DIP） |
 | 配置 | 自写极简 JSON | 零第三方依赖 |
 | 排除 | C#/WPF、Qt、Rust/Tauri、Rust/Slint | 与体积/启动/授权目标冲突（C# 由需求方明确排除） |
 
@@ -41,7 +41,7 @@
 ## 4. P0 实测结论（踩过的坑）
 
 1. **DComp 透明合成成立**：`CreateSwapChainForComposition`（`DXGI_ALPHA_MODE_PREMULTIPLIED`）+ `DCompositionCreateDevice/TargetForHwnd/Visual/Commit` 后，面板 alpha=0.35 时桌面内容清晰透出；alpha 区域与圆角均正确。
-2. **云母在 DComp 窗口上生效**：`DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, DWMSBT_MAINWINDOW)` 返回 `S_OK`，且截图中桌面文字不再透出，呈现壁纸模糊底。注意：系统云母是**壁纸级**模糊，不是"窗口后内容"模糊；若要做 Raycast 式实时模糊，需要 `DCompositionCreateBackdropBrush` 或"显示前抓屏 + 高斯模糊"的快照方案（P2 决定）。
+2. **云母在 DComp 窗口上生效**：`DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, DWMSBT_MAINWINDOW)` 返回 `S_OK`，且截图中桌面文字不再透出，呈现壁纸模糊底。注意：系统云母是**壁纸级**模糊，不是"窗口后内容"模糊；若要做 Raycast 式实时模糊，需要 `DCompositionCreateBackdropBrush` 或"显示前抓屏 + 高斯模糊"的快照方案（P2 决定）。**13.7 已改为关闭云母**：它填满整个窗口矩形，面板外那圈透明区会变成实色方块。
 3. **D2D 必须 `BeginDraw`/`EndDraw`**：不配对时所有绘制被丢弃，纹理保持全透明（表现为"导出空白 PNG"）。
 4. **WIC 会改写像素格式**：请求 `GUID_WICPixelFormat32bppBGR` 时 PNG 编码器可能改用 24bpp，若仍按 4 字节/像素写入会得到横向彩条。`SetPixelFormat` 后必须校验返回 GUID；截图路径统一用 `32bppBGRA` 并把 alpha 置 255。
 5. **`WM_DESTROY` 只能对主窗口 `PostQuitMessage`**：否则用于测 DPI 的临时窗口会提前终止消息循环（表现为"计时器从不触发、进程秒退"）。
@@ -58,13 +58,14 @@
 | 高度 | 84（输入区+列表起点）+ 结果行 44 + 行距 4，可见 6 行时面板 384 DIP |
 | 圆角 | 16（面板）/ 10（行）/ 7（图标底）/ 6（图标） |
 | 内描边 | 1px，暗色 `rgba(255,255,255,0.10)`，亮色 `rgba(0,0,0,0.06)` |
-| 面板底色 | 暗色 `#1B1B1F`，alpha 0.88（有云母时） |
+| 面板底色 | 暗色 `#1B1B1F`，alpha 0.88（13.7 起窗口无系统背景，直接与桌面内容混合） |
 | 输入字号 | 26 Semibold；占位 36% 透明 |
 | 标题/副标题 | 14 / 11.5；副标题 50% 透明 |
 | 图标 | 32px 候选尺寸，绘制 28 |
 | 选中行 | 主题色 16% 填充 + 左侧 3×20、圆角 1.5 的强调条 |
 | 强调色 | 默认设计蓝 `#6EA8FF`；`--accent=system` 跟随系统个性化色 |
-| 阴影 | 6 层扩散 2.2px 的圆角填充 |
+| 阴影 | 6 层扩散 2.2px 的圆角填充，扩散量夹在 `shadowMargin - 0.5` 内 |
+| 阴影边距 | `shadowMargin = 8 DIP`（窗口 = 面板 + 16 DIP；13.7 之前是 24，中途试过 3） |
 | 动效 | 唤出 90ms alpha 淡入；选中迁移 120ms ease-out；结果刷新 80ms；光标闪烁 530ms |
 
 ## 6. 复现方式
@@ -102,7 +103,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 5. **动效**：90ms 淡入、120ms 选中迁移、80ms 结果淡入，全部由 8ms QPC 定时器驱动，收敛后自动 `KillTimer`；`Scene` 每帧只做布局缓存查找与少量笔刷设置。
 6. **`com_ptr` 需要移动语义**：`std::vector<ComPtr<T>>` 扩容要求可移动，已补移动构造/赋值。
 7. **`mingw` 的 `dcomp.h` 缺失 `IDCompositionVisual::SetOpacity`**：真实 COM 接口有该方法，但头文件未声明。不采用 vtable 偏移 hack，改为场景级 `globalAlpha` 对所有颜色做整体淡出；代价是云母底色不会随内容淡入（只淡面板与内容），视觉上等价于"面板渐显"。
-8. **`--glass` 在云母下不可见桌面窗口内容**：云母是壁纸级模糊，透明像素显示的是壁纸而非窗口；该参数只用于诊断渲染 alpha。
+8. **`--glass` 在云母下不可见桌面窗口内容**：云母是壁纸级模糊，透明像素显示的是壁纸而非窗口；该参数只用于诊断渲染 alpha。（13.7 关闭云母后，`--glass` 透出的就是桌面真实内容。）
 9. **真实 IME 待人工确认**：自动化无法安全切换/驱动系统输入法，组字渲染与候选窗定位代码路径已就绪，需在微软拼音/搜狗下人工输入一次中文验证候选窗位置。
 10. **HUD 指标**：P2 下首帧仍为 13.1–13.6ms（120 DPI），构建体积 359KB。
 
@@ -228,7 +229,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 7. **持久化**（`settings.conf`，`version=3`）：`filterEnabled=0|1`、`filterActive=<芯片序号>`、`filterGroup=名称|exe;png|apps|folders|noext`（可重复，顺序即芯片顺序；名称里的 `|` 在编码时被剥掉）。读侧容错：非法的 `filterGroup` 行只跳过该行并记日志，重名/超限的组丢弃，`filterActive` 最后 `ClampFilterActive()` 收敛；**一条组行都没有**时才用 `DefaultFilterSet()`（老配置升级即得默认组）。切组时立即 `onSettingsChanged_` → `SettingsStore::Save()`（一次约 1 KB），其它时候不写盘。
 8. **设置窗第 3 页**（`kIdTabFilter=134`，页序 常规/索引/筛选/关于，「关于」仍在最后）：工作副本 `filters_` 与索引页一样「点应用/保存才生效」。列表首项固定「全部」，选中它时右侧编辑区与删除/上移/下移整体禁用（`UpdateFilterControlState()`）；`CommitFilterEdits()` 在切项、新建、删除、上移/下移、应用/保存前把编辑区写回工作副本；`SanitizeFilterSet()` 负责重名、空规则、`全部` 保留名、组数 ≤12 的校验，失败时状态行给中文原因并且**不写盘、不关窗**。三个开关与「启用」都是 `BS_OWNERDRAW` 自绘勾选框（沿用自启开关的做法：`BS_AUTOCHECKBOX | BS_OWNERDRAW` 会互相覆盖类型位，所以状态自己维护）。
 9. **面板几何**：`Theme::filterRow=40`、`chipHeight=26`、`chipGap=8`、`chipPaddingX=12`；`PanelHeight(theme, rows, withChips)` 在 `withChips` 时把 `listTop` 从 84 抬到 124，关掉筛选就完全回到旧几何。芯片宽度按 DirectWrite 实测文本宽 + 2×padding，超宽时整体左移并 `PushAxisAlignedClip` 裁剪，**保证当前组完整可见**；`Scene::ChipAt()` 与绘制共用同一份 `chipRects_`，避免「看着在这里、点不到」。绘制/命中测试都走 `EnsureChipLayouts()` 的「标签 + active」签名缓存，切组才重建布局。
-10. **交互**：`Tab`/`Shift+Tab` 循环、`Ctrl+1..9` 直达、`WM_LBUTTONUP` 命中芯片即切组（启动器此前完全没有鼠标处理，这里只加芯片这一小块）；`WM_MOUSEMOVE` + `TrackMouseEvent(TME_LEAVE)` 维护 hover 高亮。IME 组字期间 `Tab` 不切组（组字时 Everything 请求本来也不发）。
+10. **交互**：`Tab`/`Shift+Tab` 循环、`Ctrl+1..9` 直达、`WM_LBUTTONUP` 命中芯片即切组（这一版鼠标只做了芯片这一小块，结果行的点击在 13.7 补上）；`WM_MOUSEMOVE` + `TrackMouseEvent(TME_LEAVE)` 维护 hover 高亮。IME 组字期间 `Tab` 不切组（组字时 Everything 请求本来也不发）。
 11. **验证**：`--list-filters` 打印 `enabled/active/groups` 与每组的规则（`ext=` 用 `FilterEverythingSpec()`），并顺带跑一次 `SanitizeFilterSet()`（失败打 `error=` 并返回 2）；`--filter=<名称|序号|all|off>` 覆盖本次运行（`--search-rows` / `--search-files` / `--search-live` / `--everything-check` 都生效并打印 `filter=`）；`--self-check` 的 `filters=PASS` 做默认组校验 + 每组编解码往返 + 扩展名抽检（png∈图片、exe∈应用程序、目录/无扩展名被排除、`FilterIsExtensionWhitelist()` 对含文件夹开关的组为 false）。实测：`--everything-check=photo --filter=图片` 的 `search="photo ext:png;jpg;…"`、80 条 / 22 ms；`--search-live=photo --file-root=<临时目录> --filter=图片` 只返回 `photo.png`/`photo.jpg`（同一目录 5 个 photo.* 里挑出 2 个）；合成 `WM_KEYDOWN(VK_TAB)` 后日志依次出现「筛选: 应用程序（第 2 组）-> 14 条」「筛选: 图片（第 3 组）-> 1 条」并各自触发一次 Everything 重查；设置窗侧用 `WM_COMMAND` 合成「新建/上移/删除/保存」，空组保存被拒（状态行「「筛选组7」没有任何规则…」，窗口不关），删掉空组后保存成功并写出 `filterGroup=` 六行。
 
 ## 13.6 搜索压力测试（`--bench-search`，2026-11-01）
@@ -241,11 +242,31 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 6. **结论**：过滤不是热点；真实 116 万条的 22–35 ms 里，扫描/打分占大头，过滤按命中数计费（几千条 → <1 ms）。若将来要提速，方向是预筛与目录树紧凑化（减少每条的扫描/缓存开销），而不是过滤。合成数据比真实快，是因为名字更短、arena 连续、缓存局部性好，且线上那条日志还含合并层与窗口布局。
 7. **防退化闸门**：`tools/regression.ps1` 默认跑 100 万条并检查 `bench_report` ≤ 60 ms、`bench_a_1char` ≤ 200 ms、`filter_check=ok`，超阈值计入失败（`-SkipBench` / `-BenchMs` / `-BenchShortMs` / `-BenchEntries` 可调；`-File` 传参用空格而不是 `=`）。阈值相对本机实测（8.3 / 26 ms）留了约 7 倍余量，只拦「数量级变慢」，避免不同 CPU 上误报。顺带修掉脚本的老问题：PowerShell 不会等待 GUI 子系统程序，`& $exe --self-check` 之后 `$LASTEXITCODE` 可能是空的（此前打印的 `self-check exit=` 就是空的，`exit $code` 也就白退 0），现在统一经 `cmd` 重定向捕获输出与退出码。
 
+## 13.7 结果行鼠标操作与去掉窗口外框（2026-11-01）
+
+1. **补上鼠标这条腿**：筛选组那版只让芯片吃鼠标，列表仍然只能键盘。现在 `WM_MOUSEMOVE` 维护 `hoverRow_`（浅色高亮）、`WM_SETCURSOR` 在芯片/可点行上给 `IDC_HAND`、`WM_LBUTTONDOWN` + `WM_LBUTTONUP` 完成单击启动。
+2. **抬起才执行**：按下只记 `pressedRow_`，抬起时重算命中行并要求「与按下同一行」才 `ClickRow()`。原因：在按下瞬间就 `ShellExecuteEx` 的话，启动的窗口会在鼠标键仍按着时拿到前台，紧接着的抬起落进新窗口（可能触发它里面的按钮/选中）。拖到别的行或拖出面板即取消。芯片仍在按下时切组（不启动任何东西，没有这个问题）。
+3. **命中与绘制同一套几何**：`Scene::RowAt(state, xDip, yDip)` 与列表绘制共用 `listTop`（有芯片时 `84+40=124`）、`rowHeight`、`rowGap`、`scroll`，行间 4 DIP 间隙不算命中；`RowAction::None` 的占位行不返回命中（既不高亮也不给手型），避免「点了个提示行什么都没发生」。`kRowHitLeft=12` 让命中区与选中/悬停圆角块的左右内缩保持一致。
+4. **悬停路径不重抄数据**：`UpdateSceneState()` 会把 `rows_`（最多 200 行、每行 4 个字符串）整份拷进 `SceneState`，拿来做悬停太重。`WM_MOUSEMOVE` 只改 `sceneState_.hoverRow` / `hoverChip` 两个字段再 `InvalidateRect`；结构性变化（换查询、换组、重建行）才走 `UpdateSceneState()`，并在 `RebuildRows()` / `SelectFilter()` / `Hide()` 里把 `hoverRow_`、`pressedRow_` 清成 -1（行序号变了就失效）。
+5. **回车与点击共用 `ActivateRow(index, shift, ctrl)`**：原 `VK_RETURN` 分支里的启动/打开、`usage_.Record`、失败日志整段抽出来，键盘与鼠标只差「怎么选中这一行」。`ClickRow()` 额外把选中挪到被点的行（不跑滑动动画），这样启动失败时用户能看见选中的是哪一行。日志统一成 `激活: [i] 标题 action=… target=…`，前面再加一条 `点击: [i] 标题`。
+6. **面板外面那圈「框」= 系统云母（不是 1px 描边）**：先按「DWM 沿窗口矩形画的 1px 边框」修了一版（`DWMWA_BORDER_COLOR = DWMWA_COLOR_NONE`），但用户看到的框有 **20–30px**、很明显——那圈宽度恰好等于 `shadowMargin=24 DIP`（125% 缩放 = 30px），说明填满整块窗口的是**系统背景**本身：`DWMWA_SYSTEMBACKDROP_TYPE = DWMSBT_MAINWINDOW`（Mica）会把**整个窗口矩形**涂成不透明表面（暗色下就是 `#202020`），而我们的窗口为了放自绘阴影本来就比面板大一圈，于是面板外面那圈本该透明的区域被涂实，看着就是一个方框。
+   - **确认手段（可复现）**：在窗口背后垫一块纯品红、无边框、6000×4000 的 WinForms 窗口（`build/magenta.ps1`，gitignored），再 `--capture` 抓窗口区域。修复前窗口边缘那一圈是 `(32,32,32)` 的死色——品红**一点都透不出来**；修复后同一圈变成 `(255,0,255) → (241,0,241) → (232,0,232) → (211,0,211)` 直到面板边缘：品红透出来了，只是被自绘阴影逐层压暗。这个对比同时排除了「阴影本身看起来像框」的可能（阴影是渐变，不是死色）。
+   - **修法**：`ApplyBackdrop()` 里把 `DWMWA_SYSTEMBACKDROP_TYPE` 设为 `DWMSBT_NONE`。注意 `DWMSBT_NONE` 的值是 **1**，`0` 是 `DWMSBT_AUTO`（交给 DWM 自己挑材料，等于没关）。保留 `DWMWA_USE_IMMERSIVE_DARK_MODE`、`DWMWA_WINDOW_CORNER_PREFERENCE = DWMWCP_ROUND` 与 `DWMWA_BORDER_COLOR = DWMWA_COLOR_NONE`；阴影、面板都还是自己画，面板自身的 1px 边线（`theme.border`）保留。
+   - **代价**：面板 0.88 的 alpha 现在直接与桌面内容混合（以前是叠在云母的壁纸模糊上）。常规壁纸下差别肉眼很难看出来，`--glass` 诊断时会更明显——透出来的是真实窗口内容而不是壁纸模糊。
+   - **教训**：`--capture` 只看「窗口区域内」的像素，如果背景本身是均匀深色，Mica 的 `#202020` 和桌面几乎同色，很容易把「Mica 涂实」误判成「窗口透明」。要验证透明必须让背后有**高对比、非均匀**的内容。
+7. **验证**：沙箱里跨进程窗口自动化不通（`FindWindow` 找不到同会话里刚起的窗口，`CreateMutex` 之外还有 UI 限制），所以加了两个进程内钩子——`--hover-row=<n>` / `--click-row=<n>`（1 起）：按面板几何算出该行中心，`PostMessage(WM_MOUSEMOVE)` 与 `WM_LBUTTONDOWN/UP`，走的是和真人一样的消息处理。实测日志：`注入鼠标: 行 2 -> 客户端 (480, 273) + 单击` → `悬停: 行 2 click-me-2.log` → `点击: [1] click-me-2.log` → `激活: [1] click-me-2.log action=3 target=…` → `打开失败: … ShellExecuteEx 失败 (Win32 5)`（沙箱拒绝 shell 打开，正好验证到「点击链路」而不弹窗口）。DPI 120 / scale 1.25 下 (480,273) 落在第 2 行，说明 DIP↔像素换算正确。
+8. **悬停视觉的验证走离屏渲染**：合成 `WM_MOUSEMOVE` 之后系统会立刻回一条 `WM_MOUSELEAVE`（真实光标不在窗口内），`TME_LEAVE` 一触发就清掉悬停，所以活的窗口抓不到稳定悬停帧。`--shot` 也支持 `--hover-row`，直接渲染 `SceneState::hoverRow` 出图（`docs/images/p6/hover-row.png`，920×310）：选中的第 1 行是强调色块，悬停的第 2 行是 `hoverFill`（暗色 = 白 6%，亮色 = 黑 4%）。
+9. **透明边距 24 → 8 DIP**：云母关掉之后，那圈边距变成真正的「毛玻璃透明带」，但 24 DIP（125% 下 30px）宽得离谱——它本来就是给 6 层柔和阴影（最远扩散 13.2 px）留的位置。先按用户要求试到 3 DIP（贴边、4px 左右），确认「大半是边距、不是阴影」之后定在 **8 DIP**：既留出能看出投影的呼吸感，又不会让人误以为多套了一个框。阴影扩散量夹成 `std::min(layer * 2.2f, shadowMargin - 0.5f)`，边距小时阴影跟着收、不至于被窗口边缘切成硬边；面板轮廓由 `theme.border` 的 1px + 16 DIP 圆角承担。
+   - 几何随之变化：窗口 = 面板 + 16 DIP（125% 下 920×550，之前 960×590；3 DIP 时是 908×538）；`--shot` / `--shot-matrix` 的画布也跟着变小（面板像素尺寸不变），仓库里 13.7 之前生成的截图仍是旧边距。
+   - 角部安全：DWM 的 `DWMWCP_ROUND` 会按窗口矩形裁圆角，半径约 8–10px；面板圆角中心在 inset 8 DIP + 半径 16 DIP 处，对角线方向上离窗口角约 26px，远在裁剪弧（约 2.3–2.9px）之外，所以**面板圆角不会被 DWM 裁掉**，只有最外那条阴影带的尖角会被削一点（看不出来）。
+   - 阴影与边距是耦合的：`shadowMargin` 同时决定透明带宽度和阴影扩散上限，改它即可整体放大/收紧投影；代价是边距越宽越容易看成「多套了一个框」。
+
 ## 14. 后续方向
 
 - 子序列匹配加“跨度/间隙”惩罚，压掉 `steamapps → StreamingBar` 这类噪声；或对长查询要求连续片段。
 - 目录树 + 快照紧凑化：目录改存“父目录 id + 名字”，快照随之压到 <100MB；同时可把目录 arena 做掉。
 - Everything 后续：等 1.5 普及后换 SDK3（命名管道，MIT C 源码，可 vendor），同接口替换传输层；可选「按目录限定结果」与「Everything 未运行时自动回退本地索引」。
 - 筛选组后续：多组同时生效（AND/OR 组合）、按大小/修改时间过滤、每组自定义快捷键；芯片行放不下时加一枚「更多」溢出芯片（现在是裁剪 + 键盘可达）。
+- 鼠标后续：输入框的拖选/双击选词/右键菜单（当前鼠标覆盖芯片、结果行点击、滚轮），结果行的右键「打开所在位置 / 复制路径」，以及按下态的视觉反馈。
 - USN 全盘索引；文件内容搜索。
 - 打包：图标资源、便携模式、可选自签证书；真实会话回归已完成（`tools\regression.ps1` 全 PASS），后续改动重跑即可。

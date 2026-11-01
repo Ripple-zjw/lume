@@ -80,6 +80,8 @@ void PrintUsage() {
       "  --glass                          Lower panel opacity for backdrop inspection\n"
       "  --type=<text>                    Inject characters after showing (input test)\n"
       "  --keys=up,down,enter             Inject key sequence after showing\n"
+      "  --hover-row=<n>                  Inject a mouse move over row n (1-based)\n"
+      "  --click-row=<n>                  Click row n with a synthetic mouse message\n"
       "  --compose=<text>                 Inject IME composition string (render test)\n"
       "  --capture-ms=<n>                 Capture delay in ms (default 450, use 30 for fade)\n"
       "  --list-apps                      Print the collected app index and exit\n"
@@ -211,6 +213,12 @@ CliOptions Parse(int argc, wchar_t** argv) {
     } else if (StartsWith(arg, L"--selected=")) {
       cli.app.selected =
           static_cast<int>(wcstol(ValueAfter(arg, L"--selected=").c_str(), nullptr, 10));
+    } else if (StartsWith(arg, L"--hover-row=")) {
+      cli.app.hoverRow =
+          static_cast<int>(wcstol(ValueAfter(arg, L"--hover-row=").c_str(), nullptr, 10));
+    } else if (StartsWith(arg, L"--click-row=")) {
+      cli.app.clickRow =
+          static_cast<int>(wcstol(ValueAfter(arg, L"--click-row=").c_str(), nullptr, 10));
     } else if (arg == L"--no-hotkey") {
       cli.app.noHotkey = true;
     } else if (arg == L"--list-apps") {

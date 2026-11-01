@@ -27,6 +27,7 @@ struct SceneState {
   std::vector<ResultRow> rows;
   std::vector<ChipState> chips;  // 搜索框下方的筛选组（空 = 不显示这一行）
   int hoverChip = -1;
+  int hoverRow = -1;  // 鼠标悬停的结果行（绝对值，-1 = 没有）
   int selected = 0;
   int scroll = 0;
   int visibleRows = 6;
@@ -51,6 +52,8 @@ class Scene {
   float CaretX(const SceneState& state);
   // 面板相对 DIP 坐标落在哪颗筛选芯片上；-1 = 不在芯片上（窗口用来处理点击/悬停）。
   int ChipAt(const SceneState& state, float xDip, float yDip);
+  // 面板相对 DIP 坐标落在哪一行结果上（绝对值，含滚动偏移）；-1 = 不在行上。
+  int RowAt(const SceneState& state, float xDip, float yDip);
 
  private:
   void EnsureQueryLayout(const SceneState& state);

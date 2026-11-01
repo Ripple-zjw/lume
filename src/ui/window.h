@@ -64,6 +64,8 @@ class LauncherWindow {
   AboutInfo QueryAboutInfo() const;
   // 测试钩子：聚焦热键捕获框并合成指定组合，验证低级键盘钩子。
   void TestHotkeyCapture(const std::wstring& combo);
+  // 测试钩子：把鼠标消息投到第 row 行（0 起）的中心，验证命中测试与点击启动。
+  void InjectMouseRow(int row, bool click);
   bool visible() const { return visible_; }
   HWND hwnd() const { return hwnd_; }
   const AppSettings& settings() const { return settings_; }
@@ -97,6 +99,16 @@ class LauncherWindow {
   void PreloadIcons(bool warm);
   void ApplySettings(const AppSettings& settings);
   void HandleTrayCommand(UINT command);
+  // 客户端像素坐标 → 面板相对 DIP（扣掉阴影边距与 DPI 缩放）。
+  void ToPanelDip(int clientX, int clientY, float* xDip, float* yDip) const;
+  // 鼠标下命中的筛选芯片 / 结果行序号（-1 = 没有）。
+  int ChipAtPoint(int clientX, int clientY);
+  int RowAtPoint(int clientX, int clientY);
+  bool RowIsActionable(int index) const;
+  // 点击结果行：先把它变成选中行，再按 Shift/Ctrl 启动（与回车同一套逻辑）。
+  void ClickRow(int index, bool shift, bool ctrl);
+  // 启动/打开第 index 行（回车与鼠标点击共用）。
+  void ActivateRow(int index, bool shift, bool ctrl);
   bool HandleKeyDown(WPARAM key);
   bool HandleChar(wchar_t ch);
   bool HandleIme(UINT message, WPARAM wParam, LPARAM lParam);
@@ -141,6 +153,8 @@ class LauncherWindow {
   int scroll_ = 0;
   int visibleRows_ = Scene::kMaxVisibleRows;
   int hoverChip_ = -1;        // 鼠标悬停的筛选芯片（-1 = 没有）
+  int hoverRow_ = -1;         // 鼠标悬停的结果行（绝对值，-1 = 没有）
+  int pressedRow_ = -1;       // 左键按下时的行（抬起时同一行才启动）
   bool mouseTracking_ = false;  // 已向系统登记 TME_LEAVE
   // 纯扩展名组下推 Everything 后 0 条时的一次性重试标记（"查询\n组名"）。
   std::wstring pushdownRetryKey_;

@@ -22,6 +22,9 @@ struct AppOptions {
   std::wstring compose;  // 测试钩子：注入组字串，验证 IME 渲染
   int captureDelayMs = 450;
   int selected = 0;  // 截图用：预选中行
+  // 测试钩子（1 起，0 = 关闭）：把鼠标消息投到某一行，验证悬停高亮与点击启动。
+  int hoverRow = 0;
+  int clickRow = 0;
   bool noHotkey = false;
   bool glass = false;
   bool openSettings = false;

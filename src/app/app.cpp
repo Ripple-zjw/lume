@@ -134,6 +134,8 @@ int RunScreenshot(const AppOptions& options, const std::wstring& path, float sca
   state.visibleRows = visibleRows;
   state.selected = options.selected;
   state.selectionRow = static_cast<float>(options.selected);
+  // 测试钩子：--hover-row=<n> 让离屏截图也能画出鼠标悬停高亮。
+  if (options.hoverRow > 0) state.hoverRow = options.hoverRow - 1;
   state.contentAlpha = 1.0f;
   state.glass = options.glass;
   scene.Draw(theme, state, true, scale);
@@ -313,6 +315,9 @@ int RunLauncher(const AppOptions& options) {
         start = comma + 1;
       }
     }
+    // 测试钩子：合成鼠标消息（先悬停再点，和真人操作顺序一致）。
+    if (options.hoverRow > 0) window.InjectMouseRow(options.hoverRow - 1, false);
+    if (options.clickRow > 0) window.InjectMouseRow(options.clickRow - 1, true);
 
     MSG msg{};
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {

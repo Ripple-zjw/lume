@@ -12,7 +12,7 @@ Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤�
 
 ## 系统要求
 
-- **Windows 11 22H2（build 22621）及以上，x64**。只使用系统自带的云母/圆角与 DirectComposition，不提供 Win10 视觉回退。
+- **Windows 11 22H2（build 22621）及以上，x64**。只使用系统自带的圆角与 DirectComposition（系统云母 P6.5 起关闭，见该节），不提供 Win10 视觉回退。
 - 免管理员、免安装；无外部运行库依赖（静态链接，UCRT 为系统组件）。
 - 启动时校验系统版本，低于要求弹出明确提示并退出。
 
@@ -23,7 +23,7 @@ Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤�
 - 免安装 MinGW-w64 工具链获取脚本：下载、SHA256（GitHub API digest）校验、解压到 `.toolchain/`。
 - 一键增量构建 `build.ps1`：资源/清单嵌入、`-static -s` 单文件；当前产物约 315KB，链接约 170ms。
 - DirectComposition + D3D11 翻转模型合成交换链 + Direct2D：透明圆角窗口，真实桌面内容可透过面板（已用屏幕合成截图验证）。
-- Win11 云母背景：`DWMWA_SYSTEMBACKDROP_TYPE` 在 DComp 窗口上生效。
+- Win11 云母背景：`DWMWA_SYSTEMBACKDROP_TYPE` 在 DComp 窗口上生效（**P6.5 起关闭**：它会把面板外那圈透明区域填成实色方块）。
 - 离屏 PNG 自检：窗口与离屏共用同一份绘制代码。
 
 **P1：视觉骨架 + 唤出链路**
@@ -124,6 +124,20 @@ Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤�
 - **诊断**：`--filter=<名称|序号|all|off>` 覆盖本次运行的筛选组，`--list-filters` 打印解析后的组与规则，`--search-rows` / `--search-files` / `--search-live` / `--everything-check` 都会多打印一行 `filter=`；`--self-check` 增加 `filters=PASS`（默认组校验 + 编码/解码往返 + 扩展名匹配抽检）。
 - 实测（Everything 1.4.1.1028 / 约 116 万文件）：`--everything-check=photo --filter=图片` 的查询串是 `photo ext:png;jpg;…`，命中 80 条 / 22ms；`--everything-check=notepad --filter=应用程序` 查 `notepad ext:exe;lnk;…`，12 条文件命中 + 2 条应用行；面板内切组 1–3ms（含重发查询）。
 
+**P6.5：结果行鼠标操作 + 去掉窗口外框（2026-11-01）**
+
+![鼠标悬停第 2 行时的浅色高亮（暗色主题，离屏渲染）](docs/images/p6/hover-row.png)
+
+- **结果行可以用鼠标点开了**：指针移到行上给浅色高亮 + 手型光标，单击即启动 / 打开（`Shift` 定位、`Ctrl` 管理员，与回车同一套逻辑）。在此之前只有筛选芯片吃鼠标，列表必须用键盘。
+- **抬起才启动**：`WM_LBUTTONDOWN` 只记住按下的行，`WM_LBUTTONUP` 落在同一行才执行——启动后鼠标抬起不会落进新打开的窗口；按下后拖到别的行（或拖出面板）不会误启动。
+- **命中与绘制共用一套几何**：`Scene::RowAt()` 与列表绘制共用 `listTop` / `rowHeight` / `rowGap` / 滚动偏移，行间隙 4 DIP 不算命中；占位提示行（`RowAction::None`）不响应悬停与点击。
+- **悬停不重抄数据**：`WM_MOUSEMOVE` 只改 `SceneState::hoverRow` / `hoverChip` 两个字段再 `InvalidateRect`，不复制 200 行结果（原先切芯片悬停会整份 `rows_` 拷贝）。
+- **「搜索框外面那圈框」= 系统背景（Mica）**：`DWMWA_SYSTEMBACKDROP_TYPE=DWMSBT_MAINWINDOW` 填满的是**整个窗口矩形**（暗色下就是 `#202020` 的一整块），而我们的窗口为了放自绘阴影比面板大一圈 `shadowMargin`——于是面板外面那圈本该透明的区域被涂成不透明的方块，看着就是一个 20–30px 的框。现在 `ApplyBackdrop()` 改成 `DWMSBT_NONE`（注意它是 `1`，`0` = `DWMSBT_AUTO` 等于没关），窗口除自绘的面板与柔和阴影外完全透明；顺带把系统背景沿窗口矩形画的 1px 描边也关掉（`DWMWA_BORDER_COLOR = DWMWA_COLOR_NONE`）。面板自身那 1px 边线（`theme.border`）保留。
+- **透明边距从 24 DIP 收到 8 DIP**：`Theme::shadowMargin` 现在决定窗口 = 面板 + 16 DIP（125% 缩放下每边约 10px）。原来 24 DIP 是为了放 6 层柔和阴影，但那圈「毛玻璃边」本身就容易被当成多余的框；现在阴影的扩散量被 `shadowMargin - 0.5` 夹住，只剩贴着面板的一圈薄阴影（8 DIP 时刚好是能看出投影、又不显宽的量），面板轮廓靠 `border` 的 1px + 圆角。`--shot` 输出的画布尺寸随之变小（面板尺寸不变，历史截图还是旧边距）。
+- **验证方式**：在窗口背后垫一块纯品红窗口再 `--capture`。关云母之前窗口边缘那一圈是 `(32,32,32)` 的死色（品红一点透不出来，`#202020` 正是暗色云母的底色）；关云母之后变成品红渐变；边距收到 8 DIP 后，最外约 10px 是品红被阴影压暗的渐变（`225 → 221 → 218 → 211`），第 10px 起就是面板（`(62,38,65)` → `(50,24,53)`，面板 0.88 的 alpha 把品红吃成暗紫，毛玻璃观感仍在）。
+- **副作用**：面板 0.88 的不透明度现在直接与桌面内容混合（以前叠在云母的壁纸模糊上），亮色壁纸下面板会略浅一点；觉得太透就把 `theme.panel` 的 alpha 抬到 0.93 左右。
+- **诊断钩子**：`--hover-row=<n>` / `--click-row=<n>`（1 起）把鼠标消息投到第 n 行，`--shot` 配合 `--hover-row` 可以直接渲染悬停高亮截图；日志会打印 `悬停: 行 2 notepad`、`点击: [1] …`、`激活: [1] …`，用来验证坐标换算与启动链路（合成消息下 `TrackMouseEvent` 会立刻回 `WM_MOUSELEAVE`，所以悬停视觉验证走离屏渲染）。
+
 **P6（进行中）：搜索质量修复**
 
 ![层级排序：game](docs/images/p6/game-ranking.png)
@@ -194,6 +208,8 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Recompile -Package
 .\build\Lume.exe --capture=cap.png     # 显示并截取真实合成结果
 .\build\Lume.exe --shot=out.png --scale=1.5 --theme=light
 .\build\Lume.exe --shot=out.png --query=photo --filter=图片   # 带筛选芯片的离屏图
+.\build\Lume.exe --shot=out.png --query=photo --hover-row=2   # 连第 2 行的鼠标悬停高亮一起画出来
+.\build\Lume.exe --click-row=2 --query=notepad               # 合成一次鼠标单击（日志里有 点击/激活）
 .\build\Lume.exe --shot-matrix=docs\images\p2   # 生成 3×2 基线矩阵
 .\build\Lume.exe --list-filters                # 打印筛选组与规则（UTF-8）
 .\build\Lume.exe --bench-search=8000000        # 内存里造 800 万条假条目压测搜索（见下方「压力测试」）
@@ -218,6 +234,8 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Recompile -Package
 | `--compose=<text>` | 注入 IME 组字串，验证组字渲染 |
 | `--capture-ms=<n>` | 截图延迟（默认 450；用 30 观察淡入帧） |
 | `--selected=<n>` | 离屏截图时预选中第 n 行 |
+| `--hover-row=<n>` | 把鼠标悬停投到第 n 行（1 起）：离屏截图会画出悬停高亮 |
+| `--click-row=<n>` | 用合成的鼠标消息单击第 n 行（1 起），验证命中与启动链路 |
 | `--list-apps` | 打印应用索引（UTF-8，每行一条） |
 | `--list-files` | 重建文件索引并打印统计与前 20 条路径 |
 | `--file-stats` | 重建文件索引并只打印统计 |
@@ -283,7 +301,7 @@ src/main.cpp               CLI 解析与入口分发
 src/app/version.h          应用名与版本号（代码侧单一来源，改版本见文件内注释）
 src/app/                   常驻应用：单实例、热键、显示/隐藏、截图模式、测试注入
 src/app/settings.cpp       设置读写（settings.conf，多路径回退）
-src/ui/window.cpp          窗口、托盘、设置入口、定位/激活、输入与 IME、键盘、动效、动态高度
+src/ui/window.cpp          窗口、托盘、设置入口、定位/激活、输入与 IME、键盘与鼠标、动效、动态高度
 src/ui/settings_window.cpp 设置窗（常规 / 索引 / 筛选 / 关于四页）
 src/ui/input.cpp           单行输入状态（码点移动、粘贴、组字）
 src/ui/renderer.cpp        D3D11/DXGI/DirectComposition/D2D/DWrite/WIC 与出图
@@ -319,16 +337,16 @@ docs/images/p2/            P2 设计基线与交互状态截图
 docs/images/p3/            P3 真实索引/图标/选中态截图
 docs/images/p4/            P4 文件搜索/watcher/窗口截图
 docs/images/p5/            P5 动态高度截图
-docs/images/p6/            P6 排序修复 / Everything / 关于页 / 筛选组截图
+docs/images/p6/            P6 排序修复 / Everything / 关于页 / 筛选组 / 悬停高亮截图
 ```
 
 ## 已知事项
 
 - 链接时 binutils 2.47 会输出 `.rsrc merge failure: multiple non-default manifests`，属**非致命诊断**：清单与版本资源均已正确嵌入（`permonitorv2` 字符串可从 exe 中检出）。
 - `build.ps1` 需以 `-ExecutionPolicy Bypass` 运行，或自行调整本机执行策略。
-- 探针时代的 `--mica` 参数已移除（云母默认开启）；`--shot` 不校验系统版本，便于任意机器生成设计图。
+- 探针时代的 `--mica` 参数已移除；**系统云母现在是关掉的**（见 P6.5，它会把面板外那圈透明区域填成实色方块），`--shot` 不校验系统版本，便于任意机器生成设计图。
 - 组字渲染已通过注入验证，**真实微软拼音/搜狗输入法的候选窗位置仍需人工确认**（自动化无法安全驱动系统 IME）。
-- 云母背景下 `--glass` 看到的是壁纸模糊底而非桌面窗口内容，属预期。
+- 现在没有系统云母：`--glass` 把面板不透明度降到 0.35 时，透出来的是桌面真实内容（不是壁纸模糊底）。面板常规态是 0.88，亮色壁纸下会带一点底色，属预期。
 - **UWP 启动无法在本 agent 沙箱内验证**：`ActivateApplication` 与 `shell:AppsFolder\<AUMID>` 都被系统拒绝（Win32 5），连 PowerShell `Start-Process` 同样失败，属环境限制；普通 exe/.lnk 启动已实测成功。请在真实会话里用「记事本/计算器」确认。
 - **用 shell 打开文件**：沙箱内 `.txt` 返回 Win32 5、`.exe` 返回 1223（取消）；**真实会话已通过**（`open=PASS`，默认编辑器成功打开自检文件）。
 - 文件索引默认桌面/文档/下载，可在设置里添加盘符或目录（如 `C:\`、`D:\`）；它不是 USN 全盘秒搜，超大目录会受索引大小预算限制。要全盘秒搜请把「文件搜索来源」切到 Everything（见 P6.2）。
@@ -337,6 +355,7 @@ docs/images/p6/            P6 排序修复 / Everything / 关于页 / 筛选组�
 - 设置窗已改为自绘深色（主题/强调色循环按钮、热键捕获、深色列表与按钮）；设置保存路径优先 `%APPDATA%\Lume\settings.conf`，不可写时退回 exe 同目录。
 - **筛选组**：芯片行（40 DIP）会让面板比之前高一点；关掉设置 → 筛选 → 「在搜索框下方显示筛选组」就回到旧几何。芯片放不下时只做裁剪，没有横向滚动条——被裁掉的组用 `Tab` / `Ctrl+1..9` 仍能选中。
 - **筛选 + Everything**：含「文件夹 / 无扩展名」开关的组没法用 `ext:` 表达，只做本地后过滤，候选仍受「500 条、按名称升序」的上限影响，可能比预期少；纯扩展名组会下推，结果更全。
+- **鼠标操作范围**：芯片切组、结果行点击启动、滚轮滚动；输入框里的拖选/右键菜单还没做（仍靠键盘 + `Ctrl+V`）。单击是「按下记住行、抬起才启动」，所以按住左键拖到别的行不会误启动。
 - 图标缓存位于 `%LOCALAPPDATA%\Lume\icons`（沙箱等不可写环境退回 exe 同目录 `icons\`），按解析名哈希存 PNG；删掉目录会重新取图。
 - 动态面板高度已实现（1–6 行）；文件内容搜索仍未做。
 - **真实会话回归**：`powershell -ExecutionPolicy Bypass -File tools\regression.ps1` 已跑通（exit=0，含 self-check 与 100 万条 `--bench-search` 的防退化阈值）；后续改搜索/托盘/自启链路时重跑即可。人工项（托盘菜单、设置重启生效、注销后自启）仍建议过一遍。
@@ -357,4 +376,5 @@ docs/images/p6/            P6 排序修复 / Everything / 关于页 / 筛选组�
 | P6.2 ✅ | Everything 可选文件搜索来源（官方 SDK 源码编进 exe、来源切换、删除本地快照、非阻塞查询、状态页） |
 | P6.3 ✅ | 设置窗「关于」页（版本/系统/数据目录、复制版本信息、版本单一来源） |
 | P6.4 ✅ | 搜索筛选组（芯片切换、组规则可编辑、恢复默认、Everything `ext:` 下推与零结果重试） |
+| P6.5 ✅ | 结果行鼠标操作（悬停高亮 + 单击启动，抬起才执行）与去掉 DWM 窗口外框 |
 | P6（进行中） | 搜索质量修复（配额/路径降权/稳定排序/预筛）、文件内容搜索、打包与签名 |

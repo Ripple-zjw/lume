@@ -14,6 +14,8 @@ constexpr float kInputTop = 17.0f;
 constexpr float kInputMaxWidth = 628.0f;
 constexpr float kCaretTop = 22.0f;
 constexpr float kCaretHeight = 28.0f;
+// 行高亮/命中区域左右内缩（与选中态圆角块一致）。
+constexpr float kRowHitLeft = 12.0f;
 
 D2D1_COLOR_F Rgba(UINT32 rgb, float alpha) {
   return D2D1::ColorF(static_cast<float>((rgb >> 16) & 0xFF) / 255.0f,
@@ -280,6 +282,25 @@ int Scene::ChipAt(const SceneState& state, float xDip, float yDip) {
   return -1;
 }
 
+int Scene::RowAt(const SceneState& state, float xDip, float yDip) {
+  if (state.rows.empty()) return -1;
+  const int visibleRows = std::clamp(state.visibleRows, 0, kMaxVisibleRows);
+  if (visibleRows <= 0) return -1;
+  if (xDip < kRowHitLeft || xDip > theme_.panelWidth - kRowHitLeft) return -1;
+  const float listTop = theme_.listTop + (state.chips.empty() ? 0.0f : theme_.filterRow);
+  const float stride = theme_.rowHeight + theme_.rowGap;
+  const float offset = yDip - listTop;
+  if (offset < 0.0f || offset >= static_cast<float>(visibleRows) * stride) return -1;
+  const int line = static_cast<int>(offset / stride);
+  // 行与行之间的 4 DIP 间隙不算命中，免得点在缝隙上也算点中。
+  if (offset - static_cast<float>(line) * stride > theme_.rowHeight) return -1;
+  const int index = state.scroll + line;
+  if (index < 0 || index >= static_cast<int>(state.rows.size())) return -1;
+  // 占位提示行不可点（没有动作），也不算悬停目标。
+  if (state.rows[static_cast<size_t>(index)].action == RowAction::None) return -1;
+  return index;
+}
+
 void Scene::Draw(const Theme& theme, const SceneState& state, bool fakeWallpaper, float scale) {
   ID2D1DeviceContext* ctx = renderer_->context();
   const int visibleRows = std::clamp(state.visibleRows, 0, kMaxVisibleRows);
@@ -336,9 +357,12 @@ void Scene::Draw(const Theme& theme, const SceneState& state, bool fakeWallpaper
       D2D1::RectF(panel.x, panel.y, panel.x + theme.panelWidth, panel.y + panelHeight),
       theme.corner, theme.corner};
 
-  // 分层柔和阴影
+  // 分层柔和阴影：扩散量不超过 shadowMargin，否则会被窗口边缘截断成硬边。
+  // margin 只有 3 DIP 时就退化成贴着面板的一圈薄阴影（几乎看不见），面板轮廓靠 border 那 1px。
+  const float shadowLimit = std::max(0.0f, theme.shadowMargin - 0.5f);
   for (int layer = 6; layer >= 1; --layer) {
-    const float spread = static_cast<float>(layer) * 2.2f;
+    const float spread = std::min(static_cast<float>(layer) * 2.2f, shadowLimit);
+    if (spread <= 0.0f) break;
     brush_->SetColor(WithAlpha(theme.shadow, theme.shadow.a * 0.06f * globalAlpha));
     ctx->FillRoundedRectangle(
         D2D1::RoundedRect(
@@ -446,6 +470,21 @@ void Scene::Draw(const Theme& theme, const SceneState& state, bool fakeWallpaper
     ctx->PopAxisAlignedClip();
   }
 
+  // 鼠标悬停行：选中行不重复画（选中态更亮），只在可见窗口内画。
+  const int hoverLine = state.hoverRow - state.scroll;
+  if (state.hoverRow >= 0 && state.hoverRow != state.selected && hoverLine >= 0 &&
+      hoverLine < visibleRows && state.hoverRow < static_cast<int>(state.rows.size())) {
+    const float hoverY =
+        panel.y + listTop + static_cast<float>(hoverLine) * (theme.rowHeight + theme.rowGap);
+    brush_->SetColor(ScaleAlpha(theme.hoverFill, globalAlpha));
+    ctx->FillRoundedRectangle(
+        D2D1::RoundedRect(D2D1::RectF(panel.x + kRowHitLeft, hoverY,
+                                      panel.x + theme.panelWidth - kRowHitLeft,
+                                      hoverY + theme.rowHeight),
+                          theme.rowCorner, theme.rowCorner),
+        brush_.Get());
+  }
+
   // 选中态（位置可动画）
   const float selectionOffset =
       (state.selectionRow - static_cast<float>(state.scroll)) * (theme.rowHeight + theme.rowGap);
@@ -456,8 +495,8 @@ void Scene::Draw(const Theme& theme, const SceneState& state, bool fakeWallpaper
     const float y = panel.y + listTop + selectionOffset;
     brush_->SetColor(ScaleAlpha(theme.selectedFill, globalAlpha));
     ctx->FillRoundedRectangle(D2D1::RoundedRect(
-                                  D2D1::RectF(panel.x + 12.0f, y,
-                                              panel.x + theme.panelWidth - 12.0f,
+                                  D2D1::RectF(panel.x + kRowHitLeft, y,
+                                              panel.x + theme.panelWidth - kRowHitLeft,
                                               y + theme.rowHeight),
                                   theme.rowCorner, theme.rowCorner),
                               brush_.Get());
