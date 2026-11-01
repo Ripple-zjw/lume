@@ -12,14 +12,7 @@
 #include <unordered_map>
 #include <vector>
 
-struct FileHit {
-  std::wstring path;
-  bool isDirectory = false;
-  size_t score = 0;
-  bool pathOnly = false;  // true = 仅路径命中（文件名没命中）
-  // 0 = 模糊/仅路径，1 = 子串，2 = 前缀，3 = 忽略扩展名一致，4 = 字面完全一致
-  uint8_t quality = 0;
-};
+#include "search/file_hit.h"
 
 // 文件/文件夹索引：枚举配置根目录、快照缓存、目录 watcher 增量更新、查询。
 // 内存结构按“目录表 + 文件名”压缩：完整路径只按目录存一份，条目只存文件名。

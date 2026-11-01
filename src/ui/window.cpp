@@ -108,9 +108,13 @@ bool LauncherWindow::Create(HINSTANCE instance, Renderer* renderer, Scene* scene
   QueryPerformanceCounter(&indexStart);
   apps_ = CollectAppEntries();
   Log(L"应用索引耗时: %.1f ms", ElapsedMs(indexStart));
-  files_.Start();
-  fileVersionSeen_ = files_.version();
-  RebuildRows();
+  Log(L"文件搜索来源: %ls", FileSearchIsEverything() ? L"everything" : L"local");
+  if (!FileSearchIsEverything()) {
+    files_.Start();
+    filesRunning_ = true;
+    fileVersionSeen_ = files_.version();
+  }
+  RefreshResults();  // Everything 模式此时还没有窗口可收回复，先只出应用结果
   PreloadIcons(true);  // 启动时同步预热首屏图标，避免第一次唤出看到字块
 
   // 按光标所在显示器创建，避免首次显示时因 DPI 变化重建交换链。
@@ -155,6 +159,12 @@ bool LauncherWindow::Create(HINSTANCE instance, Renderer* renderer, Scene* scene
     trayRetries_ = 0;
     SetTimer(hwnd_, kTimerTrayRetry, 2000, nullptr);
   }
+  if (FileSearchIsEverything()) {
+    everything_.Attach(hwnd_);
+    // 上次切到 Everything 但没连上时留下的快照，这里再试一次。
+    TryDeleteSnapshotForEverything();
+    RefreshResults();  // 现在能收回复了：补一次真实查询
+  }
   return true;
 }
 
@@ -169,7 +179,9 @@ void LauncherWindow::Shutdown() {
   usage_.Save();
   settingsWindow_.reset();
   tray_.Destroy();
+  everything_.Detach();
   files_.Stop();
+  filesRunning_ = false;
 }
 
 void LauncherWindow::SetTheme(const Theme& theme) {
@@ -183,7 +195,7 @@ void LauncherWindow::SetTheme(const Theme& theme) {
 void LauncherWindow::SetQuery(const std::wstring& query) {
   input_.SetText(query);
   contentAlpha_ = 1.0f;
-  RebuildRows();
+  RefreshResults();
   if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -295,6 +307,7 @@ void LauncherWindow::OpenSettings() {
     if (onSettingsChanged_) onSettingsChanged_(updated);
   };
   callbacks.queryIndex = [this]() { return QueryIndexStatus(); };
+  callbacks.queryEverything = [this]() { return QueryEverythingStatus(); };
   callbacks.onClearIndex = [this]() { ClearFileIndex(); };
   callbacks.onRebuildIndex = [this]() { RebuildFileIndex(); };
   callbacks.onOpenIndexDirectory = [this]() { OpenIndexDirectory(); };
@@ -303,6 +316,7 @@ void LauncherWindow::OpenSettings() {
 
 IndexStatus LauncherWindow::QueryIndexStatus() const {
   IndexStatus status;
+  status.fileSearch = FileSearchIsEverything() ? L"everything" : L"local";
   status.directory = files_.indexDirectory();
   status.defaultDirectory = FileIndex::DefaultIndexDirectory();
   status.snapshotPath = files_.snapshotPath();
@@ -312,23 +326,42 @@ IndexStatus LauncherWindow::QueryIndexStatus() const {
   status.limitMB = settings_.indexSizeMB;
   status.rebuilding = files_.rebuilding();
   status.snapshotWritable = files_.snapshotWritable();
+  if (FileSearchIsEverything()) {
+    const EverythingStatus everything = everything_.Status();
+    status.evAvailable = everything.available;
+    status.evDbLoaded = everything.dbLoaded;
+    status.evVersion = everything.version;
+    status.evError = everything.error;
+  }
   return status;
 }
 
 void LauncherWindow::ClearFileIndex() {
+  if (FileSearchIsEverything()) {
+    Log(L"当前文件搜索来源是 Everything，本地索引操作已跳过");
+    return;
+  }
   Log(L"用户手动清除文件索引（不重建）");
   files_.ClearIndex();
-  RebuildRows();
+  RefreshResults();
   StartContentFade();
   if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 void LauncherWindow::RebuildFileIndex() {
+  if (FileSearchIsEverything()) {
+    Log(L"当前文件搜索来源是 Everything，本地索引操作已跳过");
+    return;
+  }
   Log(L"用户手动重建文件索引");
   files_.RebuildIndex();
 }
 
 void LauncherWindow::OpenIndexDirectory() {
+  if (FileSearchIsEverything()) {
+    Log(L"当前文件搜索来源是 Everything，没有本地索引目录");
+    return;
+  }
   std::wstring directory = files_.indexDirectory();
   if (directory.empty()) {
     Log(L"打开索引目录失败: 目录为空");
@@ -401,22 +434,69 @@ void LauncherWindow::TestHotkeyCapture(const std::wstring& combo) {
   Log(L"热键捕获测试: 合成 %ls -> 捕获框 \"%ls\"", combo.c_str(), text);
 }
 
+void LauncherWindow::TryDeleteSnapshotForEverything() {
+  if (!FileSearchIsEverything()) return;
+  if (files_.snapshotBytes() == 0) {
+    pendingSnapshotDelete_ = false;  // 本来就没有快照
+    return;
+  }
+  const EverythingStatus status = everything_.Status();
+  if (!status.available || !status.dbLoaded) {
+    pendingSnapshotDelete_ = true;
+    Log(L"文件搜索来源: Everything 不可用（%ls）；本地快照暂留", status.error.c_str());
+    return;
+  }
+  const uint64_t bytes = files_.snapshotBytes();
+  files_.ClearIndex();
+  pendingSnapshotDelete_ = false;
+  Log(L"文件搜索来源: 已切到 Everything，删除本地快照 %.1f MB",
+      static_cast<double>(bytes) / (1024.0 * 1024.0));
+}
+
 void LauncherWindow::ApplySettings(const AppSettings& settings) {
+  const bool wasEverything = FileSearchIsEverything();
   settings_ = settings;
   SetTheme(MakeTheme(ParseThemeMode(settings_.theme), ParseAccent(settings_.accent)));
   std::wstring error;
   if (!SetAutostart(settings_.autostart, &error)) {
     Log(L"应用自启设置失败: %ls", error.c_str());
   }
-  files_.Stop();
-  files_.SetMaxIndexBytes(static_cast<size_t>(std::clamp(settings_.indexSizeMB, 64, 262144)) *
-                          1024ull * 1024ull);
-  files_.SetIndexDirectory(settings_.indexDir);
-  files_.SetRoots(settings_.fileRoots);
-  files_.Start();
-  fileVersionSeen_ = files_.version();
+
+  if (FileSearchIsEverything()) {
+    // Everything 模式：本地索引线程全部停掉，内存索引清空。
+    everything_.Attach(hwnd_);
+    if (filesRunning_) {
+      files_.Stop();
+      filesRunning_ = false;
+    }
+    if (!wasEverything) {
+      queryGeneration_ = 0;
+      fileHits_.clear();
+    }
+    // 只有真的连上 Everything 才删快照，避免切过去后既没有 Everything 也没有本地索引。
+    if (!wasEverything || pendingSnapshotDelete_) TryDeleteSnapshotForEverything();
+  } else {
+    everything_.Detach();
+    if (filesRunning_) {
+      files_.Stop();
+      filesRunning_ = false;
+    }
+    files_.SetMaxIndexBytes(static_cast<size_t>(std::clamp(settings_.indexSizeMB, 64, 262144)) *
+                            1024ull * 1024ull);
+    files_.SetIndexDirectory(settings_.indexDir);
+    files_.SetRoots(settings_.fileRoots);
+    files_.Start();
+    filesRunning_ = true;
+    fileVersionSeen_ = files_.version();
+    pendingSnapshotDelete_ = false;
+    if (wasEverything) {
+      fileHits_.clear();
+      Log(L"文件搜索来源: 已切回本地索引（无快照时后台重建）");
+    }
+  }
+
   Log(L"索引目录: %ls", files_.indexDirectory().c_str());
-  RebuildRows();
+  RefreshResults();
   StartContentFade();
   if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
 }
@@ -455,8 +535,16 @@ void LauncherWindow::SetOnHotkeyRequest(std::function<void(const AppSettings&)> 
   onHotkeyRequest_ = std::move(callback);
 }
 
+bool LauncherWindow::FileSearchIsEverything() const {
+  return _wcsicmp(settings_.fileSearch.c_str(), L"everything") == 0;
+}
+
+EverythingStatus LauncherWindow::QueryEverythingStatus() const {
+  return everything_.Status();
+}
+
 void LauncherWindow::RebuildRows() {
-  rows_ = BuildMergedRows(apps_, &files_, &usage_, input_.text());
+  rows_ = BuildMergedRows(apps_, fileHits_, &usage_, input_.text());
   selected_ = 0;
   scroll_ = 0;
   selectionRow_ = 0.0f;
@@ -466,10 +554,52 @@ void LauncherWindow::RebuildRows() {
   UpdateSceneState();
 }
 
+void LauncherWindow::RefreshResults() {
+  UpdateFileHits();
+  RebuildRows();
+}
+
+void LauncherWindow::UpdateFileHits() {
+  const std::wstring& query = input_.text();
+  if (!FileSearchIsEverything()) {
+    fileHits_ = files_.Search(query, kMaxFileHits);
+    return;
+  }
+  if (query.empty()) {
+    fileHits_.clear();
+    return;
+  }
+  if (input_.composing()) return;  // 组字期间不去打扰 Everything
+  RequestEverythingRows();
+}
+
+void LauncherWindow::RequestEverythingRows() {
+  if (!hwnd_) return;
+  const uint32_t generation = ++queryGeneration_;
+  LARGE_INTEGER sendStart{};
+  QueryPerformanceCounter(&sendStart);
+  const bool sent = everything_.Request(input_.text(), generation);
+  const double sendMs = ElapsedMs(sendStart);
+  QueryPerformanceCounter(&everythingRequestedAt_);  // 往返计时从「发完」开始
+  if (sent) {
+    // 之前因 Everything 不可用而留下的快照，现在可以补删了。
+    if (pendingSnapshotDelete_) TryDeleteSnapshotForEverything();
+    if (sendMs >= 5.0) {
+      Log(L"Everything 发送偏慢: \"%ls\" %.1f ms", input_.text().c_str(), sendMs);
+    }
+    return;
+  }
+  // 失败只做限频日志（每次按键都会走到这里）。
+  const uint64_t now = GetTickCount64();
+  if (now - lastEverythingErrorLogAt_ < 10000) return;
+  lastEverythingErrorLogAt_ = now;
+  Log(L"Everything 不可用: %ls", everything_.Status().error.c_str());
+}
+
 void LauncherWindow::Refilter() {
   LARGE_INTEGER start{};
   QueryPerformanceCounter(&start);
-  RebuildRows();
+  RefreshResults();
   StartContentFade();
   UpdateSceneState();
   if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
@@ -611,7 +741,7 @@ void LauncherWindow::ResetQuery() {
   input_.SetText(L"");
   contentAlpha_ = 1.0f;
   caretVisible_ = true;
-  RebuildRows();
+  RefreshResults();
 }
 
 void LauncherWindow::RenderNow() {
@@ -631,7 +761,7 @@ void LauncherWindow::Toggle() {
 void LauncherWindow::ShowAndFocus() {
   if (visible_) return;
   // 空查询的推荐来自使用记录，每次唤出前重建，保证是最近用过的顺序。
-  if (input_.text().empty()) RebuildRows();
+  if (input_.text().empty()) RefreshResults();
   LARGE_INTEGER positionStart{};
   QueryPerformanceCounter(&positionStart);
   PositionOnCursorMonitor();
@@ -890,6 +1020,24 @@ LRESULT LauncherWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
     }
     return 0;
   }
+  if (message == WM_COPYDATA) {
+    // Everything 的查询回复：SDK 把结果拷进自己的全局列表后这里再读出来。
+    uint32_t generation = 0;
+    std::vector<FileHit> hits;
+    if (everything_.HandleReply(message, wParam, lParam, &generation, &hits)) {
+      if (generation == queryGeneration_) {
+        fileHits_ = std::move(hits);
+        RebuildRows();
+        StartContentFade();
+        UpdateSceneState();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        Log(L"Everything 结果: %zu 条（往返 %.1f ms）", fileHits_.size(),
+            ElapsedMs(everythingRequestedAt_));
+      }
+      return 0;
+    }
+    return DefWindowProcW(hwnd_, message, wParam, lParam);
+  }
   switch (message) {
     case WM_ERASEBKGND:
       return 1;
@@ -960,9 +1108,9 @@ LRESULT LauncherWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         return 0;
       }
       if (wParam == kTimerFileRefresh) {
-        if (files_.version() != fileVersionSeen_) {
+        if (!FileSearchIsEverything() && files_.version() != fileVersionSeen_) {
           fileVersionSeen_ = files_.version();
-          RebuildRows();
+          RefreshResults();
           StartContentFade();
           UpdateSceneState();
           InvalidateRect(hwnd_, nullptr, FALSE);

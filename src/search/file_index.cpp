@@ -16,6 +16,7 @@
 
 #include "core/log.h"
 #include "search/app_entry.h"
+#include "search/file_score.h"
 
 namespace {
 
@@ -112,10 +113,6 @@ std::wstring TrimDirectory(std::wstring value) {
   return value;
 }
 
-bool IsPathBoundary(wchar_t ch) {
-  return ch == L'\\' || ch == L'/' || ch == L' ' || ch == L'-' || ch == L'_' || ch == L'.';
-}
-
 uint64_t NameMask(std::wstring_view name) {
   uint64_t mask = 0;
   for (wchar_t ch : name) {
@@ -126,44 +123,6 @@ uint64_t NameMask(std::wstring_view name) {
     }
   }
   return mask;
-}
-
-// 只用查询里的 ASCII 字母/数字做位图预筛；标点、中文被忽略，仍是必要条件。
-uint64_t QueryMask(const std::wstring& needle) {
-  uint64_t mask = 0;
-  for (wchar_t ch : needle) {
-    if (ch >= L'a' && ch <= L'z') {
-      mask |= 1ull << (ch - L'a');
-    } else if (ch >= L'0' && ch <= L'9') {
-      mask |= 1ull << (26 + (ch - L'0'));
-    }
-  }
-  return mask;
-}
-
-uint8_t NameQuality(std::wstring_view name, const std::wstring& needle) {
-  const std::wstring_view query(needle);
-  if (name == query) return 4;  // 字面完全一致（例如目录名就是 game）
-  const size_t dot = name.find_last_of(L'.');
-  if (dot != std::wstring_view::npos && dot > 0 && name.substr(0, dot) == query) return 3;
-  if (name.size() >= query.size() && name.compare(0, query.size(), query) == 0) return 2;
-  if (name.find(query) != std::wstring_view::npos) return 1;
-  return 0;
-}
-
-// 路径命中只做“目录边界处的子串”匹配，且大幅降权。
-size_t ScorePathOnly(const std::wstring& lowerPath, const std::wstring& needle) {
-  if (needle.size() < 3) return 0;
-  const size_t position = lowerPath.find(needle);
-  if (position == std::wstring::npos) return 0;
-  if (position > 0 && !IsPathBoundary(lowerPath[position - 1])) return 0;
-  size_t score = 1000;
-  if (position == 0) {
-    score += 200;
-  } else {
-    score -= std::min<size_t>(position * 2, 200);
-  }
-  return std::max<size_t>(1, score) / 6;
 }
 
 std::wstring KnownFolder(int csidl) {

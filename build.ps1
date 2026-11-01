@@ -15,7 +15,7 @@ param(
   [switch]$Recompile,
   # 打发布包：dist\Lume-<Version>-win64\{Lume.exe, Install.cmd, README.txt} + 同名 zip
   [switch]$Package,
-  [string]$Version = '0.1.1'
+  [string]$Version = '0.2.0'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -23,6 +23,7 @@ $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $MingwBin = Join-Path $Root '.toolchain\mingw64\bin'
 $Gpp = Join-Path $MingwBin 'g++.exe'
+$Gcc = Join-Path $MingwBin 'gcc.exe'
 $Windres = Join-Path $MingwBin 'windres.exe'
 $BuildDir = Join-Path $Root 'build'
 $ObjDir = Join-Path $BuildDir ("obj\{0}" -f $Config.ToLowerInvariant())
@@ -37,12 +38,32 @@ $common = @(
   '-D_WIN32_WINNT=0x0A00', '-DWINVER=0x0A00', '-D_WIN32_IE=0x0A00',
   '-finput-charset=UTF-8', '-fexec-charset=UTF-8',
   '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
-  '-I', (Join-Path $Root 'src')
+  # Everything.h 默认把 API 声明成 __declspec(dllimport)；SDK 源码是编进 exe 的，
+  # 这里把它清空，否则静态链接会出现 __imp_Everything_* 未定义。
+  '-DEVERYTHINGUSERAPI=',
+  '-I', (Join-Path $Root 'src'),
+  '-I', (Join-Path $Root 'third_party\everything\include')
 )
 switch ($Config) {
   'Debug' { $common += @('-O0', '-g3', '-DDEBUG', '-D_DEBUG') }
   default { $common += @('-O2', '-DNDEBUG', '-s') }
 }
+
+# 第三方 C 源码（Everything SDK，见 third_party/everything/README.md）：
+# 以 C 语义编译、关掉全部警告、不加 -Werror（源码里有 MSVC 的 #pragma warning 与 stricmp）。
+$thirdPartyCommon = @(
+  # 不定义 WIN32_LEAN_AND_MEAN：SDK 源码要用 shellapi.h（ShellExecuteEx），而该头被 LEAN_AND_MEAN 排除。
+  '-std=c11', '-municode', '-DUNICODE', '-D_UNICODE', '-DNOMINMAX',
+  '-D_WIN32_WINNT=0x0A00', '-DWINVER=0x0A00', '-D_WIN32_IE=0x0A00',
+  '-w', '-I', (Join-Path $Root 'third_party\everything\include')
+)
+switch ($Config) {
+  'Debug' { $thirdPartyCommon += @('-O0', '-g3', '-DDEBUG', '-D_DEBUG') }
+  default { $thirdPartyCommon += @('-O2', '-DNDEBUG') }
+}
+$thirdPartySources = @(
+  (Join-Path $Root 'third_party\everything\src\Everything.c')
+)
 
 $libs = @(
   '-ld2d1', '-ldwrite', '-ld3d11', '-ldxgi', '-ldwmapi', '-ldcomp', '-lwindowscodecs',
@@ -96,12 +117,32 @@ function Invoke-BuildTarget {
     [string]$Name,
     [object[]]$Sources,
     [string]$ExePath,
-    [string[]]$ExtraFlags = @()
+    [string[]]$ExtraFlags = @(),
+    # 第三方 C 源码：用 gcc + $thirdPartyCommon 编译，产物一并参与链接。
+    [object[]]$ThirdParty = @()
   )
   if ($Sources.Count -eq 0) { throw "No sources found for $Name" }
   $newestHeader = Get-NewestWriteTime (Join-Path $Root 'src')
+  $thirdPartyHeader = Get-NewestWriteTime (Join-Path $Root 'third_party')
+  if ($thirdPartyHeader -gt $newestHeader) { $newestHeader = $thirdPartyHeader }
   $objects = @()
   $compiled = 0
+  foreach ($src in $ThirdParty) {
+    if (-not (Test-Path -LiteralPath $src)) { throw "Missing third-party source: $src" }
+    $rel = $src.Substring($Root.Length).TrimStart('\', '/')
+    $obj = Join-Path $ObjDir (($rel -replace '[\\/]', '_') -replace '\.(cpp|c)$', '.o')
+    $objects += $obj
+    $rebuild = $Recompile -or -not (Test-Path -LiteralPath $obj)
+    if (-not $rebuild) {
+      $objTime = (Get-Item -LiteralPath $obj).LastWriteTime
+      $rebuild = ($src.LastWriteTime -gt $objTime) -or ($newestHeader -gt $objTime)
+    }
+    if ($rebuild) {
+      Write-Host ("  CC  {0}  (third-party)" -f $rel) -ForegroundColor DarkGray
+      Invoke-NativeTool -Tool $Gcc -Arguments (@($thirdPartyCommon) + @('-c', $src, '-o', $obj)) -Label "compile $rel"
+      $compiled++
+    }
+  }
   foreach ($src in $Sources) {
     $rel = $src.FullName.Substring($Root.Length).TrimStart('\', '/')
     $obj = Join-Path $ObjDir (($rel -replace '[\\/]', '_') -replace '\.cpp$', '.o')
@@ -148,7 +189,7 @@ if ($Config -eq 'Test') {
 }
 
 $appSources = Get-Sources (Join-Path $Root 'src')
-$appExe = Invoke-BuildTarget -Name 'Lume' -Sources $appSources -ExePath (Join-Path $BuildDir 'Lume.exe')
+$appExe = Invoke-BuildTarget -Name 'Lume' -Sources $appSources -ExePath (Join-Path $BuildDir 'Lume.exe') -ThirdParty $thirdPartySources
 if ($Run) {
   Write-Host ("Launching {0}" -f $appExe) -ForegroundColor Cyan
   Start-Process -FilePath $appExe -WorkingDirectory $BuildDir

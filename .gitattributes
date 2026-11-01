@@ -6,3 +6,7 @@
 
 # Packaged text files are checked out with CRLF for Windows users
 packaging/*.txt text eol=crlf
+
+# Vendored third-party sources are byte-exact (SHA256 published in their README):
+# no EOL conversion, no text diff.
+third_party/everything/** -text -diff

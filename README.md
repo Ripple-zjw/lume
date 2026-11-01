@@ -2,7 +2,7 @@
 
 Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤出、输入即搜、回车启动应用与文件。C++20 + Win32 + Direct2D/DirectWrite + DirectComposition，免安装、免管理员、单 exe。
 
-**当前版本：0.1.1。**Windows 11（build 22621+）x64，免安装单 exe；发布包在 `dist\Lume-0.1.1-win64.zip`。
+**当前版本：0.2.0。**Windows 11（build 22621+）x64，免安装单 exe；发布包在 `dist\Lume-0.2.0-win64.zip`。
 
 **当前进度：P6 搜索质量修复（紧凑索引、按大小限制、精确匹配优先），P5.1 已完成。**
 
@@ -86,6 +86,20 @@ Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤�
 - `--self-check`：一次性检查热键注册、托盘、自启读写、文件打开、设置写入并输出 `PASS/FAIL`；配合 `tools/regression.ps1` 在**真实桌面会话**做回归。
 - 真实会话自检（2026-10-31，Windows 11 25H2 26200）：`hotkey/tray/autostart/open/settings_save` 全部 PASS；沙箱里 tray/autostart/open 会失败属环境限制。
 
+**P6.2：Everything 可选文件搜索来源（2026-11-01）**
+
+![索引页：文件搜索来源切到 Everything](docs/images/p6/settings-everything.png)
+
+- **来源可切换**：设置 → 索引 → 「文件搜索来源」= `Lume 本地索引` ⇄ `Everything 全盘索引`（点「应用/保存」生效，存 `settings.conf` 的 `fileSearch=`）。
+- **切到 Everything 时**：本地索引线程全部停止（枚举、`ReadDirectoryChangesW` watcher、快照读写），内存索引清空，`files.idx` **删除**（日志「已切到 Everything，删除本地快照」）；索引页里本地专用控件整体禁用。
+- **未连上不误删**：Everything 没运行/没装时只提示原因并保留 `files.idx`，等它连上后补删——避免切过去后既没有 Everything 也没有本地索引。
+- **官方 SDK 源码编进 exe**：`third_party/everything/`（官方 `include/Everything.h` + `ipc/Everything_IPC.h` + `src/Everything.c`，MIT，逐字节未改动，SHA256 见该目录 README）。不随包发 DLL、仍单 exe，也没有「找不到 DLL → 降级」的运行期失败模式；`tools/fetch-everything-sdk.mjs` 可复现下载与校验（整包 SHA256 `F5716D95…`）。
+- **非阻塞查询**：`Everything_SetReplyWindow` + `Everything_Query(FALSE)`，回复走 `WM_COPYDATA` 回主窗口，用查询生成号丢弃过期回复；打字时 UI 不被阻塞（实测「过滤」0.3–2.5 ms，Everything 往返 ~25 ms）。
+- **排序口径不变**：Everything 只提供候选（单次最多 500 条），仍用本地评分算 `score`/`quality`，分层（应用 → 可执行文件 → 文件 → 目录 → 仅路径）与本地一致；应用索引、图标、MRU、启动链路都不受影响。
+- **查询净化**：去掉 `& | ! < > * ? "` 等 Everything 语法字符，含 `:` 或路径分隔符的词加引号，避免用户输入被当成 `regex:` / `content:` 触发内容搜索。
+- **诊断**：`--everything-check[=<query>]` 打印连接状态、版本、命中与耗时，并用同一批命中过一遍合并层；`--self-check` 增加 `everything=PASS/SKIP/FAIL`；`--search-rows` 等仍只操作本地索引，但会打印 `file_search=<mode>` 口径行。
+- 实测（Windows 11 26200 / Everything 1.4.1.1028 / 索引约 116 万文件）：`--everything-check=notepad` 命中 80 条、20 ms；exe 体积 +27 KB（2008 → 2063 KB）。
+
 **P6（进行中）：搜索质量修复**
 
 ![层级排序：game](docs/images/p6/game-ranking.png)
@@ -119,6 +133,10 @@ Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤�
 # 仅首次：下载并校验 MinGW-w64（264MB，解压约 1.5GB 到 .toolchain/，不写入系统 PATH）
 node tools/fetch-toolchain.mjs
 
+# 可选：重新获取 Everything SDK 源码（third_party/everything/ 已入库，通常不用跑）
+# 有本地 zip 时优先复用：--local=<Everything-SDK.zip>；校验整包 SHA256 后只解出所需 3 个文件
+node tools/fetch-everything-sdk.mjs
+
 # 构建（执行策略受限时用 Bypass 形式；脚本输出为 ASCII，避免 PS 5.1 编码问题）
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 
@@ -133,10 +151,10 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Run
 ```powershell
 # 编译 + 打 zip 发布包（版本号同时用于目录/文件名，需与 assets/app.rc 一致）
 powershell -ExecutionPolicy Bypass -File .\build.ps1 -Recompile -Package
-# 产物：dist\Lume-0.1.1-win64.zip（以及同名目录，便于先本地试跑）
+# 产物：dist\Lume-0.2.0-win64.zip（以及同名目录，便于先本地试跑）
 ```
 
-压缩包内容：`Lume.exe`（单文件、静态链接）+ `Install.cmd` + `README.txt`（系统要求、快捷键、首次索引、卸载）。解压即用，不需要安装。`README.txt` 模板在 `packaging\README.txt`；`-Package` 会校验 exe 的 `ProductVersion` 与 `-Version`（默认 `0.1.1`）一致，并打印 zip 的 SHA256。
+压缩包内容：`Lume.exe`（单文件、静态链接）+ `Install.cmd` + `README.txt`（系统要求、快捷键、首次索引、卸载）。解压即用，不需要安装。`README.txt` 模板在 `packaging\README.txt`；`-Package` 会校验 exe 的 `ProductVersion` 与 `-Version`（默认 `0.2.0`）一致，并打印 zip 的 SHA256。
 
 ### 低完整性环境（DSH/受限工作区）
 
@@ -186,6 +204,8 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Recompile -Package
 | `--index-size-mb=<n>` | 覆盖索引大小上限（64–262144 MB，测试/调优） |
 | `--index-dir=<dir>` | 覆盖索引快照目录（默认 `%LOCALAPPDATA%\Lume`） |
 | `--search-live=<query>` | 现场重建索引并搜索（诊断上限/排序） |
+| `--file-search=local\|everything` | 覆盖文件搜索来源（只影响本次运行） |
+| `--everything-check[=<query>]` | 检查 Everything 连接/版本，跑一次查询并打印命中与合并结果 |
 | `--settings` | 启动时打开设置窗 |
 | `--self-check` | 检查热键/托盘/自启/打开文件/设置写入并打印 PASS/FAIL |
 | `--no-hotkey` | 不注册全局热键 |
@@ -211,6 +231,9 @@ src/search/app_entry.h     应用条目模型与索引/过滤接口
 src/search/app_index.cpp   开始菜单/AppsFolder/App Paths 收集、去重、磁盘缓存
 src/search/scorer.cpp      模糊评分与过滤
 src/search/file_index.cpp  文件枚举、快照、watcher、文件检索
+src/search/file_hit.h      文件命中模型（两个搜索来源共用）+ 单次上限
+src/search/file_score.*    文件名/路径评分口径（本地索引与 Everything 共用）
+src/search/everything_index.* Everything 文件搜索后端（官方 SDK 源码、非阻塞 IPC）
 src/search/merge.cpp       应用/文件/路径直通合并排序
 src/search/usage.cpp       使用频次/最近性（usage.conf）
 src/search/result.h        显示层结果行
@@ -220,6 +243,8 @@ src/core/log.*             日志（文件/调试器/控制台，UTF-8）与通�
 assets/app.rc              版本/清单资源
 assets/app.manifest        Per-Monitor V2、长路径、UTF-8、asInvoker
 tools/fetch-toolchain.mjs  工具链获取与校验（锁定版本）
+tools/fetch-everything-sdk.mjs  Everything SDK 获取与校验（SHA256，只解出所需源码）
+third_party/everything/    Everything SDK 源码（官方原样，MIT，编进 exe 而不是带 DLL）
 tools/regression.ps1       真实桌面会话回归（托盘/自启/热键/文件打开）
 build.ps1                  增量构建脚本
 docs/DESIGN.md             架构决策、实测数据、视觉 token
@@ -238,11 +263,12 @@ docs/images/p5/            P5 动态高度截图
 - 云母背景下 `--glass` 看到的是壁纸模糊底而非桌面窗口内容，属预期。
 - **UWP 启动无法在本 agent 沙箱内验证**：`ActivateApplication` 与 `shell:AppsFolder\<AUMID>` 都被系统拒绝（Win32 5），连 PowerShell `Start-Process` 同样失败，属环境限制；普通 exe/.lnk 启动已实测成功。请在真实会话里用「记事本/计算器」确认。
 - **用 shell 打开文件**：沙箱内 `.txt` 返回 Win32 5、`.exe` 返回 1223（取消）；**真实会话已通过**（`open=PASS`，默认编辑器成功打开自检文件）。
-- 文件索引默认桌面/文档/下载，可在设置里添加盘符或目录（如 `C:\`、`D:\`）；它不是 USN 全盘秒搜，超大目录会受索引大小预算限制。可选后续接 Everything。
+- 文件索引默认桌面/文档/下载，可在设置里添加盘符或目录（如 `C:\`、`D:\`）；它不是 USN 全盘秒搜，超大目录会受索引大小预算限制。要全盘秒搜请把「文件搜索来源」切到 Everything（见 P6.2）。
+- **Everything 模式的限制**：需要 Everything 1.4/1.5 **正在运行**（SDK 只是 IPC 客户端；`--everything-check` 会打印 `available=0` 与原因）；只认默认实例的 IPC 窗口，1.5-alpha 的命名实例可能找不到；结果**不按**设置里的「文件索引目录」过滤；不支持内容搜索/正则（查询里的语法字符会被净化掉）；单次最多取 500 条候选再本地评分。
 - **托盘与开机自启**：在 agent 沙箱内会被系统拒绝（`Shell_NotifyIcon` 返回失败、`HKCU\...\Run` 不可写），但**真实桌面会话已实测通过**（`regression.ps1` 五项全 PASS），不影响正常使用。
 - 设置窗已改为自绘深色（主题/强调色循环按钮、热键捕获、深色列表与按钮）；设置保存路径优先 `%APPDATA%\Lume\settings.conf`，不可写时退回 exe 同目录。
 - 图标缓存位于 `%LOCALAPPDATA%\Lume\icons`（沙箱等不可写环境退回 exe 同目录 `icons\`），按解析名哈希存 PNG；删掉目录会重新取图。
-- 动态面板高度已实现（1–6 行）；全盘/更多根目录的设置项、文件内容搜索、Everything 适配器仍未做。
+- 动态面板高度已实现（1–6 行）；文件内容搜索仍未做。
 - **真实会话回归**：`powershell -ExecutionPolicy Bypass -File tools\regression.ps1` 已跑通（exit=0）；后续改托盘/自启/启动链路时重跑即可。人工项（托盘菜单、设置重启生效、注销后自启）仍建议过一遍。
 - 唤出淡入通过场景整体 alpha 实现（mingw 的 `dcomp.h` 漏声明 `IDCompositionVisual::SetOpacity`，未用 ABI hack）。
 
@@ -258,4 +284,5 @@ docs/images/p5/            P5 动态高度截图
 | P5 ✅ | 托盘/设置窗/自启、动态高度、MRU 排序、快照多路径修复 |
 | P5.1 ✅ | 图标磁盘缓存、深色自绘设置窗、自定义热键、真实会话自检全 PASS |
 | P6.1 ✅ | 设置窗「索引」页：索引文件目录可配置、快照大小/条目/重建状态、清除与重建分离、打开索引目录 |
-| P6（进行中） | 搜索质量修复（配额/路径降权/稳定排序/预筛）、全盘搜索（Everything 可选适配器）、文件内容搜索、打包与签名 |
+| P6.2 ✅ | Everything 可选文件搜索来源（官方 SDK 源码编进 exe、来源切换、删除本地快照、非阻塞查询、状态页） |
+| P6（进行中） | 搜索质量修复（配额/路径降权/稳定排序/预筛）、文件内容搜索、打包与签名 |

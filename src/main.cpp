@@ -15,6 +15,7 @@
 #include "platform/system.h"
 #include "platform/tray.h"
 #include "search/app_entry.h"
+#include "search/everything_index.h"
 #include "search/file_index.h"
 #include "search/merge.h"
 #include "ui/theme.h"
@@ -46,11 +47,13 @@ struct CliOptions {
   std::wstring searchRows;
   std::wstring searchLive;
   size_t indexSizeMB = 0;
+  bool everythingCheck = false;
+  std::wstring everythingQuery = L"notepad";
 };
 
 void PrintUsage() {
   fputs(
-      "Lume 0.1.1\n"
+      "Lume 0.2.0\n"
       "\n"
       "Usage:\n"
       "  Lume.exe                       Run in tray-less resident mode (hotkey toggles)\n"
@@ -78,6 +81,8 @@ void PrintUsage() {
       "  --index-dir=<dir>                Override the index snapshot directory\n"
       "  --search-files=<query>           Search the file index and print top results with scores\n"
       "  --search-rows=<query>            Print merged app/file rows with tier and score\n"
+      "  --file-search=local|everything   File search source (default: local index)\n"
+      "  --everything-check[=<query>]     Probe Everything, run one query, print hits and merged rows\n"
       "  --search-live=<query>            Rebuild index now and search it (diagnostics)\n"
       "  --open=<path>                    Verify opening a file/path directly\n"
       "  --set-autostart=1|0              Enable/disable autostart and print state\n"
@@ -140,6 +145,14 @@ CliOptions Parse(int argc, wchar_t** argv) {
       cli.searchFiles = ValueAfter(arg, L"--search-files=");
     } else if (StartsWith(arg, L"--search-rows=")) {
       cli.searchRows = ValueAfter(arg, L"--search-rows=");
+    } else if (arg == L"--everything-check") {
+      cli.everythingCheck = true;
+    } else if (StartsWith(arg, L"--everything-check=")) {
+      cli.everythingCheck = true;
+      cli.everythingQuery = ValueAfter(arg, L"--everything-check=");
+    } else if (StartsWith(arg, L"--file-search=")) {
+      cli.app.fileSearch = ValueAfter(arg, L"--file-search=");
+      cli.app.fileSearchSpecified = true;
     } else if (StartsWith(arg, L"--search-live=")) {
       cli.searchLive = ValueAfter(arg, L"--search-live=");
     } else if (StartsWith(arg, L"--index-size-mb=")) {
@@ -183,7 +196,7 @@ CliOptions Parse(int argc, wchar_t** argv) {
       PrintUsage();
       exit(0);
     } else if (arg == L"--version" || arg == L"-v") {
-      printf("Lume 0.1.1\n");
+      printf("Lume 0.2.0\n");
       exit(0);
     } else {
       wprintf(L"未知参数: %ls\n", arg.c_str());
@@ -258,6 +271,24 @@ int RunSelfCheck() {
   printf("settings_save=%s (%ls)\n", saveOk ? "PASS" : "FAIL", savedPath.c_str());
   if (!saveOk) ++failures;
 
+  // Everything 是可选来源：没装/没运行算 SKIP（不算失败），装了但查询失败才算 FAIL。
+  {
+    EverythingIndex everything;
+    const EverythingStatus status = everything.Status();
+    if (!status.available) {
+      printf("everything=SKIP (%s)\n", WideToUtf8(status.error).c_str());
+    } else {
+      std::vector<FileHit> hits;
+      uint64_t elapsedMs = 0;
+      const bool queryOk = everything.QueryBlocking(L"notepad", &hits, &elapsedMs);
+      printf("everything=%s (version=%s db_loaded=%d hits=%zu ms=%llu)\n",
+             queryOk ? "PASS" : "FAIL", WideToUtf8(status.version).c_str(),
+             status.dbLoaded ? 1 : 0, hits.size(),
+             static_cast<unsigned long long>(elapsedMs));
+      if (!queryOk) ++failures;
+    }
+  }
+
   DestroyWindow(hwnd);
   printf("result=%s\n", failures == 0 ? "PASS" : "FAIL");
   LogShutdown();
@@ -266,6 +297,13 @@ int RunSelfCheck() {
 
 }  // namespace
 
+// 诊断命令的 file_search 口径：CLI 覆盖优先，否则看设置；这些命令本身始终用本地索引。
+std::wstring EffectiveFileSearch(const CliOptions& cli, const AppSettings& settings) {
+  if (cli.app.fileSearchSpecified) {
+    return cli.app.fileSearch == L"everything" ? L"everything" : L"local";
+  }
+  return settings.fileSearch == L"everything" ? L"everything" : L"local";
+}
 int RunMain(int argc, wchar_t** argv) {
   SetConsoleOutputCP(CP_UTF8);
   if (!EnablePerMonitorDpi()) {
@@ -316,6 +354,8 @@ int RunMain(int argc, wchar_t** argv) {
     LogInit(cli.app.logPath);
     AppSettings settings;
     SettingsStore::Load(&settings);
+    printf("file_search=%s (诊断命令始终使用本地索引)\n",
+           WideToUtf8(EffectiveFileSearch(cli, settings)).c_str());
     const size_t sizeMB = cli.indexSizeMB > 0 ? cli.indexSizeMB
                                                : static_cast<size_t>(settings.indexSizeMB);
     FileIndex index;
@@ -361,10 +401,50 @@ int RunMain(int argc, wchar_t** argv) {
     CoUninitialize();
     return 0;
   }
+  if (cli.everythingCheck) {
+    LogInit(cli.app.logPath);
+    EverythingIndex everything;
+    const EverythingStatus status = everything.Status();
+    printf("available=%d db_loaded=%d version=%ls\n", status.available ? 1 : 0,
+           status.dbLoaded ? 1 : 0, status.version.c_str());
+    if (!status.available) {
+      printf("error=%s\n", WideToUtf8(status.error).c_str());
+    }
+    std::vector<FileHit> hits;
+    uint64_t elapsedMs = 0;
+    const bool ok = everything.QueryBlocking(cli.everythingQuery, &hits, &elapsedMs);
+    printf("query=\"%s\" sanitized=\"%s\" ok=%d hits=%zu elapsed_ms=%llu\n",
+           WideToUtf8(cli.everythingQuery).c_str(),
+           WideToUtf8(EverythingIndex::SanitizeQuery(cli.everythingQuery)).c_str(), ok ? 1 : 0,
+           hits.size(), static_cast<unsigned long long>(elapsedMs));
+    for (size_t i = 0; i < hits.size() && i < 10; ++i) {
+      wchar_t line[1024];
+      swprintf(line, ARRAYSIZE(line), L"  q=%u score=%zu%s %ls\n", hits[i].quality, hits[i].score,
+               hits[i].isDirectory ? L" [dir]" : L"", hits[i].path.c_str());
+      fputs(WideToUtf8(line).c_str(), stdout);
+    }
+    // 同一批 hits 过一遍合并层：验证换来源后 tier/quality/score 口径一致。
+    const std::vector<AppEntry> apps = CollectAppEntries();
+    const std::vector<ResultRow> rows =
+        BuildMergedRows(apps, hits, nullptr, cli.everythingQuery, 20, false);
+    printf("apps=%zu merged_rows=%zu\n", apps.size(), rows.size());
+    for (const ResultRow& row : rows) {
+      wchar_t line[1024];
+      swprintf(line, ARRAYSIZE(line), L"tier=%u quality=%u score=%zu %ls | %ls\n", row.tier,
+               row.quality, row.score, row.title.c_str(), row.subtitle.c_str());
+      fputs(WideToUtf8(line).c_str(), stdout);
+    }
+    fflush(stdout);
+    LogShutdown();
+    CoUninitialize();
+    return status.available ? 0 : 2;
+  }
   if (!cli.searchRows.empty()) {
     LogInit(cli.app.logPath);
     AppSettings settings;
     SettingsStore::Load(&settings);
+    printf("file_search=%s (诊断命令始终使用本地索引)\n",
+           WideToUtf8(EffectiveFileSearch(cli, settings)).c_str());
     FileIndex index;
     if (cli.indexSizeMB > 0) index.SetMaxIndexBytes(cli.indexSizeMB * 1024ull * 1024ull);
     index.SetIndexDirectory(cli.app.indexDir);
@@ -373,8 +453,9 @@ int RunMain(int argc, wchar_t** argv) {
     if (!roots.empty()) index.SetRoots(roots);
     index.LoadCachedSnapshot();
     const std::vector<AppEntry> apps = CollectAppEntries();
+    const std::vector<FileHit> fileHits = index.Search(cli.searchRows, kMaxFileHits);
     const std::vector<ResultRow> rows =
-        BuildMergedRows(apps, &index, nullptr, cli.searchRows, 40, false);
+        BuildMergedRows(apps, fileHits, nullptr, cli.searchRows, 40, false);
     printf("roots=%zu files=%zu apps=%zu rows=%zu index=%ls\n", index.roots().size(),
            index.size(), apps.size(), rows.size(), index.snapshotPath().c_str());
     for (const ResultRow& row : rows) {
@@ -395,6 +476,8 @@ int RunMain(int argc, wchar_t** argv) {
     index.SetIndexDirectory(cli.app.indexDir);
     AppSettings settings;
     SettingsStore::Load(&settings);
+    printf("file_search=%s (诊断命令始终使用本地索引)\n",
+           WideToUtf8(EffectiveFileSearch(cli, settings)).c_str());
     std::vector<std::wstring> roots = settings.fileRoots;
     if (!cli.app.fileRoot.empty()) roots = {cli.app.fileRoot};
     if (!roots.empty()) index.SetRoots(roots);

@@ -24,5 +24,9 @@ desktop.ini
 *.idx
 *.cache.json
 
+# 第三方 SDK 下载包（third_party/ 里只提交解出的源码文件）
+Everything-SDK.zip
+third_party/everything/download/
+
 # ???
 dist/

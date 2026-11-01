@@ -8,9 +8,11 @@
 #include <vector>
 
 #include "app/settings.h"
+#include "search/everything_index.h"
 
-// 索引页的只读状态（由 LauncherWindow 从 FileIndex 汇总后回填）。
+// 索引页的只读状态（由 LauncherWindow 从 FileIndex / EverythingIndex 汇总后回填）。
 struct IndexStatus {
+  std::wstring fileSearch;      // local / everything（实际生效的来源）
   std::wstring directory;       // 生效的快照目录（空 = 默认）
   std::wstring defaultDirectory;// 默认快照目录（%LOCALAPPDATA%\Lume 或 exe 目录）
   std::wstring snapshotPath;    // <directory>\files.idx
@@ -20,6 +22,11 @@ struct IndexStatus {
   int limitMB = 512;
   bool rebuilding = false;
   bool snapshotWritable = true;
+  // fileSearch == everything 时的连接状态
+  bool evAvailable = false;
+  bool evDbLoaded = false;
+  std::wstring evVersion;   // "1.4.1.1028"
+  std::wstring evError;     // 不可用原因
 };
 
 class SettingsWindow {
@@ -29,6 +36,7 @@ class SettingsWindow {
   struct Callbacks {
     SaveCallback onSave;
     std::function<IndexStatus()> queryIndex;      // 打开/刷新索引页时调用
+    std::function<EverythingStatus()> queryEverything;  // 文件搜索来源状态
     std::function<void()> onClearIndex;           // 删除快照 + 清空内存索引
     std::function<void()> onRebuildIndex;         // 立即后台重建
     std::function<void()> onOpenIndexDirectory;   // 用资源管理器打开快照目录
@@ -50,6 +58,8 @@ class SettingsWindow {
   bool ApplyConfiguration(bool close);
   void SetPage(int page);
   void RefreshIndexInfo();
+  // 按 pendingFileSearch_ 切换「本地索引」专用控件的可用性并更新来源按钮文案。
+  void UpdateSearchSourceLayout();
   // 重建索引目录下拉项：当前值 + 默认目录 + 最近使用（只收仍然存在的目录）。
   void RebuildIndexDirChoices(const std::wstring& selected);
   std::wstring DefaultIndexDir() const;
@@ -79,12 +89,16 @@ class SettingsWindow {
   HWND autostartCheck_ = nullptr;
 
   // 索引页
+  HWND searchSourceButton_ = nullptr;  // 文件搜索来源（本地索引 / Everything）
   HWND capEdit_ = nullptr;
   HWND indexDirCombo_ = nullptr;  // 索引目录下拉框（不可编辑，只选）
   HWND indexInfo_ = nullptr;
   HWND rootsList_ = nullptr;
   HWND clearIndexButton_ = nullptr;
   HWND rebuildIndexButton_ = nullptr;
+  // 仅在「本地索引」来源下可用的控件（Everything 模式下整体禁用）。
+  std::vector<HWND> localOnlyControls_;
+  std::wstring pendingFileSearch_ = L"local";  // 待应用的来源（点击后立即，应用/保存才生效）
   std::vector<std::wstring> indexDirChoices_;  // 下拉项对应的真实目录
   std::vector<std::wstring> indexDirHistory_;  // 本次编辑中的最近目录（≤5，应用后持久化）
 

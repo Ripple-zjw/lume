@@ -142,6 +142,9 @@ bool SettingsStore::Load(AppSettings* settings) {
       if (settings->indexDirHistory.size() < 5) settings->indexDirHistory.push_back(value);
     } else if (key == L"fileRoot" && !value.empty()) {
       settings->fileRoots.push_back(value);
+    } else if (key == L"fileSearch") {
+      // 只接受已知取值，避免手写配置把来源写坏。
+      settings->fileSearch = (value == L"everything") ? L"everything" : L"local";
     }
   }
   if (legacy) {
@@ -165,6 +168,8 @@ bool SettingsStore::Save(const AppSettings& settings, std::wstring* savedPath) {
   for (const std::wstring& dir : settings.indexDirHistory) {
     if (!dir.empty()) text += L"indexDirHistory=" + dir + L"\n";
   }
+  text += std::wstring(L"fileSearch=") +
+          (settings.fileSearch == L"everything" ? L"everything" : L"local") + L"\n";
   for (const std::wstring& root : settings.fileRoots) {
     text += L"fileRoot=" + root + L"\n";
   }

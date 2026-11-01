@@ -17,7 +17,7 @@ namespace {
 constexpr wchar_t kClassName[] = L"LumeSettingsWindow";
 constexpr wchar_t kCaptureClass[] = L"LumeHotkeyCapture";
 constexpr int kWindowWidth = 540;
-constexpr int kWindowHeight = 545;
+constexpr int kWindowHeight = 578;
 
 constexpr COLORREF kBackground = RGB(0x20, 0x20, 0x24);
 constexpr COLORREF kControl = RGB(0x2A, 0x2A, 0x30);
@@ -50,6 +50,7 @@ enum ControlId {
   kIdGeneralHint = 128,
   kIdIndexRefresh = 129,
   kIdApply = 130,
+  kIdFileSearch = 131,
 };
 
 constexpr UINT kCaptureComboMessage = WM_APP + 20;
@@ -372,6 +373,12 @@ void SettingsWindow::CreateControls() {
     indexControls_.push_back(control);
     return control;
   };
+  // 只在「本地索引」来源下可用的控件：Everything 模式下整组禁用。
+  auto addIndexLocal = [this](HWND control) {
+    indexControls_.push_back(control);
+    localOnlyControls_.push_back(control);
+    return control;
+  };
 
   // 页签（共用，不属于任何一页）
   tabGeneral_ = button(L"常规", kIdTabGeneral, 20, 12, 84, 30);
@@ -406,61 +413,65 @@ void SettingsWindow::CreateControls() {
       nullptr));
 
   // ---- 索引页 ----
-  addIndex(label(L"索引大小", 20, 64, 80));
-  capEdit_ = addIndex(CreateWindowExW(
+  // 文件搜索来源：Lume 本地索引 <-> Everything（点了只改待应用值，应用/保存才生效）
+  addIndex(label(L"文件搜索来源", 20, 64, 90));
+  searchSourceButton_ = addIndex(button(L"Lume 本地索引", kIdFileSearch, 110, 60, 300, 30));
+
+  addIndexLocal(label(L"索引大小", 20, 100, 80));
+  capEdit_ = addIndexLocal(CreateWindowExW(
       WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_NUMBER | ES_AUTOHSCROLL,
-      Scale(110), Scale(60), Scale(120), Scale(26), hwnd_,
+      Scale(110), Scale(96), Scale(120), Scale(26), hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdCap)), nullptr, nullptr));
   applyFont(capEdit_);
   SendMessageW(capEdit_, EM_SETLIMITTEXT, 6, 0);
-  addIndex(label(L"MB（64–262144，默认 512）", 242, 66, 280));
+  addIndexLocal(label(L"MB（64–262144，默认 512）", 242, 102, 280));
 
-  addIndex(label(L"索引文件目录", 20, 100, 90));
+  addIndexLocal(label(L"索引文件目录", 20, 136, 90));
   // 下拉框（CBS_DROPDOWNLIST）：不能手打，只能从「当前目录 / 默认目录 / 最近 5 个仍然存在的目录」里选。
-  indexDirCombo_ = addIndex(CreateWindowExW(
+  indexDirCombo_ = addIndexLocal(CreateWindowExW(
       0, L"COMBOBOX", nullptr,
       WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED |
           CBS_HASSTRINGS,
-      Scale(110), Scale(96), Scale(390), Scale(200), hwnd_,
+      Scale(110), Scale(132), Scale(390), Scale(200), hwnd_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdIndexPath)), nullptr, nullptr));
   applyFont(indexDirCombo_);
   SetWindowTheme(indexDirCombo_, L"DarkMode_CFD", nullptr);
   // 目录相关的三个动作紧跟在输入框下面一行。
-  addIndex(button(L"修改目录", kIdBrowseIndex, 110, 130, 92, 26));
-  addIndex(button(L"打开索引目录", kIdOpenIndexDir, 208, 130, 120, 26));
-  addIndex(button(L"恢复默认", kIdIndexDefault, 334, 130, 88, 26));
+  addIndexLocal(button(L"修改目录", kIdBrowseIndex, 110, 166, 92, 26));
+  addIndexLocal(button(L"打开索引目录", kIdOpenIndexDir, 208, 166, 120, 26));
+  addIndexLocal(button(L"恢复默认", kIdIndexDefault, 334, 166, 88, 26));
 
   indexInfo_ = addIndex(CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX,
-                                     Scale(20), Scale(166), Scale(500), Scale(72), hwnd_,
+                                     Scale(20), Scale(202), Scale(500), Scale(72), hwnd_,
                                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdIndexInfo)),
                                      nullptr, nullptr));
   applyFont(indexInfo_);
 
-  addIndex(label(L"文件索引目录（留空 = 桌面 / 文档 / 下载）", 20, 244, 460));
-  rootsList_ = addIndex(CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", nullptr,
+  addIndexLocal(label(L"文件索引目录（留空 = 桌面 / 文档 / 下载）", 20, 280, 460));
+  rootsList_ = addIndexLocal(CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", nullptr,
                                      WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL |
                                          LBS_NOINTEGRALHEIGHT | LBS_NOTIFY,
-                                     Scale(20), Scale(266), Scale(370), Scale(104), hwnd_,
+                                     Scale(20), Scale(302), Scale(370), Scale(104), hwnd_,
                                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdRoots)),
                                      nullptr, nullptr));
   applyFont(rootsList_);
   SetWindowTheme(rootsList_, L"DarkMode_Explorer", nullptr);
-  addIndex(button(L"添加…", kIdAdd, 406, 266, 100, 30));
-  addIndex(button(L"移除", kIdRemove, 406, 302, 100, 30));
-  clearIndexButton_ = addIndex(button(L"清除索引", kIdClearIndex, 20, 378, 104, 30));
-  rebuildIndexButton_ = addIndex(button(L"重建索引", kIdRebuildIndex, 132, 378, 104, 30));
-  addIndex(button(L"刷新状态", kIdIndexRefresh, 244, 378, 100, 30));
+  addIndexLocal(button(L"添加…", kIdAdd, 406, 302, 100, 30));
+  addIndexLocal(button(L"移除", kIdRemove, 406, 338, 100, 30));
+  clearIndexButton_ = addIndexLocal(button(L"清除索引", kIdClearIndex, 20, 414, 104, 30));
+  rebuildIndexButton_ = addIndexLocal(button(L"重建索引", kIdRebuildIndex, 132, 414, 104, 30));
+  addIndex(button(L"刷新状态", kIdIndexRefresh, 244, 414, 100, 30));
 
   // ---- 共用 ----
   status_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT, Scale(20),
-                            Scale(418), Scale(500), Scale(40), hwnd_,
+                            Scale(454), Scale(500), Scale(40), hwnd_,
                             reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdStatus)), nullptr,
                             nullptr);
   applyFont(status_);
 
-  button(L"应用", kIdApply, 208, 462, 84, 32);
-  button(L"保存", kIdSave, 300, 462, 100, 32);
-  button(L"取消", kIdCancel, 410, 462, 96, 32);
+  button(L"应用", kIdApply, 208, 498, 84, 32);
+  button(L"保存", kIdSave, 300, 498, 100, 32);
+  button(L"取消", kIdCancel, 410, 498, 96, 32);
 
   const BOOL dark = TRUE;
   DwmSetWindowAttribute(hwnd_, 20 /*DWMWA_USE_IMMERSIVE_DARK_MODE*/, &dark, sizeof(dark));
@@ -475,6 +486,8 @@ void SettingsWindow::Populate() {
 
   SetWindowTextW(hotkeyCapture_, settings_.hotkey.c_str());
   hotkeyConflict_ = false;
+  pendingFileSearch_ = _wcsicmp(settings_.fileSearch.c_str(), L"everything") == 0 ? L"everything"
+                                                                                   : L"local";
   SetWindowTextW(capEdit_, std::to_wstring(settings_.indexSizeMB).c_str());
   // 索引目录下拉框：当前生效目录 + 默认目录 + 最近使用过的目录（已不存在的会被过滤掉）。
   indexDirHistory_ = settings_.indexDirHistory;
@@ -493,7 +506,19 @@ void SettingsWindow::Populate() {
   }
   SetWindowTextW(status_, L"");
   SetPage(0);
+  UpdateSearchSourceLayout();
   RefreshIndexInfo();
+}
+
+void SettingsWindow::UpdateSearchSourceLayout() {
+  const bool local = _wcsicmp(pendingFileSearch_.c_str(), L"everything") != 0;
+  for (HWND control : localOnlyControls_) {
+    if (control) EnableWindow(control, local ? TRUE : FALSE);
+  }
+  if (searchSourceButton_) {
+    SetWindowTextW(searchSourceButton_, local ? L"Lume 本地索引" : L"Everything 全盘索引");
+    InvalidateRect(searchSourceButton_, nullptr, FALSE);
+  }
 }
 
 void SettingsWindow::SetPage(int page) {
@@ -519,7 +544,45 @@ void SettingsWindow::RefreshIndexInfo() {
     status.limitMB = settings_.indexSizeMB;
   }
 
-  const double megabytes = static_cast<double>(status.snapshotBytes) / (1024.0 * 1024.0);
+  const bool everythingMode = _wcsicmp(pendingFileSearch_.c_str(), L"everything") == 0;
+  const bool snapshotPresent = status.snapshotBytes > 0;
+  const double snapshotMb = static_cast<double>(status.snapshotBytes) / (1024.0 * 1024.0);
+
+  if (everythingMode) {
+    // Everything 模式：显示连接状态与本地快照去留，不再显示本地索引详情。
+    EverythingStatus everything;
+    if (callbacks_.queryEverything) everything = callbacks_.queryEverything();
+
+    wchar_t value[512] = {};
+    if (!everything.available) {
+      std::wstring reason = everything.error;
+      if (reason.empty()) reason = L"未检测到正在运行的 Everything";
+      swprintf(value, ARRAYSIZE(value), L"连接：%ls", reason.c_str());
+    } else if (!everything.dbLoaded) {
+      swprintf(value, ARRAYSIZE(value), L"连接：已连接 · Everything %ls（索引未就绪，稍后自动可用）",
+               everything.version.c_str());
+    } else {
+      swprintf(value, ARRAYSIZE(value), L"连接：已连接 · Everything %ls · 索引就绪",
+               everything.version.c_str());
+    }
+
+    std::wstring text = L"来源：Everything（全盘索引，不使用本地索引）\n";
+    text += value;
+    text += L"\n";
+    if (snapshotPresent) {
+      wchar_t snapshotLine[192] = {};
+      swprintf(snapshotLine, ARRAYSIZE(snapshotLine),
+               L"本地快照：保留 %.1f MB（连上 Everything 后删除）", snapshotMb);
+      text += snapshotLine;
+    } else {
+      text += L"本地快照：已删除（此模式不写本地索引）";
+    }
+    text += L"\n提示：切回「本地索引」需要重建（512 MB 预算约 20.8 s）。";
+    SetWindowTextW(indexInfo_, text.c_str());
+    return;
+  }
+
+  const double megabytes = snapshotMb;
   const double percent = status.limitMB > 0 ? 100.0 * megabytes / status.limitMB : 0.0;
   wchar_t sizeLine[256] = {};
   if (status.snapshotBytes == 0) {
@@ -540,7 +603,7 @@ void SettingsWindow::RefreshIndexInfo() {
     wcscpy_s(stateLine, ARRAYSIZE(stateLine), L"状态：空闲");
   }
 
-  std::wstring text = L"快照：files.idx";
+  std::wstring text = L"来源：Lume 本地索引　快照：files.idx";
   if (!status.snapshotWritable) text += L"（目录不可用）";
   text += L"\n";
   text += sizeLine;
@@ -678,6 +741,7 @@ bool SettingsWindow::ApplyConfiguration(bool close) {
   AppSettings updated = settings_;
   updated.theme = ThemeNameFromIndex(themeIndex_);
   updated.accent = AccentNameFromIndex(accentIndex_);
+  updated.fileSearch = pendingFileSearch_;
 
   wchar_t hotkeyText[128] = {};
   GetWindowTextW(hotkeyCapture_, hotkeyText, ARRAYSIZE(hotkeyText));
@@ -954,6 +1018,18 @@ LRESULT SettingsWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         if (callbacks_.onRebuildIndex) callbacks_.onRebuildIndex();
         SetWindowTextW(status_, L"正在后台重建索引，完成后会写回快照…");
         RefreshIndexInfo();
+        return 0;
+      }
+      if (id == kIdFileSearch) {
+        pendingFileSearch_ = _wcsicmp(pendingFileSearch_.c_str(), L"everything") == 0
+                                  ? L"local"
+                                  : L"everything";
+        UpdateSearchSourceLayout();
+        RefreshIndexInfo();
+        SetWindowTextW(status_, pendingFileSearch_ == L"everything"
+                                    ? L"已切到 Everything（点「应用」或「保存」生效）：本地索引会被停用，"
+                                      L"连上 Everything 后删除 files.idx"
+                                    : L"已切回本地索引（点「应用」或「保存」生效）");
         return 0;
       }
       if (id == kIdIndexRefresh) {

@@ -188,9 +188,30 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 4. **唤出时刷新**：`UsageStore::Record` 发生在启动成功之后、`usage.conf` 在退出时落盘；`ShowAndFocus()` 在空查询时先 `RebuildRows()`，保证推荐顺序是刚刚用过的顺序，而不是上次隐藏时的快照。
 5. **验证**：`build/probe/probe_suggestions.cpp`（gitignored）覆盖 空记录→0 行、应用/文件还原、缺失目标跳过、热度排序（count 6 次 > 1 次）、`PanelHeight(0)=100 < PanelHeight(1)=144`、非空查询与占位行不变；真实进程 `--capture` 两张图：无 `usage.conf` 时面板仅 960×185（只有输入框），预置 3 条记录时 960×360（notepad.exe 7 次 / eTools 目录 4 次 / explorer.exe 2 次，按热度排列）。
 
+## 13.3 文件搜索来源：本地索引 / Everything（2026-11-01）
+
+1. **为什么是「换后端」而不是「加一条结果流」**：文件搜索原来只有一个出口——`merge.cpp` 里的 `files->Search(query, kMaxFileHits)`，且 `FileIndex::Search()` 返回的 `FileHit{path, isDirectory, score, pathOnly, quality}` 已经是合并层需要的全部信息。因此把 `BuildMergedRows(apps, FileIndex*, ...)` 改成接收 `const std::vector<FileHit>&`，由调用方（`LauncherWindow::UpdateFileHits()`）按来源收集，合并/排序/图标/MRU/启动链路一行没改。`FileHit` 与评分口径（`ScoreLowerText`/`NameQuality`/`ScorePathOnly`/`QueryMask`）从 `file_index.cpp` 抽到 `file_hit.h`/`file_score.*`，两个后端共用同一套打分，保证切换后排序规则一致（重构后 `--search-rows=game` 输出与重构前**逐行一致**）。
+2. **为什么编源码而不是带 DLL**：官方 SDK 同时提供 `dll/Everything64.dll`（+ 导入库 `lib/Everything64.lib`）与 `src/Everything.c`（DLL 的完整实现，MIT）。链接 `.lib` 只是导入库，exe 运行时仍依赖 DLL，缺 DLL 直接起不来；改带 DLL 则发布包多一个文件、多一条「找不到 DLL → 功能降级」的失败路径。最终把 `third_party/everything/{include/Everything.h, ipc/Everything_IPC.h, src/Everything.c}` 三个官方文件**逐字节原样**入库，用 `gcc` 以 C 语义编译进 exe：
+   - 第一方 TU 加 `-DEVERYTHINGUSERAPI=`（`Everything.h` 用 `#ifndef` 守卫，默认 `__declspec(dllimport)`，静态链接必须清空否则出现 `__imp_Everything_*` 未定义）；
+   - `Everything.c` 自己 `#define EVERYTHINGUSERAPI __declspec(dllexport)`，在 exe 里只是导出符号，因此**无需打补丁**；
+   - 第三方 TU 用独立的 `$thirdPartyCommon`：`-std=c11`、`-w`、**不定义** `WIN32_LEAN_AND_MEAN`（源码要用 `shellapi.h` 里的 `ShellExecuteEx`，该头被 LEAN_AND_MEAN 排除），不加 `-Werror`（源码有 MSVC 的 `#pragma warning` 与 `stricmp`）；
+   - 增量构建同时扫描 `src/` 与 `third_party/` 的头文件时间戳。体积代价 +27 KB。
+3. **非阻塞查询**：用 `Everything_SetReplyWindow(hwnd)` + `Everything_SetReplyID(gen)` + `Everything_Query(FALSE)`——`SendMessage` 到 Everything 的 IPC 窗口只花 <5 ms，结果以 `WM_COPYDATA`（`dwData == replyID`）回到主窗口，`Everything_IsQueryReply(msg,w,l,gen)` 命中后 SDK 把结果拷进自己的全局列表再读出来。`LauncherWindow::Handle()` 里比较生成号，过期回复（含用 `Everything_IsQueryReply` 不匹配的旧 id）直接丢弃。回复缓冲区只在消息处理期间有效，因此字符串立刻拷进 `std::wstring`。
+4. **打字链路**：`Refilter()` → `RefreshResults()` → `UpdateFileHits()`：本地模式同步 `files_.Search()`；Everything 模式只**发请求**并沿用上一批命中，命中到达后再走一次 `RebuildRows()`。实测「过滤」耗时 0.3–2.5 ms（不含 Everything 的异步等待），Everything 往返 ~25 ms（本机 1.4.1.1028 / 116 万文件；把 `SetMax` 从 500 降到 120 后往返不变，说明是本机固定开销，不是回复体积）。
+5. **查询净化**（`EverythingIndex::SanitizeQuery`）：SDK 把字符串原样交给 Everything，Everything 语法仍然生效，所以按空白切词 → 去掉 `& | ! < > * ? "` → 含 `:` 或 `\` `/` 的词用双引号包成字面量 → 空格连接（AND）。实测 `regex:notepad` / `content:hello` 都被当成字面词（0 命中），不会触发正则或内容搜索。打分用的是**去引号后的**词（`StripQuotes`），否则带引号的路径查询永远算不出分数。
+6. **评分与分层**：Everything 只做候选集（`EVERYTHING_REQUEST_FULL_PATH_AND_FILE_NAME`、`EVERYTHING_SORT_NAME_ASCENDING`、`SetMax(500)`；名字升序是 Everything 的最快路径）。文件名命中走 `ScoreFileName()`（单词查询与本地同款，多词查询取各词最高分再降权一半）；文件名没命中时退到 `ScorePathOnly()` 并标 `pathOnly`（与本地索引的兜底一致）。命中分统一 `+40` 后再交给合并层做 `quality → tier → score` 排序。
+7. **切换语义**（`LauncherWindow::ApplySettings`）：
+   - 本地 → Everything（Everything 可用且 DB 就绪）：先取 `snapshotBytes()`，再 `files_.ClearIndex()`（删除 `<目录>\files.idx` 的全部候选路径 + 清内存 + 丢弃在途重建），`files_.Stop()`，`everything_.Attach(hwnd_)`，日志「已切到 Everything，删除本地快照 X MB」；
+   - 本地 → Everything（不可用）：只停本地索引并保留 `files.idx`，置 `pendingSnapshotDelete_`，下次请求发现它回来时一次性补删——避免用户切过去后既没有 Everything 也没有本地索引；
+   - Everything → 本地：`Detach()`（`Everything_CleanUp`）→ 重新 `Start()`，无快照则后台重建（512 MB 预算约 20.8 s），完成前结果是空的但 UI 正常。
+   - 设置窗里「文件搜索来源」是**待应用值**（`pendingFileSearch_`），点「应用/保存」才生效；Everything 模式下本地专用控件（索引大小、索引目录及三个动作、根目录列表与增删、清除/重建）整体 `EnableWindow(FALSE)`，只留来源按钮、刷新状态和应用/保存/取消。
+8. **状态块**：`IndexStatus` 扩了 `fileSearch` 与 `evAvailable/evDbLoaded/evVersion/evError`，`RefreshIndexInfo()` 按待应用来源渲染三态——本地（快照/大小/占用率/条目/重建状态/目录）、Everything 已连接（版本 + 索引就绪 + 本地快照是否已删）、Everything 未连接（原因 + 「切回本地索引需重建」提示）。`Everything_GetMajorVersion()` 返回 0 即视为未运行，错误码经 `EverythingErrorText()` 映射成中文。
+9. **验证**：`--everything-check` 打印 `available/db_loaded/version` 与一次阻塞查询的命中数/耗时/前 10 条，并用同一批命中跑 `BuildMergedRows` 打印 `tier/quality/score`（排序口径回归）；`--self-check` 加 `everything=PASS|SKIP|FAIL`（未装/未运行只算 SKIP）；`--file-search=local|everything` 覆盖本次来源。端到端用临时 `--index-dir` + 假 `files.idx` 验证：切到 Everything 后假快照被删、`settings.conf` 写入 `fileSearch=everything`（沙箱里 AppData 不可写时落在 exe 目录）、切回本地后日志出现「已切回本地索引（无快照时后台重建）」并启动后台重建；设置窗三态截图见 `docs/images/p6/settings-everything.png`。
+
 ## 14. 后续方向
 
 - 子序列匹配加“跨度/间隙”惩罚，压掉 `steamapps → StreamingBar` 这类噪声；或对长查询要求连续片段。
 - 目录树 + 快照紧凑化：目录改存“父目录 id + 名字”，快照随之压到 <100MB；同时可把目录 arena 做掉。
-- 文件搜索接 Everything 可选适配器（检测到本机安装则优先全盘结果）；USN 全盘索引；文件内容搜索。
+- Everything 后续：等 1.5 普及后换 SDK3（命名管道，MIT C 源码，可 vendor），同接口替换传输层；可选「按目录限定结果」与「Everything 未运行时自动回退本地索引」。
+- USN 全盘索引；文件内容搜索。
 - 打包：图标资源、便携模式、可选自签证书；真实会话回归已完成（`tools\regression.ps1` 全 PASS），后续改动重跑即可。

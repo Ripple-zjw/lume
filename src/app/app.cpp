@@ -92,7 +92,8 @@ int RunScreenshot(const AppOptions& options, const std::wstring& path, float sca
   FileIndex files;
   if (!options.fileRoot.empty()) files.SetRoots({options.fileRoot});
   files.LoadCachedSnapshot();
-  std::vector<ResultRow> rows = BuildMergedRows(apps, &files, nullptr, options.query);
+  const std::vector<FileHit> fileHits = files.Search(options.query, kMaxFileHits);
+  std::vector<ResultRow> rows = BuildMergedRows(apps, fileHits, nullptr, options.query);
   const int visibleRows = std::clamp(static_cast<int>(rows.size()), 1, Scene::kMaxVisibleRows);
   if (!renderer.AttachOffscreen(PanelCanvasWidth(theme, scale),
                                 PanelCanvasHeight(theme, visibleRows, scale))) {
@@ -168,9 +169,14 @@ int RunLauncher(const AppOptions& options) {
   if (!options.hotkeyOverride.empty()) settings.hotkey = options.hotkeyOverride;
   if (options.indexSizeMB > 0) settings.indexSizeMB = static_cast<int>(options.indexSizeMB);
   if (!options.indexDir.empty()) settings.indexDir = options.indexDir;
-  Log(L"设置: theme=%ls accent=\"%ls\" hotkey=%ls autostart=%d roots=%zu indexDir=\"%ls\"",
+  if (options.fileSearchSpecified) {
+    settings.fileSearch = (options.fileSearch == L"everything") ? L"everything" : L"local";
+  }
+  Log(L"设置: theme=%ls accent=\"%ls\" hotkey=%ls autostart=%d roots=%zu indexDir=\"%ls\" "
+      L"fileSearch=%ls",
       settings.theme.c_str(), settings.accent.c_str(), settings.hotkey.c_str(),
-      settings.autostart ? 1 : 0, settings.fileRoots.size(), settings.indexDir.c_str());
+      settings.autostart ? 1 : 0, settings.fileRoots.size(), settings.indexDir.c_str(),
+      settings.fileSearch.c_str());
 
   Renderer renderer;
   IconCache icons;

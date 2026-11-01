@@ -3,12 +3,10 @@
 #include <algorithm>
 #include <cstdint>
 
-#include "search/file_index.h"
 #include "search/usage.h"
 
 namespace {
 
-constexpr size_t kMaxFileHits = 80;
 constexpr size_t kDirectPathScore = 1000000;
 
 constexpr uint8_t kTierApplication = 0;  // 应用索引 + .exe/.lnk 等可执行文件
@@ -113,8 +111,9 @@ ResultRow MakePathRow(const std::wstring& path, bool isDirectory) {
 
 }  // namespace
 
-std::vector<ResultRow> BuildMergedRows(const std::vector<AppEntry>& apps, FileIndex* files,
-                                       UsageStore* usage, const std::wstring& query, size_t limit,
+std::vector<ResultRow> BuildMergedRows(const std::vector<AppEntry>& apps,
+                                       const std::vector<FileHit>& fileHits, UsageStore* usage,
+                                       const std::wstring& query, size_t limit,
                                        bool withPlaceholder) {
   std::vector<ResultRow> rows;
 
@@ -164,12 +163,10 @@ std::vector<ResultRow> BuildMergedRows(const std::vector<AppEntry>& apps, FileIn
     }
     rows.push_back(MakeAppRow(*entry, score + bonus, tier, quality));
   }
-  if (files) {
-    for (const FileHit& hit : files->Search(query, kMaxFileHits)) {
-      const size_t bonus = usage ? usage->Bonus(hit.path) : 0;
-      rows.push_back(MakeFileRow(hit.path, hit.isDirectory, hit.score + bonus, hit.pathOnly,
-                                 hit.quality));
-    }
+  for (const FileHit& hit : fileHits) {
+    const size_t bonus = usage ? usage->Bonus(hit.path) : 0;
+    rows.push_back(
+        MakeFileRow(hit.path, hit.isDirectory, hit.score + bonus, hit.pathOnly, hit.quality));
   }
 
   std::stable_sort(rows.begin(), rows.end(), [](const ResultRow& a, const ResultRow& b) {

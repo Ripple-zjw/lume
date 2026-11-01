@@ -10,6 +10,7 @@
 #include "app/settings.h"
 #include "platform/tray.h"
 #include "search/app_entry.h"
+#include "search/everything_index.h"
 #include "search/file_index.h"
 #include "search/result.h"
 #include "search/usage.h"
@@ -53,6 +54,9 @@ class LauncherWindow {
   void RebuildFileIndex();
   void OpenIndexDirectory();
   IndexStatus QueryIndexStatus() const;
+  // 文件搜索来源是 Everything 时，设置窗用来显示连接状态。
+  bool FileSearchIsEverything() const;
+  EverythingStatus QueryEverythingStatus() const;
   // 测试钩子：聚焦热键捕获框并合成指定组合，验证低级键盘钩子。
   void TestHotkeyCapture(const std::wstring& combo);
   bool visible() const { return visible_; }
@@ -73,6 +77,12 @@ class LauncherWindow {
   void MoveSelection(int delta);
   void ScrollBy(int delta);
   void RebuildRows();
+  // 先按当前来源刷新 fileHits_，再重建行（本地同步搜索 / Everything 发异步请求）。
+  void RefreshResults();
+  void UpdateFileHits();
+  void RequestEverythingRows();
+  // Everything 模式下按需删除本地快照：只有连上并索引就绪时才删，否则留到下次重试。
+  void TryDeleteSnapshotForEverything();
   void Refilter();
   void PreloadIcons(bool warm);
   void ApplySettings(const AppSettings& settings);
@@ -96,6 +106,15 @@ class LauncherWindow {
   TextInput input_;
   std::vector<AppEntry> apps_;
   FileIndex files_;
+  // 当前查询的文件命中（本地索引同步产生，Everything 模式由回复消息异步更新）。
+  std::vector<FileHit> fileHits_;
+  EverythingIndex everything_;
+  uint32_t queryGeneration_ = 0;
+  bool filesRunning_ = false;
+  // 切到 Everything 时它还没连上：先保留 files.idx，等连上后再删。
+  bool pendingSnapshotDelete_ = false;
+  uint64_t lastEverythingErrorLogAt_ = 0;
+  LARGE_INTEGER everythingRequestedAt_{};
   UsageStore usage_;
   uint64_t fileVersionSeen_ = 0;
   uint64_t iconVersionSeen_ = 0;
