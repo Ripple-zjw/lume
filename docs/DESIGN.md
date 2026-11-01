@@ -208,6 +208,15 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 8. **状态块**：`IndexStatus` 扩了 `fileSearch` 与 `evAvailable/evDbLoaded/evVersion/evError`，`RefreshIndexInfo()` 按待应用来源渲染三态——本地（快照/大小/占用率/条目/重建状态/目录）、Everything 已连接（版本 + 索引就绪 + 本地快照是否已删）、Everything 未连接（原因 + 「切回本地索引需重建」提示）。`Everything_GetMajorVersion()` 返回 0 即视为未运行，错误码经 `EverythingErrorText()` 映射成中文。
 9. **验证**：`--everything-check` 打印 `available/db_loaded/version` 与一次阻塞查询的命中数/耗时/前 10 条，并用同一批命中跑 `BuildMergedRows` 打印 `tier/quality/score`（排序口径回归）；`--self-check` 加 `everything=PASS|SKIP|FAIL`（未装/未运行只算 SKIP）；`--file-search=local|everything` 覆盖本次来源。端到端用临时 `--index-dir` + 假 `files.idx` 验证：切到 Everything 后假快照被删、`settings.conf` 写入 `fileSearch=everything`（沙箱里 AppData 不可写时落在 exe 目录）、切回本地后日志出现「已切回本地索引（无快照时后台重建）」并启动后台重建；设置窗三态截图见 `docs/images/p6/settings-everything.png`。
 
+## 13.4 设置窗「关于」页（2026-11-01）
+
+1. **动机**：版本号原先只出现在 `--version`、帮助文本与 exe 版本资源里，用户反馈问题时拿不到「版本 + 系统 + 哪个数据目录 + Everything 状态」这一组信息。新增第三个页签「关于」（放在最后），只读展示这些内容，并提供一键复制。
+2. **版本单一来源**：新增 `src/app/version.h`（`kAppName`/`kAppVersion`），`--version`、`PrintUsage()` 与关于页都读它；`assets/app.rc`（VERSIONINFO）、`assets/app.manifest`、`build.ps1 -Version` 仍是独立来源，所以 `version.h` 顶部写明「四处一起改」。没有改成运行时读 exe 版本资源，是为了不给 CLI 路径引入额外的 `GetFileVersionInfo` 依赖。
+3. **数据流**：`Callbacks` 新增 `std::function<AboutInfo()> queryAbout`，`LauncherWindow::QueryAboutInfo()` 汇总 `kAppVersion`、`QueryOsVersion()`（build ≥ 22000 记为 Windows 11）、`dpi_`、当前热键、`SettingsStore::Path()`、`UsageStore::DefaultPath()`（本次把 `UsageStore::Path()` 提成公开静态方法）、`LogPath()`、`files_.indexDirectory()`，以及 Everything 模式下 `everything_.Status()` 的版本/就绪状态。设置窗只做渲染，不碰这些来源。
+4. **交互**：`BuildAboutText()` 生成一段多行文本（关于页的 STATIC 与剪贴板共用同一份），「复制版本信息」走 `OpenClipboard`/`SetClipboardData(CF_UNICODETEXT)`，失败时在状态行说明原因（剪贴板被占用 / 内存不足）。页签与其它两页一致：`SetPage(2)` 用 `ShowWindow` 显隐 `aboutControls_`，`DrawButton` 里三个页签共用一个「选中项高亮 + 底部强调色条」分支。与索引页一样**不自动刷新**，只在切到该页时读一次。
+5. **布局**：窗口高度不变（578），关于页复用索引页的纵向区间：信息块 `(20,64,500,330)` 多行 STATIC，动作行 `(20,412)` 一个「复制版本信息」按钮 + 右侧一行说明；常规页的提示文字补了一句「版本与数据目录在「关于」页」。
+6. **验证**：`--settings` + 合成 `WM_COMMAND(132)` 切页截图（`docs/images/p6/settings-about.png`，675×723）；合成 `WM_COMMAND(133)` 后读系统剪贴板，内容为完整信息块（当时为 `Lume 0.2.0`，含 `Windows 11（build 26200） · x64 · DPI 120 (125%)`、`Everything 1.4.1.1028（已连接，索引就绪）` 与四个路径），状态行显示「版本信息已复制到剪贴板」。
+
 ## 14. 后续方向
 
 - 子序列匹配加“跨度/间隙”惩罚，压掉 `steamapps → StreamingBar` 这类噪声；或对长查询要求连续片段。

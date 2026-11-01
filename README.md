@@ -2,7 +2,7 @@
 
 Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤出、输入即搜、回车启动应用与文件。C++20 + Win32 + Direct2D/DirectWrite + DirectComposition，免安装、免管理员、单 exe。
 
-**当前版本：0.2.0。**Windows 11（build 22621+）x64，免安装单 exe；发布包在 `dist\Lume-0.2.0-win64.zip`。
+**当前版本：0.2.1。**Windows 11（build 22621+）x64，免安装单 exe；发布包在 `dist\Lume-0.2.1-win64.zip`。
 
 **当前进度：P6 搜索质量修复（紧凑索引、按大小限制、精确匹配优先），P5.1 已完成。**
 
@@ -100,6 +100,15 @@ Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤�
 - **诊断**：`--everything-check[=<query>]` 打印连接状态、版本、命中与耗时，并用同一批命中过一遍合并层；`--self-check` 增加 `everything=PASS/SKIP/FAIL`；`--search-rows` 等仍只操作本地索引，但会打印 `file_search=<mode>` 口径行。
 - 实测（Windows 11 26200 / Everything 1.4.1.1028 / 索引约 116 万文件）：`--everything-check=notepad` 命中 80 条、20 ms；exe 体积 +27 KB（2008 → 2063 KB）。
 
+**P6.3：设置窗「关于」页（2026-11-01）**
+
+![设置 → 关于页：版本、运行环境、数据目录，可一键复制](docs/images/p6/settings-about.png)
+
+- **第三个页签「关于」**（在最后），只读展示：版本（`Lume 0.2.1`）、运行环境（`Windows 11（build 26200） · x64 · DPI 120 (125%)`）、当前热键、文件搜索来源、Everything 版本与连接状态，以及 `settings.conf` / `usage.conf` / 日志 / 索引目录四个路径。
+- **「复制版本信息」**：把上面整段（含路径与组件许可）写到剪贴板，方便反馈问题；状态行提示「版本信息已复制到剪贴板」。
+- **版本单一来源**：代码里新增 `src/app/version.h`（`kAppName`/`kAppVersion`），`--version`、用法文本与关于页都读它；改版本时它与 `assets/app.rc`、`assets/app.manifest`、`build.ps1 -Version` 四处一起改（`version.h` 里有注释提醒）。
+- 关于页不做自动刷新：只在切到该页时读一次（与索引页一致，避免静态文本反复重绘）。
+
 **P6（进行中）：搜索质量修复**
 
 ![层级排序：game](docs/images/p6/game-ranking.png)
@@ -151,10 +160,10 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Run
 ```powershell
 # 编译 + 打 zip 发布包（版本号同时用于目录/文件名，需与 assets/app.rc 一致）
 powershell -ExecutionPolicy Bypass -File .\build.ps1 -Recompile -Package
-# 产物：dist\Lume-0.2.0-win64.zip（以及同名目录，便于先本地试跑）
+# 产物：dist\Lume-0.2.1-win64.zip（以及同名目录，便于先本地试跑）
 ```
 
-压缩包内容：`Lume.exe`（单文件、静态链接）+ `Install.cmd` + `README.txt`（系统要求、快捷键、首次索引、卸载）。解压即用，不需要安装。`README.txt` 模板在 `packaging\README.txt`；`-Package` 会校验 exe 的 `ProductVersion` 与 `-Version`（默认 `0.2.0`）一致，并打印 zip 的 SHA256。
+压缩包内容：`Lume.exe`（单文件、静态链接）+ `Install.cmd` + `README.txt`（系统要求、快捷键、首次索引、卸载）。解压即用，不需要安装。`README.txt` 模板在 `packaging\README.txt`；`-Package` 会校验 exe 的 `ProductVersion` 与 `-Version`（默认 `0.2.1`）一致，并打印 zip 的 SHA256。
 
 ### 低完整性环境（DSH/受限工作区）
 
@@ -215,10 +224,11 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Recompile -Package
 
 ```
 src/main.cpp               CLI 解析与入口分发
+src/app/version.h          应用名与版本号（代码侧单一来源，改版本见文件内注释）
 src/app/                   常驻应用：单实例、热键、显示/隐藏、截图模式、测试注入
 src/app/settings.cpp       设置读写（settings.conf，多路径回退）
 src/ui/window.cpp          窗口、托盘、设置入口、定位/激活、输入与 IME、键盘、动效、动态高度
-src/ui/settings_window.cpp 设置窗（常规 / 索引两页）
+src/ui/settings_window.cpp 设置窗（常规 / 索引 / 关于三页）
 src/ui/input.cpp           单行输入状态（码点移动、粘贴、组字）
 src/ui/renderer.cpp        D3D11/DXGI/DirectComposition/D2D/DWrite/WIC 与出图
 src/ui/scene.cpp           面板绘制（阴影、输入、虚拟化列表、组字下划线、动画 Alpha）

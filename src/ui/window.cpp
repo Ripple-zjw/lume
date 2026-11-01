@@ -8,6 +8,7 @@
 #include <cmath>
 #include <utility>
 
+#include "app/version.h"
 #include "core/log.h"
 #include "launch/launcher.h"
 #include "platform/autostart.h"
@@ -308,6 +309,7 @@ void LauncherWindow::OpenSettings() {
   };
   callbacks.queryIndex = [this]() { return QueryIndexStatus(); };
   callbacks.queryEverything = [this]() { return QueryEverythingStatus(); };
+  callbacks.queryAbout = [this]() { return QueryAboutInfo(); };
   callbacks.onClearIndex = [this]() { ClearFileIndex(); };
   callbacks.onRebuildIndex = [this]() { RebuildFileIndex(); };
   callbacks.onOpenIndexDirectory = [this]() { OpenIndexDirectory(); };
@@ -541,6 +543,37 @@ bool LauncherWindow::FileSearchIsEverything() const {
 
 EverythingStatus LauncherWindow::QueryEverythingStatus() const {
   return everything_.Status();
+}
+
+AboutInfo LauncherWindow::QueryAboutInfo() const {
+  AboutInfo info;
+  info.version = kAppVersion;
+  const OsVersion os = QueryOsVersion();
+  // Windows 11 从 build 22000 起；本程序又要求 22621+，这里只做展示用。
+  wchar_t osText[96] = {};
+  swprintf(osText, ARRAYSIZE(osText), L"Windows %ls（build %lu）",
+           os.build >= 22000 ? L"11" : L"10", os.build);
+  info.os = osText;
+  info.arch = L"x64";
+  wchar_t dpi[64] = {};
+  swprintf(dpi, ARRAYSIZE(dpi), L"%u (%u%%)", dpi_, dpi_ * 100u / 96u);
+  info.dpi = dpi;
+  info.hotkey = settings_.hotkey;
+  info.settingsPath = SettingsStore::Path();
+  info.usagePath = UsageStore::DefaultPath();
+  info.logPath = LogPath();
+  info.indexDir = files_.indexDirectory();
+  info.fileSearch = FileSearchIsEverything() ? L"everything" : L"local";
+  if (FileSearchIsEverything()) {
+    const EverythingStatus status = everything_.Status();
+    if (!status.available) {
+      info.everything = status.error.empty() ? L"未运行" : status.error;
+    } else {
+      info.everything = status.version + (status.dbLoaded ? L"（已连接，索引就绪）"
+                                                          : L"（已连接，索引未就绪）");
+    }
+  }
+  return info;
 }
 
 void LauncherWindow::RebuildRows() {

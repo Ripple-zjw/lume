@@ -55,7 +55,7 @@ size_t UsageScore(uint32_t count, uint64_t last, uint64_t now) {
 
 }  // namespace
 
-std::wstring UsageStore::Path() const {
+std::wstring UsageStore::DefaultPath() {
   const std::wstring base = GetEnv(L"APPDATA");
   if (!base.empty()) {
     const std::wstring dir = base + L"\\Lume";
@@ -65,7 +65,7 @@ std::wstring UsageStore::Path() const {
 }
 
 bool UsageStore::Load() {
-  std::wstring source = Path();
+  std::wstring source = DefaultPath();
   HANDLE file = CreateFileW(source.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                             FILE_ATTRIBUTE_NORMAL, nullptr);
   bool legacy = false;
@@ -126,7 +126,7 @@ bool UsageStore::Save() const {
              static_cast<unsigned long long>(pair.second.last));
     text += buffer + Sanitize(pair.first) + L"\n";
   }
-  HANDLE file = CreateFileW(Path().c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+  HANDLE file = CreateFileW(DefaultPath().c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                             FILE_ATTRIBUTE_NORMAL, nullptr);
   if (file == INVALID_HANDLE_VALUE) {
     Log(L"使用记录写入失败: %lu", GetLastError());

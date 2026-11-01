@@ -8,6 +8,7 @@
 
 #include "app/app.h"
 #include "app/settings.h"
+#include "app/version.h"
 #include "core/log.h"
 #include "launch/launcher.h"
 #include "platform/autostart.h"
@@ -52,8 +53,8 @@ struct CliOptions {
 };
 
 void PrintUsage() {
+  printf("%ls %ls\n", kAppName, kAppVersion);
   fputs(
-      "Lume 0.2.0\n"
       "\n"
       "Usage:\n"
       "  Lume.exe                       Run in tray-less resident mode (hotkey toggles)\n"
@@ -196,7 +197,7 @@ CliOptions Parse(int argc, wchar_t** argv) {
       PrintUsage();
       exit(0);
     } else if (arg == L"--version" || arg == L"-v") {
-      printf("Lume 0.2.0\n");
+      printf("%ls %ls\n", kAppName, kAppVersion);
       exit(0);
     } else {
       wprintf(L"未知参数: %ls\n", arg.c_str());

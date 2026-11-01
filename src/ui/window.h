@@ -57,6 +57,8 @@ class LauncherWindow {
   // 文件搜索来源是 Everything 时，设置窗用来显示连接状态。
   bool FileSearchIsEverything() const;
   EverythingStatus QueryEverythingStatus() const;
+  // 关于页：版本、系统、热键、Everything 状态与各数据目录。
+  AboutInfo QueryAboutInfo() const;
   // 测试钩子：聚焦热键捕获框并合成指定组合，验证低级键盘钩子。
   void TestHotkeyCapture(const std::wstring& combo);
   bool visible() const { return visible_; }

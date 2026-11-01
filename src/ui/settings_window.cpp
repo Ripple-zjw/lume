@@ -51,6 +51,8 @@ enum ControlId {
   kIdIndexRefresh = 129,
   kIdApply = 130,
   kIdFileSearch = 131,
+  kIdTabAbout = 132,
+  kIdCopyInfo = 133,
 };
 
 constexpr UINT kCaptureComboMessage = WM_APP + 20;
@@ -379,10 +381,15 @@ void SettingsWindow::CreateControls() {
     localOnlyControls_.push_back(control);
     return control;
   };
+  auto addAbout = [this](HWND control) {
+    aboutControls_.push_back(control);
+    return control;
+  };
 
   // 页签（共用，不属于任何一页）
   tabGeneral_ = button(L"常规", kIdTabGeneral, 20, 12, 84, 30);
   tabIndex_ = button(L"索引", kIdTabIndex, 108, 12, 84, 30);
+  tabAbout_ = button(L"关于", kIdTabAbout, 196, 12, 84, 30);
 
   // ---- 常规页 ----
   addGeneral(label(L"主题", 20, 70, 80));
@@ -407,7 +414,7 @@ void SettingsWindow::CreateControls() {
   addGeneral(CreateWindowExW(
       0, L"STATIC",
       L"设置保存后立即生效；搜索热键在任何窗口下都可用。\n"
-      L"索引大小上限、快照目录、清除 / 重建索引都在「索引」页。",
+      L"索引大小上限、快照目录、清除 / 重建索引都在「索引」页；版本与数据目录在「关于」页。",
       WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX, Scale(20), Scale(228), Scale(500),
       Scale(48), hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdGeneralHint)), nullptr,
       nullptr));
@@ -462,6 +469,17 @@ void SettingsWindow::CreateControls() {
   rebuildIndexButton_ = addIndexLocal(button(L"重建索引", kIdRebuildIndex, 132, 414, 104, 30));
   addIndex(button(L"刷新状态", kIdIndexRefresh, 244, 414, 100, 30));
 
+  // ---- 关于页 ----
+  aboutInfo_ = addAbout(CreateWindowExW(0, L"STATIC", L"", WS_CHILD | SS_LEFT | SS_NOPREFIX,
+                                        Scale(20), Scale(64), Scale(500), Scale(330), hwnd_,
+                                        nullptr, nullptr, nullptr));
+  applyFont(aboutInfo_);
+  copyInfoButton_ = addAbout(button(L"复制版本信息", kIdCopyInfo, 20, 412, 140, 30));
+  aboutHint_ = addAbout(CreateWindowExW(
+      0, L"STATIC", L"含版本、系统、Everything 状态与数据目录", WS_CHILD | SS_LEFT | SS_NOPREFIX,
+      Scale(170), Scale(418), Scale(340), Scale(20), hwnd_, nullptr, nullptr, nullptr));
+  applyFont(aboutHint_);
+
   // ---- 共用 ----
   status_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT, Scale(20),
                             Scale(454), Scale(500), Scale(40), hwnd_,
@@ -508,6 +526,7 @@ void SettingsWindow::Populate() {
   SetPage(0);
   UpdateSearchSourceLayout();
   RefreshIndexInfo();
+  RefreshAboutInfo();
 }
 
 void SettingsWindow::UpdateSearchSourceLayout() {
@@ -522,17 +541,82 @@ void SettingsWindow::UpdateSearchSourceLayout() {
 }
 
 void SettingsWindow::SetPage(int page) {
-  currentPage_ = page == 1 ? 1 : 0;
+  currentPage_ = (page == 1 || page == 2) ? page : 0;
   for (HWND control : generalControls_) {
     ShowWindow(control, currentPage_ == 0 ? SW_SHOW : SW_HIDE);
   }
   for (HWND control : indexControls_) {
     ShowWindow(control, currentPage_ == 1 ? SW_SHOW : SW_HIDE);
   }
+  for (HWND control : aboutControls_) {
+    ShowWindow(control, currentPage_ == 2 ? SW_SHOW : SW_HIDE);
+  }
   InvalidateRect(tabGeneral_, nullptr, FALSE);
   InvalidateRect(tabIndex_, nullptr, FALSE);
+  InvalidateRect(tabAbout_, nullptr, FALSE);
   // 只在这一刻读一次状态，不自动轮询（避免状态块一直闪）。
   if (currentPage_ == 1) RefreshIndexInfo();
+  if (currentPage_ == 2) RefreshAboutInfo();
+}
+
+std::wstring SettingsWindow::BuildAboutText() const {
+  AboutInfo info;
+  if (callbacks_.queryAbout) info = callbacks_.queryAbout();
+  if (info.version.empty()) info.version = L"?";
+  if (info.arch.empty()) info.arch = L"x64";
+
+  const std::wstring search =
+      _wcsicmp(info.fileSearch.c_str(), L"everything") == 0 ? L"Everything 全盘索引"
+                                                            : L"Lume 本地索引";
+  std::wstring text;
+  text += L"Lume " + info.version + L"（免安装单 exe，静态链接）\n";
+  text += L"\n";
+  text += L"运行环境　" + info.os + L" · " + info.arch;
+  if (!info.dpi.empty()) text += L" · DPI " + info.dpi;
+  text += L"\n";
+  text += L"搜索热键　" + info.hotkey + L"\n";
+  text += L"文件搜索　" + search + L"\n";
+  text += L"Everything　" + (info.everything.empty() ? L"未使用" : info.everything) + L"\n";
+  text += L"\n";
+  text += L"设置文件　" + info.settingsPath + L"\n";
+  text += L"使用记录　" + info.usagePath + L"\n";
+  text += L"日志　　　" + info.logPath + L"\n";
+  text += L"索引目录　" + info.indexDir + L"\n";
+  text += L"\n";
+  text += L"组件　Direct2D / DirectWrite / DirectComposition；Everything SDK v2 源码内嵌\n";
+  text += L"许可　Everything SDK © David Carpenter（MIT）；未链接 PCRE\n";
+  return text;
+}
+
+void SettingsWindow::RefreshAboutInfo() {
+  if (!aboutInfo_) return;
+  SetWindowTextW(aboutInfo_, BuildAboutText().c_str());
+}
+
+void SettingsWindow::CopyAboutInfo() {
+  const std::wstring text = BuildAboutText();
+  if (!OpenClipboard(hwnd_)) {
+    SetWindowTextW(status_, L"复制失败：剪贴板被占用，请稍后重试");
+    return;
+  }
+  EmptyClipboard();
+  const size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+  HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+  if (memory) {
+    if (void* target = GlobalLock(memory)) {
+      memcpy(target, text.c_str(), bytes);
+      GlobalUnlock(memory);
+      if (!SetClipboardData(CF_UNICODETEXT, memory)) {
+        GlobalFree(memory);
+        memory = nullptr;
+      }
+    } else {
+      GlobalFree(memory);
+      memory = nullptr;
+    }
+  }
+  CloseClipboard();
+  SetWindowTextW(status_, memory ? L"版本信息已复制到剪贴板" : L"复制失败：内存不足");
 }
 
 void SettingsWindow::RefreshIndexInfo() {
@@ -865,9 +949,12 @@ void SettingsWindow::DrawButton(const DRAWITEMSTRUCT* item) {
     return;
   }
 
-  if (id == kIdTabGeneral || id == kIdTabIndex) {
+  if (id == kIdTabGeneral || id == kIdTabIndex || id == kIdTabAbout) {
     // 页签：选中项文字高亮 + 底部强调色指示条，未选中为暗灰，自绘以保持深色一致。
-    const bool active = (id == kIdTabGeneral) == (currentPage_ == 0);
+    int tab = 1;
+    if (id == kIdTabGeneral) tab = 0;
+    else if (id == kIdTabAbout) tab = 2;
+    const bool active = currentPage_ == tab;
     wchar_t label[32] = {};
     GetWindowTextW(item->hwndItem, label, ARRAYSIZE(label));
     RECT text = rect;
@@ -1042,9 +1129,16 @@ LRESULT SettingsWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         SetWindowTextW(status_, L"已打开索引文件目录");
         return 0;
       }
-      if (id == kIdTabGeneral || id == kIdTabIndex) {
-        SetPage(id == kIdTabIndex ? 1 : 0);
+      if (id == kIdTabGeneral || id == kIdTabIndex || id == kIdTabAbout) {
+        int page = 1;
+        if (id == kIdTabGeneral) page = 0;
+        else if (id == kIdTabAbout) page = 2;
+        SetPage(page);
         SetWindowTextW(status_, L"");
+        return 0;
+      }
+      if (id == kIdCopyInfo) {
+        CopyAboutInfo();
         return 0;
       }
       if (id == kIdBrowseIndex) {

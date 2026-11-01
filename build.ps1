@@ -15,7 +15,7 @@ param(
   [switch]$Recompile,
   # 打发布包：dist\Lume-<Version>-win64\{Lume.exe, Install.cmd, README.txt} + 同名 zip
   [switch]$Package,
-  [string]$Version = '0.2.0'
+  [string]$Version = '0.2.1'
 )
 
 $ErrorActionPreference = 'Stop'
