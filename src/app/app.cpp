@@ -28,9 +28,10 @@ UINT PanelCanvasWidth(const Theme& theme, float scale) {
   return static_cast<UINT>(std::lround((theme.panelWidth + theme.shadowMargin * 2.0f) * scale));
 }
 
-UINT PanelCanvasHeight(const Theme& theme, int visibleRows, float scale) {
+UINT PanelCanvasHeight(const Theme& theme, int visibleRows, float scale, bool withChips = false) {
   return static_cast<UINT>(
-      std::lround((PanelHeight(theme, visibleRows) + theme.shadowMargin * 2.0f) * scale));
+      std::lround((PanelHeight(theme, visibleRows, withChips) + theme.shadowMargin * 2.0f) *
+                  scale));
 }
 
 bool RegisterConfiguredHotkey(HWND hwnd, const AppSettings& settings, int id,
@@ -89,14 +90,29 @@ int RunScreenshot(const AppOptions& options, const std::wstring& path, float sca
     return 2;
   }
   const std::vector<AppEntry> apps = CollectAppEntries();
+  // 截图/基线用默认筛选组；--filter 只影响本次运行（不写盘）。
+  FilterSet filters = DefaultFilterSet();
+  if (options.filterSpecified && !options.filterSpec.empty()) {
+    bool enabled = filters.enabled;
+    int index = filters.active;
+    if (ParseFilterSpec(filters, options.filterSpec, &enabled, &index)) {
+      filters.enabled = enabled;
+      filters.active = index;
+    } else {
+      Log(L"--filter=%ls 无法识别，截图沿用「全部」", options.filterSpec.c_str());
+    }
+  }
+  ClampFilterActive(&filters);
+  const FilterGroup* filter = ActiveFilterGroup(filters);
   FileIndex files;
   if (!options.fileRoot.empty()) files.SetRoots({options.fileRoot});
   files.LoadCachedSnapshot();
-  const std::vector<FileHit> fileHits = files.Search(options.query, kMaxFileHits);
-  std::vector<ResultRow> rows = BuildMergedRows(apps, fileHits, nullptr, options.query);
+  const std::vector<FileHit> fileHits = files.Search(options.query, kMaxFileHits, filter);
+  std::vector<ResultRow> rows =
+      BuildMergedRows(apps, fileHits, nullptr, options.query, 200, true, filter);
   const int visibleRows = std::clamp(static_cast<int>(rows.size()), 1, Scene::kMaxVisibleRows);
   if (!renderer.AttachOffscreen(PanelCanvasWidth(theme, scale),
-                                PanelCanvasHeight(theme, visibleRows, scale))) {
+                                PanelCanvasHeight(theme, visibleRows, scale, filters.enabled))) {
     Log(L"离屏目标创建失败");
     return 2;
   }
@@ -104,6 +120,16 @@ int RunScreenshot(const AppOptions& options, const std::wstring& path, float sca
   SceneState state;
   state.displayText = options.query;
   state.caretIndex = options.query.size();
+  if (filters.enabled) {
+    const std::vector<std::wstring> labels = FilterChipLabels(filters);
+    const int active = std::clamp(filters.active, 0, static_cast<int>(labels.size()) - 1);
+    for (size_t i = 0; i < labels.size(); ++i) {
+      ChipState chip;
+      chip.label = labels[i];
+      chip.active = static_cast<int>(i) == active;
+      state.chips.push_back(std::move(chip));
+    }
+  }
   state.rows = std::move(rows);
   state.visibleRows = visibleRows;
   state.selected = options.selected;
@@ -172,11 +198,23 @@ int RunLauncher(const AppOptions& options) {
   if (options.fileSearchSpecified) {
     settings.fileSearch = (options.fileSearch == L"everything") ? L"everything" : L"local";
   }
+  if (options.filterSpecified && !options.filterSpec.empty()) {
+    bool enabled = settings.filters.enabled;
+    int index = settings.filters.active;
+    if (ParseFilterSpec(settings.filters, options.filterSpec, &enabled, &index)) {
+      settings.filters.enabled = enabled;
+      settings.filters.active = index;
+    } else {
+      Log(L"--filter=%ls 无法识别，沿用设置值", options.filterSpec.c_str());
+    }
+  }
+  ClampFilterActive(&settings.filters);
   Log(L"设置: theme=%ls accent=\"%ls\" hotkey=%ls autostart=%d roots=%zu indexDir=\"%ls\" "
-      L"fileSearch=%ls",
+      L"fileSearch=%ls filters=%ls active=%d groups=%zu",
       settings.theme.c_str(), settings.accent.c_str(), settings.hotkey.c_str(),
       settings.autostart ? 1 : 0, settings.fileRoots.size(), settings.indexDir.c_str(),
-      settings.fileSearch.c_str());
+      settings.fileSearch.c_str(), settings.filters.enabled ? L"on" : L"off",
+      settings.filters.active, settings.filters.groups.size());
 
   Renderer renderer;
   IconCache icons;

@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "search/file_hit.h"
+#include "search/filter.h"
 
 // 文件/文件夹索引：枚举配置根目录、快照缓存、目录 watcher 增量更新、查询。
 // 内存结构按“目录表 + 文件名”压缩：完整路径只按目录存一份，条目只存文件名。
@@ -53,7 +54,10 @@ class FileIndex {
   void SetPersistSnapshot(bool value) { persistSnapshot_ = value; }
 
   std::vector<std::wstring> roots() const;
-  std::vector<FileHit> Search(const std::wstring& query, size_t limit) const;
+  // filter 非空时只返回属于该筛选组的命中；过滤发生在候选打分之后、截断之前，
+  // 所以不会出现「前 80 条都是别的类型、真正的命中被截掉」。
+  std::vector<FileHit> Search(const std::wstring& query, size_t limit,
+                              const FilterGroup* filter = nullptr) const;
   size_t size() const;
   uint64_t version() const { return version_.load(); }
   // 是否正在后台重建（设置窗状态用）。
@@ -63,6 +67,11 @@ class FileIndex {
 
   // 加载快照但不启动后台线程（截图/诊断用）。
   bool LoadCachedSnapshot();
+
+  // 基准/自检专用：在内存里造 count 条假条目（不碰磁盘、不启动任何线程）。
+  // 目录表、名字 arena、charMask/pathHash 的填充方式与真实枚举一致，
+  // 所以 Search() 走的是和线上完全相同的「预筛 → 打分 → 过滤 → 排序」代码。
+  void LoadSyntheticForBenchmark(size_t count, uint32_t seed);
 
   // 诊断用：返回前 limit 条路径。
   std::vector<std::wstring> SamplePaths(size_t limit) const;

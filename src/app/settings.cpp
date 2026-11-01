@@ -110,6 +110,7 @@ bool SettingsStore::Load(AppSettings* settings) {
   if (!tryLoad(Paths(), false)) tryLoad(LegacyPaths(), true);
   if (!loaded) return false;
   const std::wstring text = Utf8ToWide(data);
+  bool sawFilterGroup = false;
   size_t start = 0;
   while (start < text.size()) {
     size_t end = text.find(L'\n', start);
@@ -145,8 +146,36 @@ bool SettingsStore::Load(AppSettings* settings) {
     } else if (key == L"fileSearch") {
       // 只接受已知取值，避免手写配置把来源写坏。
       settings->fileSearch = (value == L"everything") ? L"everything" : L"local";
+    } else if (key == L"filterEnabled") {
+      settings->filters.enabled =
+          !(value == L"0" || value == L"false" || value == L"off" || value == L"no");
+    } else if (key == L"filterActive") {
+      settings->filters.active = _wtoi(value.c_str());
+    } else if (key == L"filterGroup") {
+      // 组行按出现顺序排列；第一条组行出现时丢掉默认组，避免默认 + 自定义混在一起。
+      if (!sawFilterGroup) {
+        settings->filters.groups.clear();
+        sawFilterGroup = true;
+      }
+      FilterGroup group;
+      if (!DecodeFilterGroup(value, &group)) {
+        Log(L"设置: 忽略无法解析的筛选组 \"%ls\"", value.c_str());
+      } else {
+        bool duplicate = false;
+        for (const FilterGroup& existing : settings->filters.groups) {
+          if (_wcsicmp(existing.name.c_str(), group.name.c_str()) == 0) duplicate = true;
+        }
+        if (duplicate) {
+          Log(L"设置: 忽略重名的筛选组 \"%ls\"", group.name.c_str());
+        } else if (settings->filters.groups.size() >= kMaxFilterGroups) {
+          Log(L"设置: 筛选组超过上限 %zu，忽略 \"%ls\"", kMaxFilterGroups, group.name.c_str());
+        } else {
+          settings->filters.groups.push_back(std::move(group));
+        }
+      }
     }
   }
+  ClampFilterActive(&settings->filters);
   if (legacy) {
     Log(L"设置迁移: eTools -> Lume");
     Save(*settings);
@@ -157,7 +186,7 @@ bool SettingsStore::Load(AppSettings* settings) {
 bool SettingsStore::Save(const AppSettings& settings, std::wstring* savedPath) {
   std::wstring text;
   text += L"# Lume settings\n";
-  text += L"version=2\n";
+  text += L"version=3\n";
   text += L"theme=" + settings.theme + L"\n";
   text += L"accent=" + settings.accent + L"\n";
   text += L"hotkey=" + settings.hotkey + L"\n";
@@ -170,6 +199,11 @@ bool SettingsStore::Save(const AppSettings& settings, std::wstring* savedPath) {
   }
   text += std::wstring(L"fileSearch=") +
           (settings.fileSearch == L"everything" ? L"everything" : L"local") + L"\n";
+  text += std::wstring(L"filterEnabled=") + (settings.filters.enabled ? L"1" : L"0") + L"\n";
+  text += L"filterActive=" + std::to_wstring(settings.filters.active) + L"\n";
+  for (const FilterGroup& group : settings.filters.groups) {
+    text += L"filterGroup=" + EncodeFilterGroup(group) + L"\n";
+  }
   for (const std::wstring& root : settings.fileRoots) {
     text += L"fileRoot=" + root + L"\n";
   }

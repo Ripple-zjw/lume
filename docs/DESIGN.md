@@ -210,17 +210,42 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 
 ## 13.4 设置窗「关于」页（2026-11-01）
 
-1. **动机**：版本号原先只出现在 `--version`、帮助文本与 exe 版本资源里，用户反馈问题时拿不到「版本 + 系统 + 哪个数据目录 + Everything 状态」这一组信息。新增第三个页签「关于」（放在最后），只读展示这些内容，并提供一键复制。
+1. **动机**：版本号原先只出现在 `--version`、帮助文本与 exe 版本资源里，用户反馈问题时拿不到「版本 + 系统 + 哪个数据目录 + Everything 状态」这一组信息。新增第三个页签「关于」（放在最后；P6.4 加入「筛选」页后它变为第四个页签，仍在最后），只读展示这些内容，并提供一键复制。
 2. **版本单一来源**：新增 `src/app/version.h`（`kAppName`/`kAppVersion`），`--version`、`PrintUsage()` 与关于页都读它；`assets/app.rc`（VERSIONINFO）、`assets/app.manifest`、`build.ps1 -Version` 仍是独立来源，所以 `version.h` 顶部写明「四处一起改」。没有改成运行时读 exe 版本资源，是为了不给 CLI 路径引入额外的 `GetFileVersionInfo` 依赖。
 3. **数据流**：`Callbacks` 新增 `std::function<AboutInfo()> queryAbout`，`LauncherWindow::QueryAboutInfo()` 汇总 `kAppVersion`、`QueryOsVersion()`（build ≥ 22000 记为 Windows 11）、`dpi_`、当前热键、`SettingsStore::Path()`、`UsageStore::DefaultPath()`（本次把 `UsageStore::Path()` 提成公开静态方法）、`LogPath()`、`files_.indexDirectory()`，以及 Everything 模式下 `everything_.Status()` 的版本/就绪状态。设置窗只做渲染，不碰这些来源。
-4. **交互**：`BuildAboutText()` 生成一段多行文本（关于页的 STATIC 与剪贴板共用同一份），「复制版本信息」走 `OpenClipboard`/`SetClipboardData(CF_UNICODETEXT)`，失败时在状态行说明原因（剪贴板被占用 / 内存不足）。页签与其它两页一致：`SetPage(2)` 用 `ShowWindow` 显隐 `aboutControls_`，`DrawButton` 里三个页签共用一个「选中项高亮 + 底部强调色条」分支。与索引页一样**不自动刷新**，只在切到该页时读一次。
+4. **交互**：`BuildAboutText()` 生成一段多行文本（关于页的 STATIC 与剪贴板共用同一份），「复制版本信息」走 `OpenClipboard`/`SetClipboardData(CF_UNICODETEXT)`，失败时在状态行说明原因（剪贴板被占用 / 内存不足）。页签与其它页一致：`SetPage()` 用 `ShowWindow` 显隐 `aboutControls_`（当时关于页是第 3 页、`SetPage(2)`；加了「筛选」页后是第 4 页、`SetPage(3)`），`DrawButton` 里页签共用一个「选中项高亮 + 底部强调色条」分支。与索引页一样**不自动刷新**，只在切到该页时读一次。
 5. **布局**：窗口高度不变（578），关于页复用索引页的纵向区间：信息块 `(20,64,500,330)` 多行 STATIC，动作行 `(20,412)` 一个「复制版本信息」按钮 + 右侧一行说明；常规页的提示文字补了一句「版本与数据目录在「关于」页」。
 6. **验证**：`--settings` + 合成 `WM_COMMAND(132)` 切页截图（`docs/images/p6/settings-about.png`，675×723）；合成 `WM_COMMAND(133)` 后读系统剪贴板，内容为完整信息块（当时为 `Lume 0.2.0`，含 `Windows 11（build 26200） · x64 · DPI 120 (125%)`、`Everything 1.4.1.1028（已连接，索引就绪）` 与四个路径），状态行显示「版本信息已复制到剪贴板」。
+
+## 13.5 搜索筛选组（2026-11-01）
+
+1. **数据模型**（`search/filter.{h,cpp}`）：`FilterGroup{name, extensions[], includeApps, includeFolders, includeNoExtension}` + `FilterSet{enabled, active, groups[]}`。`active` 是**芯片序号**，`0` 固定为内置「全部」（不落盘、不可改名/删除），`1..N` 映射 `groups[active-1]`；`ActiveFilterGroup()` 在「全部」或 `enabled=false` 时返回 `nullptr`，全链路用「`nullptr` = 不过滤」表达，调用点不需要分支判断「是不是全部」。
+2. **扩展名口径**：扩展名统一小写、不带点，只允许 `[a-z0-9-_]`（`appref-ms` 是真实存在且默认组要用的扩展名，所以放行 `-`/`_`）；`*.PNG`、`.png` 都归一成 `png`；`FilterMatchesPath()` 取最后一个 `\`/`/` 之后的基名、最后一个 `.` 之后的尾巴，无扩展名（含 `.gitignore` 这种只有前缀点的）走 `includeNoExtension`；目录走 `includeFolders`。**匹配只发生在已经命中的候选上**，所以不会给全表扫描加开销。
+3. **本地索引**：`FileIndex::Search(query, limit, const FilterGroup*)` 在「`score > 0` 之后、`push_back` 之前」过滤（路径兜底循环同样处理）。这个位置很关键：如果放到合并层之后过滤，`limit=80` 的截断已经发生，前 80 条若是别的类型，真正的同类型命中会被截掉——用户在「图片」里会看到空白。
+4. **Everything**：`Request(query, gen, filter, allowPushdown)` 在 `SanitizeQuery()` 之后追加 ` ext:a;b;c`（只对**纯扩展名白名单**组下推：`FilterIsExtensionWhitelist()`，即没有文件夹/无扩展名开关）；含这两个开关的组没法用 `ext:` 表达，只做本地后过滤。两处都做：下推缩小候选集，后过滤保证即使 `ext:` 语义有出入也不会漏出别的类型。`CollectHits()` 用**组副本**（不是指针）过滤，因为请求在途时设置可能已经改了、`groups` 的 vector 会重分配。
+5. **零结果重试（以及一个 3 秒卡顿的坑）**：纯扩展名组下推后 0 条时（某个扩展名在 `ext:` 里表现异常），去掉下推、加一代生成号重发一次；`pushdownRetryKey_ = "查询\n组名"` 保证「同一查询 + 同一组」只重试一次，不会来回抖动。**这次重发必须从 `WM_COPYDATA` 处理里延后出去**（`PostMessage(kMsgEverythingRetry)`）：Everything 把结果投给回复窗口用的是**同步** `SendMessage`（其内部超时 3 s），我们处理这条消息时它的 UI 线程正阻塞着；此时再 `Everything_Query()` 就是两个线程互相等待。实测症状是切到「没有结果的组」时界面僵 3005.8 ms（日志 `Everything 发送偏慢: "notepad" 3005.8 ms`），期间排队的按键在 3 秒后一次性涌出——正是用户报的「切到没结果的组再切下一个组会卡一下」。现在：`WM_COPYDATA` 里只拷贝命中 + 重排 + `PostMessage` 重试；`kMsgEverythingRetry` 处理时先比对 `pushdownRetryKey_` 确认「查询 + 组」没变再发；`handlingEverythingReply_` 作为防御闸门，任何在这段里误发的 `RequestEverythingRows()` 都会被自动改成延后。修复后同一操作的往返回到 15–30 ms，UI 线程 `WM_NULL` 响应时间恒为 0 ms。
+6. **合并层**：`BuildMergedRows(..., const FilterGroup* filter)` 对应用行看 `includeApps`（应用索引条目不是文件，无法用扩展名判断），文件行/空查询的 MRU 文件行再做一次 `FilterMatchesPath()` 兜底；**用户直接输入的完整路径行不受筛选影响**（否则输入 `C:\x\y.png` 在「应用程序」组里就打不开了）；无匹配时的占位行改成「没有符合「图片」的结果 / 按 Tab 换一组，或切回「全部」」。
+7. **持久化**（`settings.conf`，`version=3`）：`filterEnabled=0|1`、`filterActive=<芯片序号>`、`filterGroup=名称|exe;png|apps|folders|noext`（可重复，顺序即芯片顺序；名称里的 `|` 在编码时被剥掉）。读侧容错：非法的 `filterGroup` 行只跳过该行并记日志，重名/超限的组丢弃，`filterActive` 最后 `ClampFilterActive()` 收敛；**一条组行都没有**时才用 `DefaultFilterSet()`（老配置升级即得默认组）。切组时立即 `onSettingsChanged_` → `SettingsStore::Save()`（一次约 1 KB），其它时候不写盘。
+8. **设置窗第 3 页**（`kIdTabFilter=134`，页序 常规/索引/筛选/关于，「关于」仍在最后）：工作副本 `filters_` 与索引页一样「点应用/保存才生效」。列表首项固定「全部」，选中它时右侧编辑区与删除/上移/下移整体禁用（`UpdateFilterControlState()`）；`CommitFilterEdits()` 在切项、新建、删除、上移/下移、应用/保存前把编辑区写回工作副本；`SanitizeFilterSet()` 负责重名、空规则、`全部` 保留名、组数 ≤12 的校验，失败时状态行给中文原因并且**不写盘、不关窗**。三个开关与「启用」都是 `BS_OWNERDRAW` 自绘勾选框（沿用自启开关的做法：`BS_AUTOCHECKBOX | BS_OWNERDRAW` 会互相覆盖类型位，所以状态自己维护）。
+9. **面板几何**：`Theme::filterRow=40`、`chipHeight=26`、`chipGap=8`、`chipPaddingX=12`；`PanelHeight(theme, rows, withChips)` 在 `withChips` 时把 `listTop` 从 84 抬到 124，关掉筛选就完全回到旧几何。芯片宽度按 DirectWrite 实测文本宽 + 2×padding，超宽时整体左移并 `PushAxisAlignedClip` 裁剪，**保证当前组完整可见**；`Scene::ChipAt()` 与绘制共用同一份 `chipRects_`，避免「看着在这里、点不到」。绘制/命中测试都走 `EnsureChipLayouts()` 的「标签 + active」签名缓存，切组才重建布局。
+10. **交互**：`Tab`/`Shift+Tab` 循环、`Ctrl+1..9` 直达、`WM_LBUTTONUP` 命中芯片即切组（启动器此前完全没有鼠标处理，这里只加芯片这一小块）；`WM_MOUSEMOVE` + `TrackMouseEvent(TME_LEAVE)` 维护 hover 高亮。IME 组字期间 `Tab` 不切组（组字时 Everything 请求本来也不发）。
+11. **验证**：`--list-filters` 打印 `enabled/active/groups` 与每组的规则（`ext=` 用 `FilterEverythingSpec()`），并顺带跑一次 `SanitizeFilterSet()`（失败打 `error=` 并返回 2）；`--filter=<名称|序号|all|off>` 覆盖本次运行（`--search-rows` / `--search-files` / `--search-live` / `--everything-check` 都生效并打印 `filter=`）；`--self-check` 的 `filters=PASS` 做默认组校验 + 每组编解码往返 + 扩展名抽检（png∈图片、exe∈应用程序、目录/无扩展名被排除、`FilterIsExtensionWhitelist()` 对含文件夹开关的组为 false）。实测：`--everything-check=photo --filter=图片` 的 `search="photo ext:png;jpg;…"`、80 条 / 22 ms；`--search-live=photo --file-root=<临时目录> --filter=图片` 只返回 `photo.png`/`photo.jpg`（同一目录 5 个 photo.* 里挑出 2 个）；合成 `WM_KEYDOWN(VK_TAB)` 后日志依次出现「筛选: 应用程序（第 2 组）-> 14 条」「筛选: 图片（第 3 组）-> 1 条」并各自触发一次 Everything 重查；设置窗侧用 `WM_COMMAND` 合成「新建/上移/删除/保存」，空组保存被拒（状态行「「筛选组7」没有任何规则…」，窗口不关），删掉空组后保存成功并写出 `filterGroup=` 六行。
+
+## 13.6 搜索压力测试（`--bench-search`，2026-11-01）
+
+1. **动机**：过滤/评分放在「候选打分之后」能省多少、线性度如何、内存涨到哪，光靠真实索引不好问（受磁盘、缓存、后台重建干扰）。做一个**纯内存**的合成索引，直接压 `FileIndex::Search()` 本身。
+2. **注入点**：`FileIndex::LoadSyntheticForBenchmark(count, seed)` 直接填 `storage_`（目录表 / 名字 arena / 条目数组），`charMask`、`pathHash`、`lowerOffset==nameOffset` 共用名字等细节都按 `AddEntryLocked()` 的写法生成，因此走的是线上同一份「位图预筛 → 打分 → 过滤 → 排序」代码，而不是另写一遍模拟循环。名字分布：1–3 个词 + 可选数字、6% 无扩展名、4% 目录、约 12% 中文名，扩展名覆盖默认筛选组的全部类型。xorshift32 固定种子 → 可复现。
+3. **计时口径**：造数据不计时；每个（查询 × 组）用例先预热一次，再跑 N 次取 min/med/p95；`limit = kMaxFileHits(80)` 与线上一致；同时打印峰值常驻内存（`K32GetProcessMemoryInfo`）与扫描吞吐（条目数 / med）。
+4. **结果**（本机 100 万 / 400 万 / 800 万条，单位 ms）：`report` 8.34/31.80/63.55，`2024` 3.94/16.24/32.53，`a` 28.40/106.74/210.55，`文档` 11.36/43.76/86.85；吞吐 120–128 M/s（数字查询 245 M/s），严格线性。常驻 76MB / 244MB / 467MB（≈76 B/条），造数据 0.46/1.84/3.57 s。
+5. **过滤成本**：常规查询加组 +0.1–6 ms；唯一明显的是「单字符 + 几乎命中全表」：800 万条时 `a` 从 210 → 322 ms（+112 ms）。谓词单次约 70 ns（2M 次重复调用，8/9/12 个扩展名的组几乎同速），说明成本在「取基名 + 找最后一个点」，不在扩展名比较；这也解释了为什么不需要位图/哈希加速。
+6. **结论**：过滤不是热点；真实 116 万条的 22–35 ms 里，扫描/打分占大头，过滤按命中数计费（几千条 → <1 ms）。若将来要提速，方向是预筛与目录树紧凑化（减少每条的扫描/缓存开销），而不是过滤。合成数据比真实快，是因为名字更短、arena 连续、缓存局部性好，且线上那条日志还含合并层与窗口布局。
+7. **防退化闸门**：`tools/regression.ps1` 默认跑 100 万条并检查 `bench_report` ≤ 60 ms、`bench_a_1char` ≤ 200 ms、`filter_check=ok`，超阈值计入失败（`-SkipBench` / `-BenchMs` / `-BenchShortMs` / `-BenchEntries` 可调；`-File` 传参用空格而不是 `=`）。阈值相对本机实测（8.3 / 26 ms）留了约 7 倍余量，只拦「数量级变慢」，避免不同 CPU 上误报。顺带修掉脚本的老问题：PowerShell 不会等待 GUI 子系统程序，`& $exe --self-check` 之后 `$LASTEXITCODE` 可能是空的（此前打印的 `self-check exit=` 就是空的，`exit $code` 也就白退 0），现在统一经 `cmd` 重定向捕获输出与退出码。
 
 ## 14. 后续方向
 
 - 子序列匹配加“跨度/间隙”惩罚，压掉 `steamapps → StreamingBar` 这类噪声；或对长查询要求连续片段。
 - 目录树 + 快照紧凑化：目录改存“父目录 id + 名字”，快照随之压到 <100MB；同时可把目录 arena 做掉。
 - Everything 后续：等 1.5 普及后换 SDK3（命名管道，MIT C 源码，可 vendor），同接口替换传输层；可选「按目录限定结果」与「Everything 未运行时自动回退本地索引」。
+- 筛选组后续：多组同时生效（AND/OR 组合）、按大小/修改时间过滤、每组自定义快捷键；芯片行放不下时加一枚「更多」溢出芯片（现在是裁剪 + 键盘可达）。
 - USN 全盘索引；文件内容搜索。
 - 打包：图标资源、便携模式、可选自签证书；真实会话回归已完成（`tools\regression.ps1` 全 PASS），后续改动重跑即可。

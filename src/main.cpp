@@ -1,5 +1,6 @@
 #include <windows.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <fcntl.h>
@@ -18,6 +19,7 @@
 #include "search/app_entry.h"
 #include "search/everything_index.h"
 #include "search/file_index.h"
+#include "search/filter.h"
 #include "search/merge.h"
 #include "ui/theme.h"
 
@@ -50,6 +52,11 @@ struct CliOptions {
   size_t indexSizeMB = 0;
   bool everythingCheck = false;
   std::wstring everythingQuery = L"notepad";
+  std::wstring filterSpec;
+  bool listFilters = false;
+  bool benchSearch = false;
+  size_t benchEntries = 1000000;
+  int benchIters = 5;
 };
 
 void PrintUsage() {
@@ -83,6 +90,10 @@ void PrintUsage() {
       "  --search-files=<query>           Search the file index and print top results with scores\n"
       "  --search-rows=<query>            Print merged app/file rows with tier and score\n"
       "  --file-search=local|everything   File search source (default: local index)\n"
+      "  --filter=<name|index|all|off>    Select a filter group chip (1 = all)\n"
+      "  --list-filters                   Print the filter groups and exit\n"
+      "  --bench-search[=<n>]             Synthesize N in-memory entries and time real searches\n"
+      "  --bench-iters=<n>                Iterations per bench case (default 5)\n"
       "  --everything-check[=<query>]     Probe Everything, run one query, print hits and merged rows\n"
       "  --search-live=<query>            Rebuild index now and search it (diagnostics)\n"
       "  --open=<path>                    Verify opening a file/path directly\n"
@@ -154,6 +165,21 @@ CliOptions Parse(int argc, wchar_t** argv) {
     } else if (StartsWith(arg, L"--file-search=")) {
       cli.app.fileSearch = ValueAfter(arg, L"--file-search=");
       cli.app.fileSearchSpecified = true;
+    } else if (StartsWith(arg, L"--filter=")) {
+      cli.filterSpec = ValueAfter(arg, L"--filter=");
+      cli.app.filterSpec = cli.filterSpec;
+      cli.app.filterSpecified = true;
+    } else if (arg == L"--list-filters") {
+      cli.listFilters = true;
+    } else if (arg == L"--bench-search") {
+      cli.benchSearch = true;
+    } else if (StartsWith(arg, L"--bench-search=")) {
+      cli.benchSearch = true;
+      cli.benchEntries = static_cast<size_t>(
+          _wcstoui64(ValueAfter(arg, L"--bench-search=").c_str(), nullptr, 10));
+    } else if (StartsWith(arg, L"--bench-iters=")) {
+      cli.benchIters = static_cast<int>(
+          wcstol(ValueAfter(arg, L"--bench-iters=").c_str(), nullptr, 10));
     } else if (StartsWith(arg, L"--search-live=")) {
       cli.searchLive = ValueAfter(arg, L"--search-live=");
     } else if (StartsWith(arg, L"--index-size-mb=")) {
@@ -272,6 +298,49 @@ int RunSelfCheck() {
   printf("settings_save=%s (%ls)\n", saveOk ? "PASS" : "FAIL", savedPath.c_str());
   if (!saveOk) ++failures;
 
+  // 筛选组：默认组能过校验、编码/解码往返一致、扩展名匹配抽检（纯函数，不碰磁盘）。
+  {
+    bool filterOk = true;
+    FilterSet defaults = DefaultFilterSet();
+    std::wstring filterError;
+    if (!SanitizeFilterSet(&defaults, &filterError)) filterOk = false;
+    for (const FilterGroup& group : defaults.groups) {
+      FilterGroup decoded;
+      if (!DecodeFilterGroup(EncodeFilterGroup(group), &decoded)) {
+        filterOk = false;
+        continue;
+      }
+      if (decoded.name != group.name || decoded.extensions != group.extensions ||
+          decoded.includeApps != group.includeApps ||
+          decoded.includeFolders != group.includeFolders ||
+          decoded.includeNoExtension != group.includeNoExtension) {
+        filterOk = false;
+      }
+    }
+    const FilterGroup* images = nullptr;
+    const FilterGroup* apps = nullptr;
+    for (const FilterGroup& group : defaults.groups) {
+      if (group.name == L"图片") images = &group;
+      if (group.name == L"应用程序") apps = &group;
+    }
+    if (!images || !apps) filterOk = false;
+    if (images) {
+      if (!FilterMatchesPath(*images, L"C:\\pics\\a.PNG", false)) filterOk = false;
+      if (FilterMatchesPath(*images, L"C:\\pics\\a.txt", false)) filterOk = false;
+      if (FilterMatchesPath(*images, L"C:\\pics\\readme", false)) filterOk = false;
+      if (FilterMatchesPath(*images, L"C:\\pics\\folder", true)) filterOk = false;
+      if (!FilterIsExtensionWhitelist(*images)) filterOk = false;
+      if (FilterEverythingSpec(*images).empty()) filterOk = false;
+    }
+    if (apps && !FilterMatchesPath(*apps, L"C:\\tools\\x.exe", false)) filterOk = false;
+    FilterGroup foldersOnly;
+    foldersOnly.name = L"目录";
+    foldersOnly.includeFolders = true;
+    if (FilterIsExtensionWhitelist(foldersOnly)) filterOk = false;
+    printf("filters=%s (groups=%zu)\n", filterOk ? "PASS" : "FAIL", defaults.groups.size());
+    if (!filterOk) ++failures;
+  }
+
   // Everything 是可选来源：没装/没运行算 SKIP（不算失败），装了但查询失败才算 FAIL。
   {
     EverythingIndex everything;
@@ -296,6 +365,110 @@ int RunSelfCheck() {
   return failures == 0 ? 0 : 2;
 }
 
+// 合成数据压力测试：把 count 条假条目放进内存里的 FileIndex，再跑真实搜索。
+// 不计入计时的是「造数据」这一步；计时包含扫描、字符位图预筛、打分、过滤、排序全流程。
+int RunSearchBench(size_t entries, int iterations) {
+  LogInit(L"");
+  printf("Lume search bench (synthetic, in-memory)\n");
+
+  LARGE_INTEGER frequency{};
+  QueryPerformanceFrequency(&frequency);
+  auto nowMicros = [&frequency]() {
+    LARGE_INTEGER counter{};
+    QueryPerformanceCounter(&counter);
+    return static_cast<double>(counter.QuadPart) * 1000000.0 /
+           static_cast<double>(frequency.QuadPart);
+  };
+
+  FileIndex index;
+  const double buildStart = nowMicros();
+  index.LoadSyntheticForBenchmark(entries, 20261101u);
+  const double buildMs = (nowMicros() - buildStart) / 1000.0;
+  const size_t total = index.size();
+  printf("entries=%zu build_ms=%.0f mem_mb=%.1f iters=%d limit=%zu\n", total, buildMs,
+         PeakWorkingSetMb(), iterations, kMaxFileHits);
+
+  const FilterSet filters = DefaultFilterSet();
+  const wchar_t* queries[] = {L"report", L"photo", L"setup", L"2024", L"a", L"文档"};
+  const wchar_t* wanted[] = {L"应用程序", L"图片"};
+  struct BenchCase {
+    const wchar_t* query;
+    const FilterGroup* group;
+    const wchar_t* label;
+  };
+  std::vector<BenchCase> cases;
+  for (const wchar_t* query : queries) {
+    cases.push_back({query, nullptr, L"全部"});
+    for (const wchar_t* name : wanted) {
+      for (const FilterGroup& group : filters.groups) {
+        if (group.name == name) cases.push_back({query, &group, name});
+      }
+    }
+  }
+
+  printf("%-10s %-8s %6s %9s %9s %9s %10s\n", "query", "filter", "hits", "min_ms", "med_ms",
+         "p95_ms", "scan_M_per_s");
+  bool filterOk = true;
+  for (const BenchCase& item : cases) {
+    (void)index.Search(item.query, kMaxFileHits, item.group);  // 预热（页面/分支预测）
+    std::vector<double> times;
+    std::vector<FileHit> hits;
+    for (int i = 0; i < iterations; ++i) {
+      const double start = nowMicros();
+      hits = index.Search(item.query, kMaxFileHits, item.group);
+      times.push_back((nowMicros() - start) / 1000.0);
+    }
+    if (item.group) {
+      for (const FileHit& hit : hits) {
+        if (!FilterMatchesPath(*item.group, hit.path, hit.isDirectory)) filterOk = false;
+      }
+    }
+    std::sort(times.begin(), times.end());
+    const double minMs = times.front();
+    const double medMs = times[times.size() / 2];
+    const double p95Ms = times[std::min(times.size() - 1, (times.size() * 95) / 100)];
+    const double scanRate =
+        medMs > 0.0 ? static_cast<double>(total) / (medMs / 1000.0) / 1000000.0 : 0.0;
+    printf("%-10s %-8s %6zu %9.2f %9.2f %9.2f %10.1f\n", WideToUtf8(item.query).c_str(),
+           WideToUtf8(item.label).c_str(), hits.size(), minMs, medMs, p95Ms, scanRate);
+  }
+
+  // 单条筛选判定的成本：与扫描解耦，直接按名字重复调用谓词。
+  {
+    std::vector<std::wstring> names;
+    names.reserve(200000);
+    const wchar_t* words[] = {L"report", L"photo", L"setup", L"draft", L"backup"};
+    for (size_t i = 0; i < 200000; ++i) {
+      std::wstring name = words[i % 5];
+      name += L'_';
+      name += std::to_wstring(i);
+      if (i % 7 != 0) {
+        name += L'.';
+        name += (i % 3 == 0) ? L"png" : L"txt";
+      }
+      names.push_back(std::move(name));
+    }
+    for (const FilterGroup& group : filters.groups) {
+      if (group.name != L"应用程序" && group.name != L"图片" && group.name != L"压缩包") continue;
+      const size_t calls = 2000000;
+      size_t matched = 0;
+      const double start = nowMicros();
+      for (size_t i = 0; i < calls; ++i) {
+        if (FilterMatchesPath(group, names[i % names.size()], false)) ++matched;
+      }
+      const double ns = (nowMicros() - start) * 1000.0 / static_cast<double>(calls);
+      printf("predicate group=%s ext=%zu ns_per_call=%.1f matched=%.1f%%\n",
+             WideToUtf8(group.name).c_str(), group.extensions.size(), ns,
+             100.0 * static_cast<double>(matched) / static_cast<double>(calls));
+    }
+  }
+
+  printf("filter_check=%s\n", filterOk ? "ok" : "FAIL");
+  fflush(stdout);
+  LogShutdown();
+  return filterOk ? 0 : 2;
+}
+
 }  // namespace
 
 // 诊断命令的 file_search 口径：CLI 覆盖优先，否则看设置；这些命令本身始终用本地索引。
@@ -305,6 +478,42 @@ std::wstring EffectiveFileSearch(const CliOptions& cli, const AppSettings& setti
   }
   return settings.fileSearch == L"everything" ? L"everything" : L"local";
 }
+
+namespace {
+
+// 诊断命令共用的筛选口径：设置里的组 + --filter 覆盖。
+struct CliFilter {
+  FilterSet set;
+  int active = 0;
+};
+
+CliFilter ResolveCliFilter(const CliOptions& cli, const AppSettings& settings) {
+  CliFilter filter;
+  filter.set = settings.filters;
+  if (!cli.filterSpec.empty()) {
+    bool enabled = filter.set.enabled;
+    int index = filter.set.active;
+    if (ParseFilterSpec(filter.set, cli.filterSpec, &enabled, &index)) {
+      filter.set.enabled = enabled;
+      filter.set.active = index;
+    } else {
+      printf("filter=%s (无法识别，沿用设置值)\n", WideToUtf8(cli.filterSpec).c_str());
+    }
+  }
+  ClampFilterActive(&filter.set);
+  filter.active = filter.set.active;
+  return filter;
+}
+
+// 当前生效的组名（off = 筛选已关闭，全部 = 不过滤）。
+std::wstring FilterLabel(const FilterSet& set) {
+  if (!set.enabled) return L"off";
+  const std::vector<std::wstring> labels = FilterChipLabels(set);
+  const int active = std::clamp(set.active, 0, static_cast<int>(labels.size()) - 1);
+  return labels[static_cast<size_t>(active)];
+}
+
+}  // namespace
 int RunMain(int argc, wchar_t** argv) {
   SetConsoleOutputCP(CP_UTF8);
   if (!EnablePerMonitorDpi()) {
@@ -355,8 +564,10 @@ int RunMain(int argc, wchar_t** argv) {
     LogInit(cli.app.logPath);
     AppSettings settings;
     SettingsStore::Load(&settings);
-    printf("file_search=%s (诊断命令始终使用本地索引)\n",
-           WideToUtf8(EffectiveFileSearch(cli, settings)).c_str());
+    const CliFilter filter = ResolveCliFilter(cli, settings);
+    printf("file_search=%s filter=%s (诊断命令始终使用本地索引)\n",
+           WideToUtf8(EffectiveFileSearch(cli, settings)).c_str(),
+           WideToUtf8(FilterLabel(filter.set)).c_str());
     const size_t sizeMB = cli.indexSizeMB > 0 ? cli.indexSizeMB
                                                : static_cast<size_t>(settings.indexSizeMB);
     FileIndex index;
@@ -376,7 +587,8 @@ int RunMain(int argc, wchar_t** argv) {
     LARGE_INTEGER searchEnd{};
     QueryPerformanceFrequency(&frequency);
     QueryPerformanceCounter(&searchStart);
-    const std::vector<FileHit> hits = index.Search(cli.searchLive, 2000);
+    const std::vector<FileHit> hits =
+        index.Search(cli.searchLive, 2000, ActiveFilterGroup(filter.set));
     QueryPerformanceCounter(&searchEnd);
     const double searchMs = static_cast<double>(searchEnd.QuadPart - searchStart.QuadPart) *
                             1000.0 / static_cast<double>(frequency.QuadPart);
@@ -402,8 +614,39 @@ int RunMain(int argc, wchar_t** argv) {
     CoUninitialize();
     return 0;
   }
+  if (cli.listFilters) {
+    LogInit(cli.app.logPath);
+    AppSettings settings;
+    SettingsStore::Load(&settings);
+    const CliFilter filter = ResolveCliFilter(cli, settings);
+    const std::vector<std::wstring> labels = FilterChipLabels(filter.set);
+    printf("enabled=%d active=%d groups=%zu\n", filter.set.enabled ? 1 : 0, filter.active,
+           filter.set.groups.size());
+    printf("[0] %s (built-in)\n", WideToUtf8(labels[0]).c_str());
+    for (size_t i = 0; i < filter.set.groups.size(); ++i) {
+      const FilterGroup& group = filter.set.groups[i];
+      printf("[%zu] %s apps=%d folders=%d noext=%d ext=%s\n", i + 1,
+             WideToUtf8(group.name).c_str(), group.includeApps ? 1 : 0,
+             group.includeFolders ? 1 : 0, group.includeNoExtension ? 1 : 0,
+             WideToUtf8(FilterEverythingSpec(group)).c_str());
+    }
+    printf("selected=%s\n", WideToUtf8(FilterLabel(filter.set)).c_str());
+    // 设置里的组必须能通过校验（默认组也是），否则算失败。
+    FilterSet validated = settings.filters;
+    std::wstring error;
+    const bool ok = SanitizeFilterSet(&validated, &error);
+    if (!ok) printf("error=%s\n", WideToUtf8(error).c_str());
+    fflush(stdout);
+    LogShutdown();
+    CoUninitialize();
+    return ok ? 0 : 2;
+  }
   if (cli.everythingCheck) {
     LogInit(cli.app.logPath);
+    AppSettings settings;
+    SettingsStore::Load(&settings);
+    const CliFilter filter = ResolveCliFilter(cli, settings);
+    printf("filter=%s\n", WideToUtf8(FilterLabel(filter.set)).c_str());
     EverythingIndex everything;
     const EverythingStatus status = everything.Status();
     printf("available=%d db_loaded=%d version=%ls\n", status.available ? 1 : 0,
@@ -413,11 +656,13 @@ int RunMain(int argc, wchar_t** argv) {
     }
     std::vector<FileHit> hits;
     uint64_t elapsedMs = 0;
-    const bool ok = everything.QueryBlocking(cli.everythingQuery, &hits, &elapsedMs);
-    printf("query=\"%s\" sanitized=\"%s\" ok=%d hits=%zu elapsed_ms=%llu\n",
+    const bool ok = everything.QueryBlocking(cli.everythingQuery, &hits, &elapsedMs,
+                                            ActiveFilterGroup(filter.set));
+    printf("query=\"%s\" sanitized=\"%s\" search=\"%s\" ok=%d hits=%zu elapsed_ms=%llu\n",
            WideToUtf8(cli.everythingQuery).c_str(),
-           WideToUtf8(EverythingIndex::SanitizeQuery(cli.everythingQuery)).c_str(), ok ? 1 : 0,
-           hits.size(), static_cast<unsigned long long>(elapsedMs));
+           WideToUtf8(EverythingIndex::SanitizeQuery(cli.everythingQuery)).c_str(),
+           WideToUtf8(everything.lastSearch()).c_str(), ok ? 1 : 0, hits.size(),
+           static_cast<unsigned long long>(elapsedMs));
     for (size_t i = 0; i < hits.size() && i < 10; ++i) {
       wchar_t line[1024];
       swprintf(line, ARRAYSIZE(line), L"  q=%u score=%zu%s %ls\n", hits[i].quality, hits[i].score,
@@ -426,8 +671,8 @@ int RunMain(int argc, wchar_t** argv) {
     }
     // 同一批 hits 过一遍合并层：验证换来源后 tier/quality/score 口径一致。
     const std::vector<AppEntry> apps = CollectAppEntries();
-    const std::vector<ResultRow> rows =
-        BuildMergedRows(apps, hits, nullptr, cli.everythingQuery, 20, false);
+    const std::vector<ResultRow> rows = BuildMergedRows(apps, hits, nullptr, cli.everythingQuery,
+                                                        20, false, ActiveFilterGroup(filter.set));
     printf("apps=%zu merged_rows=%zu\n", apps.size(), rows.size());
     for (const ResultRow& row : rows) {
       wchar_t line[1024];
@@ -444,8 +689,10 @@ int RunMain(int argc, wchar_t** argv) {
     LogInit(cli.app.logPath);
     AppSettings settings;
     SettingsStore::Load(&settings);
-    printf("file_search=%s (诊断命令始终使用本地索引)\n",
-           WideToUtf8(EffectiveFileSearch(cli, settings)).c_str());
+    const CliFilter filter = ResolveCliFilter(cli, settings);
+    printf("file_search=%s filter=%s (诊断命令始终使用本地索引)\n",
+           WideToUtf8(EffectiveFileSearch(cli, settings)).c_str(),
+           WideToUtf8(FilterLabel(filter.set)).c_str());
     FileIndex index;
     if (cli.indexSizeMB > 0) index.SetMaxIndexBytes(cli.indexSizeMB * 1024ull * 1024ull);
     index.SetIndexDirectory(cli.app.indexDir);
@@ -454,9 +701,10 @@ int RunMain(int argc, wchar_t** argv) {
     if (!roots.empty()) index.SetRoots(roots);
     index.LoadCachedSnapshot();
     const std::vector<AppEntry> apps = CollectAppEntries();
-    const std::vector<FileHit> fileHits = index.Search(cli.searchRows, kMaxFileHits);
+    const FilterGroup* group = ActiveFilterGroup(filter.set);
+    const std::vector<FileHit> fileHits = index.Search(cli.searchRows, kMaxFileHits, group);
     const std::vector<ResultRow> rows =
-        BuildMergedRows(apps, fileHits, nullptr, cli.searchRows, 40, false);
+        BuildMergedRows(apps, fileHits, nullptr, cli.searchRows, 40, false, group);
     printf("roots=%zu files=%zu apps=%zu rows=%zu index=%ls\n", index.roots().size(),
            index.size(), apps.size(), rows.size(), index.snapshotPath().c_str());
     for (const ResultRow& row : rows) {
@@ -477,8 +725,10 @@ int RunMain(int argc, wchar_t** argv) {
     index.SetIndexDirectory(cli.app.indexDir);
     AppSettings settings;
     SettingsStore::Load(&settings);
-    printf("file_search=%s (诊断命令始终使用本地索引)\n",
-           WideToUtf8(EffectiveFileSearch(cli, settings)).c_str());
+    const CliFilter filter = ResolveCliFilter(cli, settings);
+    printf("file_search=%s filter=%s (诊断命令始终使用本地索引)\n",
+           WideToUtf8(EffectiveFileSearch(cli, settings)).c_str(),
+           WideToUtf8(FilterLabel(filter.set)).c_str());
     std::vector<std::wstring> roots = settings.fileRoots;
     if (!cli.app.fileRoot.empty()) roots = {cli.app.fileRoot};
     if (!roots.empty()) index.SetRoots(roots);
@@ -491,7 +741,8 @@ int RunMain(int argc, wchar_t** argv) {
     LARGE_INTEGER finished{};
     QueryPerformanceFrequency(&frequency);
     QueryPerformanceCounter(&started);
-    const std::vector<FileHit> hits = index.Search(cli.searchFiles, 20);
+    const std::vector<FileHit> hits =
+        index.Search(cli.searchFiles, 20, ActiveFilterGroup(filter.set));
     QueryPerformanceCounter(&finished);
     const double elapsedMs = static_cast<double>(finished.QuadPart - started.QuadPart) * 1000.0 /
                              static_cast<double>(frequency.QuadPart);
@@ -505,6 +756,13 @@ int RunMain(int argc, wchar_t** argv) {
     LogShutdown();
     CoUninitialize();
     return 0;
+  }
+  if (cli.benchSearch) {
+    const size_t entries = std::clamp<size_t>(cli.benchEntries, 1000, 50000000);
+    const int iterations = std::clamp(cli.benchIters, 1, 100);
+    const int code = RunSearchBench(entries, iterations);
+    CoUninitialize();
+    return code;
   }
   if (cli.selfCheck) {
     const int code = RunSelfCheck();

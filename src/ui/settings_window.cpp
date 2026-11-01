@@ -53,6 +53,21 @@ enum ControlId {
   kIdFileSearch = 131,
   kIdTabAbout = 132,
   kIdCopyInfo = 133,
+  // 筛选页
+  kIdTabFilter = 134,
+  kIdFilterEnable = 135,
+  kIdFilterGroups = 136,
+  kIdFilterName = 137,
+  kIdFilterRules = 138,
+  kIdFilterApps = 139,
+  kIdFilterFolders = 140,
+  kIdFilterNoExt = 141,
+  kIdFilterAdd = 142,
+  kIdFilterRemove = 143,
+  kIdFilterUp = 144,
+  kIdFilterDown = 145,
+  kIdFilterReset = 146,
+  kIdFilterHint = 147,
 };
 
 constexpr UINT kCaptureComboMessage = WM_APP + 20;
@@ -385,11 +400,16 @@ void SettingsWindow::CreateControls() {
     aboutControls_.push_back(control);
     return control;
   };
+  auto addFilter = [this](HWND control) {
+    filterControls_.push_back(control);
+    return control;
+  };
 
   // 页签（共用，不属于任何一页）
   tabGeneral_ = button(L"常规", kIdTabGeneral, 20, 12, 84, 30);
   tabIndex_ = button(L"索引", kIdTabIndex, 108, 12, 84, 30);
-  tabAbout_ = button(L"关于", kIdTabAbout, 196, 12, 84, 30);
+  tabFilter_ = button(L"筛选", kIdTabFilter, 196, 12, 84, 30);
+  tabAbout_ = button(L"关于", kIdTabAbout, 284, 12, 84, 30);
 
   // ---- 常规页 ----
   addGeneral(label(L"主题", 20, 70, 80));
@@ -469,6 +489,61 @@ void SettingsWindow::CreateControls() {
   rebuildIndexButton_ = addIndexLocal(button(L"重建索引", kIdRebuildIndex, 132, 414, 104, 30));
   addIndex(button(L"刷新状态", kIdIndexRefresh, 244, 414, 100, 30));
 
+  // ---- 筛选页 ----
+  auto checkbox = [&](const wchar_t* text, int id, int x, int y, int w) {
+    HWND control = CreateWindowExW(0, L"BUTTON", text,
+                                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, Scale(x),
+                                   Scale(y), Scale(w), Scale(24), hwnd_,
+                                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), nullptr,
+                                   nullptr);
+    applyFont(control);
+    return control;
+  };
+  filterEnableCheck_ =
+      addFilter(checkbox(L"在搜索框下方显示筛选组", kIdFilterEnable, 20, 64, 300));
+  addFilter(label(L"筛选组", 20, 98, 80));
+  filterGroupsList_ = addFilter(CreateWindowExW(
+      WS_EX_CLIENTEDGE, L"LISTBOX", nullptr,
+      WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | LBS_NOINTEGRALHEIGHT | LBS_NOTIFY,
+      Scale(20), Scale(116), Scale(180), Scale(170), hwnd_,
+      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdFilterGroups)), nullptr, nullptr));
+  applyFont(filterGroupsList_);
+  SetWindowTheme(filterGroupsList_, L"DarkMode_Explorer", nullptr);
+  filterAddButton_ = addFilter(button(L"新建", kIdFilterAdd, 20, 294, 84, 26));
+  filterRemoveButton_ = addFilter(button(L"删除", kIdFilterRemove, 112, 294, 84, 26));
+  filterUpButton_ = addFilter(button(L"上移", kIdFilterUp, 20, 328, 84, 26));
+  filterDownButton_ = addFilter(button(L"下移", kIdFilterDown, 112, 328, 84, 26));
+  filterResetButton_ = addFilter(button(L"恢复默认", kIdFilterReset, 20, 364, 176, 26));
+
+  addFilter(label(L"名称", 212, 98, 60));
+  filterNameEdit_ = addFilter(CreateWindowExW(
+      WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+      Scale(212), Scale(116), Scale(308), Scale(26), hwnd_,
+      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdFilterName)), nullptr, nullptr));
+  applyFont(filterNameEdit_);
+  SendMessageW(filterNameEdit_, EM_SETLIMITTEXT, kMaxFilterNameLength, 0);
+  addFilter(label(L"规则：扩展名，空格 / 逗号 / 分号分隔", 212, 148, 308));
+  filterRulesEdit_ = addFilter(CreateWindowExW(
+      WS_EX_CLIENTEDGE, L"EDIT", L"",
+      WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL,
+      Scale(212), Scale(168), Scale(308), Scale(100), hwnd_,
+      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdFilterRules)), nullptr, nullptr));
+  applyFont(filterRulesEdit_);
+  filterAppsCheck_ = addFilter(
+      checkbox(L"包含应用索引（开始菜单 / 商店应用）", kIdFilterApps, 212, 274, 308));
+  filterFoldersCheck_ = addFilter(checkbox(L"包含文件夹", kIdFilterFolders, 212, 298, 308));
+  filterNoExtCheck_ =
+      addFilter(checkbox(L"包含无扩展名文件（README 等）", kIdFilterNoExt, 212, 322, 308));
+
+  filterHint_ = addFilter(CreateWindowExW(
+      0, L"STATIC",
+      L"「全部」固定在最前，不能改名或删除；规则改动点「应用」或「保存」后生效。\n"
+      L"搜索框下方用 Tab / Shift+Tab 循环，Ctrl+1..9 直达，也可以直接点芯片。",
+      WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX, Scale(20), Scale(400), Scale(500),
+      Scale(44), hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdFilterHint)), nullptr,
+      nullptr));
+  applyFont(filterHint_);
+
   // ---- 关于页 ----
   aboutInfo_ = addAbout(CreateWindowExW(0, L"STATIC", L"", WS_CHILD | SS_LEFT | SS_NOPREFIX,
                                         Scale(20), Scale(64), Scale(500), Scale(330), hwnd_,
@@ -522,6 +597,12 @@ void SettingsWindow::Populate() {
   for (const std::wstring& root : roots_) {
     SendMessageW(rootsList_, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(root.c_str()));
   }
+  filters_ = settings_.filters;
+  if (filters_.groups.empty()) filters_ = DefaultFilterSet();
+  ClampFilterActive(&filters_);
+  filterSelection_ = filters_.active;
+  RebuildFilterGroups();
+  LoadFilterGroupIntoEditors();
   SetWindowTextW(status_, L"");
   SetPage(0);
   UpdateSearchSourceLayout();
@@ -541,22 +622,90 @@ void SettingsWindow::UpdateSearchSourceLayout() {
 }
 
 void SettingsWindow::SetPage(int page) {
-  currentPage_ = (page == 1 || page == 2) ? page : 0;
+  currentPage_ = (page >= 0 && page <= 3) ? page : 0;
   for (HWND control : generalControls_) {
     ShowWindow(control, currentPage_ == 0 ? SW_SHOW : SW_HIDE);
   }
   for (HWND control : indexControls_) {
     ShowWindow(control, currentPage_ == 1 ? SW_SHOW : SW_HIDE);
   }
-  for (HWND control : aboutControls_) {
+  for (HWND control : filterControls_) {
     ShowWindow(control, currentPage_ == 2 ? SW_SHOW : SW_HIDE);
+  }
+  for (HWND control : aboutControls_) {
+    ShowWindow(control, currentPage_ == 3 ? SW_SHOW : SW_HIDE);
   }
   InvalidateRect(tabGeneral_, nullptr, FALSE);
   InvalidateRect(tabIndex_, nullptr, FALSE);
+  InvalidateRect(tabFilter_, nullptr, FALSE);
   InvalidateRect(tabAbout_, nullptr, FALSE);
   // 只在这一刻读一次状态，不自动轮询（避免状态块一直闪）。
   if (currentPage_ == 1) RefreshIndexInfo();
-  if (currentPage_ == 2) RefreshAboutInfo();
+  if (currentPage_ == 3) RefreshAboutInfo();
+}
+
+FilterGroup* SettingsWindow::SelectedFilterGroup() {
+  if (filterSelection_ <= 0 || filterSelection_ > static_cast<int>(filters_.groups.size())) {
+    return nullptr;
+  }
+  return &filters_.groups[static_cast<size_t>(filterSelection_ - 1)];
+}
+
+void SettingsWindow::RebuildFilterGroups() {
+  if (!filterGroupsList_) return;
+  SendMessageW(filterGroupsList_, LB_RESETCONTENT, 0, 0);
+  SendMessageW(filterGroupsList_, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"全部"));
+  for (const FilterGroup& group : filters_.groups) {
+    SendMessageW(filterGroupsList_, LB_ADDSTRING, 0,
+                 reinterpret_cast<LPARAM>(group.name.c_str()));
+  }
+  const int count = static_cast<int>(filters_.groups.size()) + 1;
+  filterSelection_ = std::clamp(filterSelection_, 0, count - 1);
+  SendMessageW(filterGroupsList_, LB_SETCURSEL, static_cast<WPARAM>(filterSelection_), 0);
+  UpdateFilterControlState();
+}
+
+void SettingsWindow::LoadFilterGroupIntoEditors() {
+  if (!filterNameEdit_ || !filterRulesEdit_) return;
+  const FilterGroup* group = SelectedFilterGroup();
+  if (!group) {
+    SetWindowTextW(filterNameEdit_, L"全部（内置：不筛选）");
+    SetWindowTextW(filterRulesEdit_, L"");
+  } else {
+    SetWindowTextW(filterNameEdit_, group->name.c_str());
+    std::wstring rules;
+    for (const std::wstring& extension : group->extensions) {
+      if (!rules.empty()) rules.push_back(L' ');
+      rules += extension;
+    }
+    SetWindowTextW(filterRulesEdit_, rules.c_str());
+  }
+  UpdateFilterControlState();
+}
+
+void SettingsWindow::CommitFilterEdits() {
+  FilterGroup* group = SelectedFilterGroup();
+  if (!group) return;
+  wchar_t name[64] = {};
+  GetWindowTextW(filterNameEdit_, name, ARRAYSIZE(name));
+  group->name = name;
+  wchar_t rules[4096] = {};
+  GetWindowTextW(filterRulesEdit_, rules, ARRAYSIZE(rules));
+  group->extensions = ParseExtensionList(rules);
+}
+
+void SettingsWindow::UpdateFilterControlState() {
+  const bool hasGroup = SelectedFilterGroup() != nullptr;
+  HWND editable[] = {filterNameEdit_,      filterRulesEdit_,    filterAppsCheck_,
+                     filterFoldersCheck_,  filterNoExtCheck_,   filterRemoveButton_,
+                     filterUpButton_,      filterDownButton_};
+  for (HWND control : editable) {
+    if (control) EnableWindow(control, hasGroup ? TRUE : FALSE);
+  }
+  HWND boxes[] = {filterEnableCheck_, filterAppsCheck_, filterFoldersCheck_, filterNoExtCheck_};
+  for (HWND control : boxes) {
+    if (control) InvalidateRect(control, nullptr, FALSE);
+  }
 }
 
 std::wstring SettingsWindow::BuildAboutText() const {
@@ -882,8 +1031,22 @@ bool SettingsWindow::ApplyConfiguration(bool close) {
   }
   updated.fileRoots = roots;
 
+  // 筛选组：先把编辑区的改动落到工作副本，再整组校验（重名 / 空规则 / 组数上限都在这里拦）。
+  CommitFilterEdits();
+  FilterSet filters = filters_;
+  std::wstring filterError;
+  if (!SanitizeFilterSet(&filters, &filterError)) {
+    SetWindowTextW(status_, filterError.c_str());
+    Log(L"筛选组校验失败: %ls", filterError.c_str());
+    return false;
+  }
+  updated.filters = filters;
+
   settings_ = updated;
   if (callbacks_.onSave) callbacks_.onSave(settings_);
+  filters_ = settings_.filters;
+  RebuildFilterGroups();
+  LoadFilterGroupIntoEditors();
   RefreshIndexInfo();
   SetWindowTextW(status_, L"已应用");
   if (close) DestroyWindow(hwnd_);
@@ -902,10 +1065,20 @@ void SettingsWindow::DrawButton(const DRAWITEMSTRUCT* item) {
   FillRect(dc, &rect, background);
   DeleteObject(background);
 
-  if (id == kIdAutostart) {
-    // 自绘勾选框：勾选状态来自 settings_.autostart，未勾选时按下也立即用强调色描边，
+  if (id == kIdAutostart || id == kIdFilterEnable || id == kIdFilterApps ||
+      id == kIdFilterFolders || id == kIdFilterNoExt) {
+    // 自绘勾选框：勾选状态来自设置/工作副本，未勾选时按下也立即用强调色描边，
     // 让点击有明确反馈（BS_OWNERDRAW 控件不会自己切换状态）。
-    const bool checked = settings_.autostart;
+    bool checked = false;
+    if (id == kIdAutostart) {
+      checked = settings_.autostart;
+    } else if (id == kIdFilterEnable) {
+      checked = filters_.enabled;
+    } else if (FilterGroup* group = SelectedFilterGroup()) {
+      checked = (id == kIdFilterApps)     ? group->includeApps
+                : (id == kIdFilterFolders) ? group->includeFolders
+                                           : group->includeNoExtension;
+    }
     RECT box = rect;
     box.right = box.left + Scale(18);
     box.top = rect.top + (rect.bottom - rect.top - Scale(18)) / 2;
@@ -949,11 +1122,12 @@ void SettingsWindow::DrawButton(const DRAWITEMSTRUCT* item) {
     return;
   }
 
-  if (id == kIdTabGeneral || id == kIdTabIndex || id == kIdTabAbout) {
+  if (id == kIdTabGeneral || id == kIdTabIndex || id == kIdTabFilter || id == kIdTabAbout) {
     // 页签：选中项文字高亮 + 底部强调色指示条，未选中为暗灰，自绘以保持深色一致。
     int tab = 1;
     if (id == kIdTabGeneral) tab = 0;
-    else if (id == kIdTabAbout) tab = 2;
+    else if (id == kIdTabFilter) tab = 2;
+    else if (id == kIdTabAbout) tab = 3;
     const bool active = currentPage_ == tab;
     wchar_t label[32] = {};
     GetWindowTextW(item->hwndItem, label, ARRAYSIZE(label));
@@ -1033,7 +1207,11 @@ LRESULT SettingsWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_CTLCOLORSTATIC: {
       HDC dc = reinterpret_cast<HDC>(wParam);
       const HWND control = reinterpret_cast<HWND>(lParam);
-      SetTextColor(dc, GetDlgCtrlID(control) == kIdGeneralHint ? kMuted : kText);
+      const int controlId = GetDlgCtrlID(control);
+      const bool muted = controlId == kIdGeneralHint || controlId == kIdFilterHint;
+      // 被禁用的控件（Everything 模式下的本地索引项 / 「全部」的编辑区）用灰色文字，
+      // 否则禁用状态看起来和可编辑的一样。
+      SetTextColor(dc, (muted || !IsWindowEnabled(control)) ? kMuted : kText);
       SetBkColor(dc, kBackground);
       SetBkMode(dc, TRANSPARENT);
       return reinterpret_cast<LRESULT>(backgroundBrush_);
@@ -1046,13 +1224,15 @@ LRESULT SettingsWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
     }
     case WM_CTLCOLOREDIT: {
       HDC dc = reinterpret_cast<HDC>(wParam);
-      SetTextColor(dc, kText);
+      const HWND control = reinterpret_cast<HWND>(lParam);
+      SetTextColor(dc, IsWindowEnabled(control) ? kText : kMuted);
       SetBkColor(dc, kControl);
       return reinterpret_cast<LRESULT>(controlBrush_);
     }
     case WM_CTLCOLORLISTBOX: {
       HDC dc = reinterpret_cast<HDC>(wParam);
-      SetTextColor(dc, kText);
+      const HWND control = reinterpret_cast<HWND>(lParam);
+      SetTextColor(dc, IsWindowEnabled(control) ? kText : kMuted);
       SetBkColor(dc, kControl);
       return reinterpret_cast<LRESULT>(controlBrush_);
     }
@@ -1129,12 +1309,108 @@ LRESULT SettingsWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         SetWindowTextW(status_, L"已打开索引文件目录");
         return 0;
       }
-      if (id == kIdTabGeneral || id == kIdTabIndex || id == kIdTabAbout) {
+      if (id == kIdTabGeneral || id == kIdTabIndex || id == kIdTabFilter || id == kIdTabAbout) {
         int page = 1;
         if (id == kIdTabGeneral) page = 0;
-        else if (id == kIdTabAbout) page = 2;
+        else if (id == kIdTabFilter) page = 2;
+        else if (id == kIdTabAbout) page = 3;
         SetPage(page);
         SetWindowTextW(status_, L"");
+        return 0;
+      }
+      // ---- 筛选页 ----
+      if (id == kIdFilterEnable) {
+        filters_.enabled = !filters_.enabled;
+        InvalidateRect(filterEnableCheck_, nullptr, FALSE);
+        SetWindowTextW(status_, filters_.enabled
+                                    ? L"筛选组已启用（点「应用」或「保存」生效）"
+                                    : L"筛选组已关闭（点「应用」或「保存」生效）");
+        return 0;
+      }
+      if (id == kIdFilterGroups && HIWORD(wParam) == LBN_SELCHANGE) {
+        CommitFilterEdits();
+        const LRESULT selection = SendMessageW(filterGroupsList_, LB_GETCURSEL, 0, 0);
+        filterSelection_ = (selection == LB_ERR) ? 0 : static_cast<int>(selection);
+        LoadFilterGroupIntoEditors();
+        return 0;
+      }
+      if (id == kIdFilterApps || id == kIdFilterFolders || id == kIdFilterNoExt) {
+        if (FilterGroup* group = SelectedFilterGroup()) {
+          if (id == kIdFilterApps) {
+            group->includeApps = !group->includeApps;
+          } else if (id == kIdFilterFolders) {
+            group->includeFolders = !group->includeFolders;
+          } else {
+            group->includeNoExtension = !group->includeNoExtension;
+          }
+        }
+        InvalidateRect(id == kIdFilterApps      ? filterAppsCheck_
+                       : id == kIdFilterFolders ? filterFoldersCheck_
+                                                : filterNoExtCheck_,
+                       nullptr, FALSE);
+        return 0;
+      }
+      if (id == kIdFilterAdd) {
+        CommitFilterEdits();
+        if (filters_.groups.size() >= kMaxFilterGroups) {
+          SetWindowTextW(status_, L"筛选组已到上限（12 个），先删掉一组再新建");
+          return 0;
+        }
+        FilterGroup group;
+        wchar_t name[64] = {};
+        for (int index = static_cast<int>(filters_.groups.size()) + 1;; ++index) {
+          swprintf(name, ARRAYSIZE(name), L"筛选组%d", index);
+          bool duplicate = false;
+          for (const FilterGroup& existing : filters_.groups) {
+            if (_wcsicmp(existing.name.c_str(), name) == 0) duplicate = true;
+          }
+          if (!duplicate) break;
+        }
+        group.name = name;
+        filters_.groups.push_back(std::move(group));
+        filterSelection_ = static_cast<int>(filters_.groups.size());
+        RebuildFilterGroups();
+        LoadFilterGroupIntoEditors();
+        SetFocus(filterNameEdit_);
+        SetWindowTextW(status_, L"已新建筛选组：填好名称与规则后点「应用」或「保存」");
+        return 0;
+      }
+      if (id == kIdFilterRemove) {
+        if (filterSelection_ <= 0 || filterSelection_ > static_cast<int>(filters_.groups.size())) {
+          return 0;
+        }
+        filters_.groups.erase(filters_.groups.begin() + (filterSelection_ - 1));
+        if (filterSelection_ > static_cast<int>(filters_.groups.size())) {
+          filterSelection_ = static_cast<int>(filters_.groups.size());
+        }
+        RebuildFilterGroups();
+        LoadFilterGroupIntoEditors();
+        SetWindowTextW(status_, L"已删除筛选组（点「应用」或「保存」生效）");
+        return 0;
+      }
+      if (id == kIdFilterUp || id == kIdFilterDown) {
+        CommitFilterEdits();
+        const int from = filterSelection_ - 1;
+        const int to = from + (id == kIdFilterUp ? -1 : 1);
+        if (from < 0 || to < 0 || to >= static_cast<int>(filters_.groups.size())) return 0;
+        FilterGroup moved = filters_.groups[static_cast<size_t>(from)];
+        filters_.groups[static_cast<size_t>(from)] = filters_.groups[static_cast<size_t>(to)];
+        filters_.groups[static_cast<size_t>(to)] = std::move(moved);
+        filterSelection_ = to + 1;
+        RebuildFilterGroups();
+        LoadFilterGroupIntoEditors();
+        return 0;
+      }
+      if (id == kIdFilterReset) {
+        const int answer =
+            MessageBoxW(hwnd_, L"恢复默认会覆盖当前的筛选组（自定义的会丢失），继续吗？",
+                        L"Lume 设置", MB_ICONQUESTION | MB_YESNO | MB_DEFBUTTON2);
+        if (answer != IDYES) return 0;
+        filters_ = DefaultFilterSet();
+        filterSelection_ = 0;
+        RebuildFilterGroups();
+        LoadFilterGroupIntoEditors();
+        SetWindowTextW(status_, L"已恢复默认筛选组（点「应用」或「保存」生效）");
         return 0;
       }
       if (id == kIdCopyInfo) {
@@ -1225,10 +1501,18 @@ LRESULT SettingsWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
       capEdit_ = indexInfo_ = nullptr;
       indexDirCombo_ = nullptr;
       clearIndexButton_ = rebuildIndexButton_ = tabGeneral_ = tabIndex_ = nullptr;
+      tabFilter_ = tabAbout_ = aboutInfo_ = copyInfoButton_ = aboutHint_ = nullptr;
+      filterEnableCheck_ = filterGroupsList_ = nullptr;
+      filterNameEdit_ = filterRulesEdit_ = nullptr;
+      filterAppsCheck_ = filterFoldersCheck_ = filterNoExtCheck_ = nullptr;
+      filterAddButton_ = filterRemoveButton_ = filterUpButton_ = filterDownButton_ = nullptr;
+      filterResetButton_ = filterHint_ = nullptr;
       indexDirChoices_.clear();
       indexDirHistory_.clear();
       generalControls_.clear();
       indexControls_.clear();
+      filterControls_.clear();
+      aboutControls_.clear();
       break;
     case WM_NCDESTROY:
       hwnd_ = nullptr;

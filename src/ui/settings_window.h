@@ -63,7 +63,8 @@ class SettingsWindow {
   bool Show(HINSTANCE instance, HWND owner, const AppSettings& current, Callbacks callbacks);
   bool visible() const { return hwnd_ != nullptr; }
   HWND hwnd() const { return hwnd_; }
-  int page() const { return currentPage_; }  // 0 = 常规，1 = 索引，2 = 关于（探针用）
+  // 0 = 常规，1 = 索引，2 = 筛选，3 = 关于（探针用）
+  int page() const { return currentPage_; }
 
  private:
   static LRESULT CALLBACK Thunk(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
@@ -80,6 +81,12 @@ class SettingsWindow {
   std::wstring BuildAboutText() const;
   void RefreshAboutInfo();
   void CopyAboutInfo();
+  // 筛选页：重建组列表、编辑器与工作副本之间的同步。
+  void RebuildFilterGroups();
+  void LoadFilterGroupIntoEditors();
+  void CommitFilterEdits();
+  void UpdateFilterControlState();
+  FilterGroup* SelectedFilterGroup();
   // 重建索引目录下拉项：当前值 + 默认目录 + 最近使用（只收仍然存在的目录）。
   void RebuildIndexDirChoices(const std::wstring& selected);
   std::wstring DefaultIndexDir() const;
@@ -99,9 +106,11 @@ class SettingsWindow {
   // 页签
   HWND tabGeneral_ = nullptr;
   HWND tabIndex_ = nullptr;
+  HWND tabFilter_ = nullptr;
   HWND tabAbout_ = nullptr;
   std::vector<HWND> generalControls_;
   std::vector<HWND> indexControls_;
+  std::vector<HWND> filterControls_;
   std::vector<HWND> aboutControls_;
 
   // 常规页
@@ -128,6 +137,23 @@ class SettingsWindow {
   HWND aboutHint_ = nullptr;
   std::vector<std::wstring> indexDirChoices_;  // 下拉项对应的真实目录
   std::vector<std::wstring> indexDirHistory_;  // 本次编辑中的最近目录（≤5，应用后持久化）
+
+  // 筛选页（工作副本，点「应用 / 保存」才写回 settings_）
+  HWND filterEnableCheck_ = nullptr;
+  HWND filterGroupsList_ = nullptr;
+  HWND filterNameEdit_ = nullptr;
+  HWND filterRulesEdit_ = nullptr;
+  HWND filterAppsCheck_ = nullptr;
+  HWND filterFoldersCheck_ = nullptr;
+  HWND filterNoExtCheck_ = nullptr;
+  HWND filterAddButton_ = nullptr;
+  HWND filterRemoveButton_ = nullptr;
+  HWND filterUpButton_ = nullptr;
+  HWND filterDownButton_ = nullptr;
+  HWND filterResetButton_ = nullptr;
+  HWND filterHint_ = nullptr;
+  FilterSet filters_;
+  int filterSelection_ = 0;  // 0 = 内置「全部」
 
   // 共用
   HWND status_ = nullptr;

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "search/file_hit.h"
+#include "search/filter.h"
 
 // Everything 客户端的连接状态（设置窗 / 日志用）。
 struct EverythingStatus {
@@ -35,25 +36,40 @@ class EverythingIndex {
   EverythingStatus Status() const;
 
   // 发送非阻塞查询。generation 会通过 SetReplyID 编进回复标记，用于丢弃过期回复。
+  // filter 非空时：纯扩展名白名单组会把 ext:a;b 下推进 Everything 查询串（allowPushdown），
+  // 所有结果仍会按组规则再过滤一遍，保证不会漏出别的类型。
   // 返回 false = Everything 不可用（未发送）。
-  bool Request(const std::wstring& query, uint32_t generation);
+  bool Request(const std::wstring& query, uint32_t generation,
+               const FilterGroup* filter = nullptr, bool allowPushdown = true);
 
   // 在窗口过程里调用：若是本次查询的回复，则把结果写入 hits（≤ kMaxFileHits 条）。
   bool HandleReply(UINT message, WPARAM wParam, LPARAM lParam, uint32_t* generation,
                    std::vector<FileHit>* hits);
 
   // 诊断用：阻塞查询（--everything-check / --self-check），自行完成一次同步往返。
-  bool QueryBlocking(const std::wstring& query, std::vector<FileHit>* hits, uint64_t* elapsedMs);
+  bool QueryBlocking(const std::wstring& query, std::vector<FileHit>* hits, uint64_t* elapsedMs,
+                     const FilterGroup* filter = nullptr);
+
+  // 上一次请求是否把筛选下推成了 ext:（纯扩展名组下推后 0 条时，UI 会无下推重试一次）。
+  bool lastRequestHadFilter() const { return lastRequestHadFilter_; }
+  // 上一次真正发给 Everything 的查询串（日志 / 诊断用）。
+  const std::wstring& lastSearch() const { return lastSearch_; }
 
   // 把用户输入净化成 Everything 的"全词 AND + 字面匹配"查询：
   // 去掉 & | ! < > * ? " 等语法字符，含 : 或路径分隔符的词用引号包成字面量。
   static std::wstring SanitizeQuery(const std::wstring& raw);
 
  private:
-  void ApplySearchState(const std::wstring& cleaned, uint32_t generation, bool needsReplyWindow);
+  void ApplySearchState(const std::wstring& search, const std::wstring& needleLower,
+                        uint32_t generation, bool needsReplyWindow, const FilterGroup* filter);
   void CollectHits(std::vector<FileHit>* hits) const;
 
   HWND hwnd_ = nullptr;
   uint32_t pendingGeneration_ = 0;
   std::wstring lastNeedleLower_;
+  std::wstring lastSearch_;
+  bool lastRequestHadFilter_ = false;
+  // 后过滤用的组副本：请求在途时设置可能已被改（vector 重分配），不能保存指针。
+  FilterGroup activeFilter_;
+  bool hasFilter_ = false;
 };

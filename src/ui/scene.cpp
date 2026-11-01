@@ -48,6 +48,7 @@ bool CreateFormat(IDWriteFactory* factory, const wchar_t* family, float size,
 bool Scene::Init(Renderer& renderer, const Theme& theme, IconCache* icons) {
   renderer_ = &renderer;
   icons_ = icons;
+  theme_ = theme;
   IDWriteFactory* factory = renderer.dwrite();
   if (!CreateFormat(factory, theme.fontFamily, theme.queryFontSize, DWRITE_FONT_WEIGHT_SEMI_BOLD,
                     &queryFormat_)) {
@@ -72,6 +73,11 @@ bool Scene::Init(Renderer& renderer, const Theme& theme, IconCache* icons) {
     return false;
   }
 
+  if (!CreateFormat(factory, theme.fontFamily, theme.chipFontSize, DWRITE_FONT_WEIGHT_NORMAL,
+                    &chipFormat_)) {
+    return false;
+  }
+
   HRESULT hr = renderer.context()->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, 1), brush_.Put());
   if (FAILED(hr)) {
     LogHr(L"CreateSolidColorBrush", hr);
@@ -87,8 +93,9 @@ bool Scene::Init(Renderer& renderer, const Theme& theme, IconCache* icons) {
 }
 
 void Scene::SetTheme(const Theme& theme) {
-  (void)theme;  // 主题色在 Draw 时传入；这里保留接口用于后续缓存主题相关资源
+  theme_ = theme;
   queryKey_.clear();
+  chipSignature_.clear();
 }
 
 void Scene::EnsureQueryLayout(const SceneState& state) {
@@ -195,10 +202,90 @@ float Scene::CaretX(const SceneState& state) {
   return kInputLeft + caretDipX_ - scrollOffset_;
 }
 
+void Scene::EnsureChipLayouts(const SceneState& state) {
+  std::vector<std::wstring> signature;
+  signature.reserve(state.chips.size() * 2);
+  for (const ChipState& chip : state.chips) {
+    signature.push_back(chip.label);
+    signature.push_back(chip.active ? L"1" : L"0");
+  }
+  if (signature == chipSignature_ && chipRects_.size() == state.chips.size()) return;
+  chipSignature_ = std::move(signature);
+  chipLayouts_.clear();
+  chipRects_.clear();
+  chipLayouts_.resize(state.chips.size());
+  chipRects_.resize(state.chips.size());
+  if (state.chips.empty()) return;
+
+  IDWriteFactory* factory = renderer_->dwrite();
+  std::vector<float> widths(state.chips.size(), 0.0f);
+  std::vector<float> lefts(state.chips.size(), 0.0f);
+  for (size_t i = 0; i < state.chips.size(); ++i) {
+    const std::wstring& label = state.chips[i].label;
+    const UINT32 length = static_cast<UINT32>(label.size());
+    float textWidth = 0.0f;
+    ComPtr<IDWriteTextLayout> probe;
+    if (SUCCEEDED(factory->CreateTextLayout(label.c_str(), length, chipFormat_.Get(), 300.0f,
+                                            20.0f, probe.Put()))) {
+      DWRITE_TEXT_METRICS metrics{};
+      if (SUCCEEDED(probe->GetMetrics(&metrics))) textWidth = metrics.width;
+    }
+    widths[i] = std::max(28.0f, textWidth + theme_.chipPaddingX * 2.0f);
+    // 左对齐绘制：布局宽度按文字实际宽度收紧，再画在 chipPaddingX 偏移处。
+    const float layoutWidth = std::max(8.0f, textWidth + 2.0f);
+    if (FAILED(factory->CreateTextLayout(label.c_str(), length, chipFormat_.Get(), layoutWidth,
+                                         20.0f, chipLayouts_[i].Put()))) {
+      chipLayouts_[i].Reset();
+    }
+  }
+
+  float x = kChipLeft;
+  for (size_t i = 0; i < widths.size(); ++i) {
+    lefts[i] = x;
+    x += widths[i] + theme_.chipGap;
+  }
+
+  // 放不下时整体左移，保证当前组完整可见；但不会把当前组推到左边外面。
+  float scroll = 0.0f;
+  const float availableRight = theme_.panelWidth - kChipLeft;
+  const float totalRight = lefts.back() + widths.back();
+  if (totalRight > availableRight) {
+    size_t active = 0;
+    for (size_t i = 0; i < state.chips.size(); ++i) {
+      if (state.chips[i].active) {
+        active = i;
+        break;
+      }
+    }
+    if (lefts[active] + widths[active] > availableRight) {
+      scroll = lefts[active] + widths[active] - availableRight;
+    }
+    scroll = std::min(scroll, std::max(0.0f, lefts[active] - kChipLeft));
+  }
+
+  for (size_t i = 0; i < widths.size(); ++i) {
+    const float chipLeft = lefts[i] - scroll;
+    chipRects_[i] =
+        D2D1::RectF(chipLeft, kChipTop, chipLeft + widths[i], kChipTop + theme_.chipHeight);
+  }
+}
+
+int Scene::ChipAt(const SceneState& state, float xDip, float yDip) {
+  if (state.chips.empty()) return -1;
+  EnsureChipLayouts(state);
+  if (yDip < kChipTop || yDip > kChipTop + theme_.chipHeight) return -1;
+  for (size_t i = 0; i < chipRects_.size(); ++i) {
+    if (xDip >= chipRects_[i].left && xDip <= chipRects_[i].right) return static_cast<int>(i);
+  }
+  return -1;
+}
+
 void Scene::Draw(const Theme& theme, const SceneState& state, bool fakeWallpaper, float scale) {
   ID2D1DeviceContext* ctx = renderer_->context();
   const int visibleRows = std::clamp(state.visibleRows, 0, kMaxVisibleRows);
-  const float panelHeight = PanelHeight(theme, visibleRows);
+  const bool withChips = !state.chips.empty();
+  const float listTop = theme.listTop + (withChips ? theme.filterRow : 0.0f);
+  const float panelHeight = PanelHeight(theme, visibleRows, withChips);
   const float canvasWidth = theme.panelWidth + theme.shadowMargin * 2.0f;
   const float canvasHeight = panelHeight + theme.shadowMargin * 2.0f;
   const D2D1_POINT_2F panel = D2D1::Point2F(theme.shadowMargin, theme.shadowMargin);
@@ -208,6 +295,7 @@ void Scene::Draw(const Theme& theme, const SceneState& state, bool fakeWallpaper
 
   EnsureQueryLayout(state);
   EnsureRowLayouts(state);
+  if (withChips) EnsureChipLayouts(state);
 
   ctx->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale));
   ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
@@ -313,13 +401,49 @@ void Scene::Draw(const Theme& theme, const SceneState& state, bool fakeWallpaper
         brush_.Get());
   }
 
-  // 分隔线：没有推荐/结果时不画，空查询就只剩输入框
-  if (!state.rows.empty()) {
+  // 分隔线：没有推荐/结果、也没有筛选芯片时不画
+  if (!state.rows.empty() || withChips) {
     brush_->SetColor(ScaleAlpha(theme.divider, bodyAlpha));
     ctx->FillRectangle(
         D2D1::RectF(panel.x + 20.0f, panel.y + 72.0f, panel.x + theme.panelWidth - 20.0f,
                     panel.y + 73.0f),
         brush_.Get());
+  }
+
+  // 筛选组芯片：横向一排，超出面板宽度时被裁剪（当前组始终滚动到可见）。
+  if (withChips) {
+    ctx->PushAxisAlignedClip(
+        D2D1::RectF(panel.x + 12.0f, panel.y + kChipTop - 6.0f,
+                    panel.x + theme.panelWidth - 12.0f,
+                    panel.y + kChipTop + theme.chipHeight + 6.0f),
+        D2D1_ANTIALIAS_MODE_ALIASED);
+    for (size_t i = 0; i < state.chips.size() && i < chipRects_.size(); ++i) {
+      const bool active = state.chips[i].active;
+      const bool hover = static_cast<int>(i) == state.hoverChip;
+      const D2D1_RECT_F local = chipRects_[i];
+      const D2D1_ROUNDED_RECT chipRect{
+          D2D1::RectF(panel.x + local.left, panel.y + local.top, panel.x + local.right,
+                      panel.y + local.bottom),
+          theme.chipHeight * 0.5f, theme.chipHeight * 0.5f};
+      if (active) {
+        brush_->SetColor(WithAlpha(theme.accent, 0.18f * globalAlpha));
+        ctx->FillRoundedRectangle(chipRect, brush_.Get());
+        brush_->SetColor(ScaleAlpha(theme.accent, globalAlpha));
+        ctx->DrawRoundedRectangle(chipRect, brush_.Get(), 1.0f);
+      } else {
+        brush_->SetColor(ScaleAlpha(hover ? theme.hoverFill : WithAlpha(theme.textPrimary, 0.05f),
+                                    globalAlpha));
+        ctx->FillRoundedRectangle(chipRect, brush_.Get());
+      }
+      if (i < chipLayouts_.size() && chipLayouts_[i]) {
+        brush_->SetColor(
+            ScaleAlpha(active ? theme.textPrimary : theme.textSecondary, globalAlpha));
+        ctx->DrawTextLayout(D2D1::Point2F(chipRect.rect.left + theme.chipPaddingX,
+                                          chipRect.rect.top + (theme.chipHeight - 20.0f) * 0.5f),
+                            chipLayouts_[i].Get(), brush_.Get());
+      }
+    }
+    ctx->PopAxisAlignedClip();
   }
 
   // 选中态（位置可动画）
@@ -329,7 +453,7 @@ void Scene::Draw(const Theme& theme, const SceneState& state, bool fakeWallpaper
                                 state.selectionRow <= static_cast<float>(state.scroll + visibleRows) -
                                                            0.5f;
   if (selectionVisible && !state.rows.empty()) {
-    const float y = panel.y + theme.listTop + selectionOffset;
+    const float y = panel.y + listTop + selectionOffset;
     brush_->SetColor(ScaleAlpha(theme.selectedFill, globalAlpha));
     ctx->FillRoundedRectangle(D2D1::RoundedRect(
                                   D2D1::RectF(panel.x + 12.0f, y,
@@ -349,7 +473,7 @@ void Scene::Draw(const Theme& theme, const SceneState& state, bool fakeWallpaper
     const size_t index = static_cast<size_t>(state.scroll + v);
     if (index >= state.rows.size()) break;
     const ResultRow& row = state.rows[index];
-    const float y = panel.y + theme.listTop +
+    const float y = panel.y + listTop +
                     static_cast<float>(v) * (theme.rowHeight + theme.rowGap);
 
     ID2D1Bitmap1* icon = (icons_ && !row.iconKey.empty()) ? icons_->Get(row.iconKey) : nullptr;

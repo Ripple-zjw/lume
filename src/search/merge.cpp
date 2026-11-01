@@ -114,7 +114,7 @@ ResultRow MakePathRow(const std::wstring& path, bool isDirectory) {
 std::vector<ResultRow> BuildMergedRows(const std::vector<AppEntry>& apps,
                                        const std::vector<FileHit>& fileHits, UsageStore* usage,
                                        const std::wstring& query, size_t limit,
-                                       bool withPlaceholder) {
+                                       bool withPlaceholder, const FilterGroup* filter) {
   std::vector<ResultRow> rows;
 
   if (!query.empty()) {
@@ -132,38 +132,44 @@ std::vector<ResultRow> BuildMergedRows(const std::vector<AppEntry>& apps,
       for (const UsageRecord& record : usage->Top(maxRows * 3)) {
         if (rows.size() >= maxRows) break;
         if (const AppEntry* app = FindAppByTarget(apps, record.target)) {
+          if (filter && !filter->includeApps) continue;
           rows.push_back(MakeAppRow(*app, record.score, kTierApplication, 0));
           continue;
         }
         const DWORD attributes = GetFileAttributesW(record.target.c_str());
         if (attributes == INVALID_FILE_ATTRIBUTES) continue;  // 记录里的目标已不存在
         const bool isDirectory = (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        if (filter && !FilterMatchesPath(*filter, record.target, isDirectory)) continue;
         rows.push_back(MakeFileRow(record.target, isDirectory, record.score, false, 0));
       }
     }
     return rows;  // 已按使用热度排序，不再按 quality/tier 重排
   }
 
-  for (const AppEntry* entry : FilterEntries(apps, query)) {
-    const size_t bonus = usage ? usage->Bonus(entry->launchTarget) : 0;
-    bool titleHit = false;
-    const size_t score = ScoreEntry(*entry, query, &titleHit);
-    // 标题命中=应用优先级；只有详情/启动路径命中时按“路径命中”处理（UWP 的 AUMID 除外）。
-    const uint8_t tier =
-        (titleHit || entry->IsUwp()) ? kTierApplication : kTierPathOnly;
-    uint8_t quality = 0;
-    if (titleHit) {
-      if (_wcsicmp(entry->title.c_str(), query.c_str()) == 0) {
-        quality = 4;
-      } else if (_wcsnicmp(entry->title.c_str(), query.c_str(), query.size()) == 0) {
-        quality = 2;
-      } else {
-        quality = 1;
+  if (!filter || filter->includeApps) {
+    for (const AppEntry* entry : FilterEntries(apps, query)) {
+      const size_t bonus = usage ? usage->Bonus(entry->launchTarget) : 0;
+      bool titleHit = false;
+      const size_t score = ScoreEntry(*entry, query, &titleHit);
+      // 标题命中=应用优先级；只有详情/启动路径命中时按“路径命中”处理（UWP 的 AUMID 除外）。
+      const uint8_t tier =
+          (titleHit || entry->IsUwp()) ? kTierApplication : kTierPathOnly;
+      uint8_t quality = 0;
+      if (titleHit) {
+        if (_wcsicmp(entry->title.c_str(), query.c_str()) == 0) {
+          quality = 4;
+        } else if (_wcsnicmp(entry->title.c_str(), query.c_str(), query.size()) == 0) {
+          quality = 2;
+        } else {
+          quality = 1;
+        }
       }
+      rows.push_back(MakeAppRow(*entry, score + bonus, tier, quality));
     }
-    rows.push_back(MakeAppRow(*entry, score + bonus, tier, quality));
   }
   for (const FileHit& hit : fileHits) {
+    // 后端通常已经过滤过（保证截断前就只剩组内类型）；这里兜底，统一所有调用方口径。
+    if (filter && !FilterMatchesPath(*filter, hit.path, hit.isDirectory)) continue;
     const size_t bonus = usage ? usage->Bonus(hit.path) : 0;
     rows.push_back(
         MakeFileRow(hit.path, hit.isDirectory, hit.score + bonus, hit.pathOnly, hit.quality));
@@ -178,8 +184,13 @@ std::vector<ResultRow> BuildMergedRows(const std::vector<AppEntry>& apps,
 
   if (rows.empty() && withPlaceholder && !query.empty()) {
     ResultRow placeholder;
-    placeholder.title = L"未找到匹配项";
-    placeholder.subtitle = L"换个关键词，或直接输入完整路径";
+    if (filter) {
+      placeholder.title = L"没有符合「" + filter->name + L"」的结果";
+      placeholder.subtitle = L"按 Tab 换一组，或切回「全部」";
+    } else {
+      placeholder.title = L"未找到匹配项";
+      placeholder.subtitle = L"换个关键词，或直接输入完整路径";
+    }
     placeholder.glyph = L"?";
     placeholder.color = 0x64748B;
     rows.push_back(std::move(placeholder));

@@ -1077,7 +1077,8 @@ std::vector<std::wstring> FileIndex::SamplePaths(size_t limit) const {
   return paths;
 }
 
-std::vector<FileHit> FileIndex::Search(const std::wstring& query, size_t limit) const {
+std::vector<FileHit> FileIndex::Search(const std::wstring& query, size_t limit,
+                                       const FilterGroup* filter) const {
   std::vector<FileHit> results;
   if (query.empty()) return results;
   const std::wstring needle = ToLower(query);
@@ -1127,6 +1128,8 @@ std::vector<FileHit> FileIndex::Search(const std::wstring& query, size_t limit) 
       }
     }
     if (score > 0) {
+      // 筛选只在命中后判断：不影响全表扫描的字符位图预筛与打分开销。
+      if (filter && !FilterMatchesPath(*filter, name, entry.isDirectory)) continue;
       score += 40;
       scored.push_back({score, i, false, NameQuality(name, needle)});
     }
@@ -1143,6 +1146,7 @@ std::vector<FileHit> FileIndex::Search(const std::wstring& query, size_t limit) 
       const Entry& entry = storage_.entries[i];
       const size_t score = ScorePathOnly(storage_.directories[entry.directory].lowerPath, needle);
       if (score > 0) {
+        if (filter && !FilterMatchesPath(*filter, LowerNameOf(entry), entry.isDirectory)) continue;
         scored.push_back({score, i, true, 0});
         ++pathHits;
       }
@@ -1174,4 +1178,110 @@ size_t FileIndex::RebuildSynchronously() {
   if (roots_.empty()) return 0;
   RebuildAndSwap();
   return size();
+}
+
+void FileIndex::LoadSyntheticForBenchmark(size_t count, uint32_t seed) {
+  // 名字按真实文件名的分布造：1–3 个词 + 可选数字、约 6% 无扩展名、少量中文，
+  // 扩展名分布让默认筛选组（应用程序/图片/文档/音频/视频/压缩包）都既有命中也有落空。
+  static const wchar_t* kWords[] = {
+      L"report",  L"photo",    L"setup",   L"backup",  L"project", L"notes",   L"invoice",
+      L"draft",   L"final",    L"config",  L"install", L"driver",  L"update",  L"sample",
+      L"index",   L"cache",    L"avatar",  L"banner",  L"screen",  L"clip",    L"record",
+      L"export",  L"import",   L"result",  L"summary", L"manual",  L"guide",   L"readme",
+      L"license", L"changelog", L"patch", L"debug",   L"trace",   L"data",    L"asset",
+      L"theme",   L"icon",     L"video",   L"music",   L"podcast", L"ticket",  L"todo",
+      L"报告",    L"照片",      L"文档",    L"设置",    L"备份",    L"项目",
+  };
+  static const wchar_t* kExtensions[] = {
+      L"exe",  L"lnk",  L"bat",  L"cmd",  L"msi",  L"appref-ms", L"ps1",  L"png",  L"jpg",
+      L"jpeg", L"gif",  L"bmp",  L"webp", L"svg",  L"ico",       L"tif",  L"tiff", L"heic",
+      L"pdf",  L"docx", L"xlsx", L"pptx", L"txt",  L"md",        L"rtf",  L"csv",  L"mp3",
+      L"flac", L"wav",  L"m4a",  L"mp4",  L"mkv",  L"avi",       L"mov",  L"webm", L"zip",
+      L"7z",   L"rar",  L"tar",  L"iso",  L"log",  L"json",      L"dll",  L"sys",  L"ttf",
+  };
+  constexpr size_t kWordCount = ARRAYSIZE(kWords);
+  constexpr size_t kExtensionCount = ARRAYSIZE(kExtensions);
+
+  std::lock_guard<std::mutex> lock(entriesMutex_);
+  storage_ = Storage{};
+  if (count == 0) return;
+
+  uint32_t state = seed ? seed : 1u;
+  auto next = [&state]() {
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    return state;
+  };
+  auto pick = [&next](size_t range) { return static_cast<size_t>(next() % range); };
+
+  // 目录表：根 + 一层（每个目录放 ~24 个条目，接近真实目录的平均文件数）。
+  std::vector<uint32_t> directories;
+  const size_t dirCount = std::clamp<size_t>(count / 24 + 1, 1, 40000);
+  directories.reserve(dirCount);
+  for (size_t i = 0; i < dirCount; ++i) {
+    wchar_t path[96] = {};
+    swprintf(path, ARRAYSIZE(path), L"D:\\bench\\area%02zu\\project%05zu", i % 32, i);
+    Directory directory;
+    directory.path = path;
+    directory.lowerPath = ToLower(directory.path);
+    const uint32_t index = static_cast<uint32_t>(storage_.directories.size());
+    storage_.directoryIndex.emplace(Fnv1a(directory.lowerPath), index);
+    storage_.directories.push_back(std::move(directory));
+    directories.push_back(index);
+  }
+
+  storage_.entries.reserve(count);
+  // 名字 arena 先按平均 ~30 字符预留，避免反复扩容影响生成耗时（不计入搜索计时）。
+  storage_.names.reserve(count * 34);
+  uint64_t serializedBytes = 0;
+  for (size_t i = 0; i < count; ++i) {
+    std::wstring name;
+    const size_t shape = pick(100);
+    const wchar_t* first = kWords[pick(kWordCount)];
+    name += first;
+    if (shape < 28) {
+      name += L'_';
+      name += kWords[pick(kWordCount)];
+    } else if (shape < 50) {
+      name += L'-';
+      name += kWords[pick(kWordCount)];
+    } else if (shape < 68) {
+      wchar_t digits[16] = {};
+      swprintf(digits, ARRAYSIZE(digits), L"%u", static_cast<unsigned>(next() % 10000));
+      name += digits;
+    } else if (shape < 76) {
+      wchar_t digits[16] = {};
+      swprintf(digits, ARRAYSIZE(digits), L"%u", static_cast<unsigned>(2020 + (next() % 7)));
+      name += L'_';
+      name += digits;
+    }
+    const bool isDirectory = pick(100) < 4;
+    if (!isDirectory && pick(100) >= 6) {
+      name += L'.';
+      name += kExtensions[pick(kExtensionCount)];
+    }
+    if (name.size() > 240) name.resize(240);
+
+    const std::wstring lower = ToLower(name);
+    Entry entry;
+    entry.directory = directories[pick(dirCount)];
+    entry.nameOffset = AppendChars(&storage_.names, name);
+    entry.nameLength = static_cast<uint16_t>(name.size());
+    if (name == lower) {
+      entry.lowerOffset = entry.nameOffset;  // 全小写时与原名共用 arena 内容
+      entry.lowerLength = entry.nameLength;
+    } else {
+      entry.lowerOffset = AppendChars(&storage_.names, lower);
+      entry.lowerLength = static_cast<uint16_t>(lower.size());
+    }
+    entry.charMask = NameMask(lower);
+    entry.pathHash = static_cast<uint32_t>(Fnv1a(lower));
+    entry.isDirectory = isDirectory;
+    storage_.entries.push_back(entry);
+
+    serializedBytes +=
+        SerializedEntryBytes(storage_.directories[entry.directory].path + L"\\" + name);
+  }
+  storage_.serializedBytes = serializedBytes;
 }

@@ -137,15 +137,23 @@ std::wstring EverythingIndex::SanitizeQuery(const std::wstring& raw) {
   return result;
 }
 
-void EverythingIndex::ApplySearchState(const std::wstring& cleaned, uint32_t generation,
-                                      bool needsReplyWindow) {
-  lastNeedleLower_ = ToLower(StripQuotes(cleaned));
+void EverythingIndex::ApplySearchState(const std::wstring& search, const std::wstring& needleLower,
+                                       uint32_t generation, bool needsReplyWindow,
+                                       const FilterGroup* filter) {
+  lastNeedleLower_ = needleLower;
+  lastSearch_ = search;
   pendingGeneration_ = generation;
+  hasFilter_ = filter != nullptr;
+  if (hasFilter_) {
+    activeFilter_ = *filter;
+  } else {
+    activeFilter_ = FilterGroup{};
+  }
 
   Everything_Reset();
-  Everything_SetSearchW(cleaned.c_str());
+  Everything_SetSearchW(search.c_str());
   const bool pathLike =
-      cleaned.find(L'\\') != std::wstring::npos || cleaned.find(L'/') != std::wstring::npos;
+      search.find(L'\\') != std::wstring::npos || search.find(L'/') != std::wstring::npos;
   Everything_SetMatchPath(pathLike ? TRUE : FALSE);
   Everything_SetMatchCase(FALSE);
   Everything_SetMatchWholeWord(FALSE);
@@ -160,11 +168,21 @@ void EverythingIndex::ApplySearchState(const std::wstring& cleaned, uint32_t gen
   }
 }
 
-bool EverythingIndex::Request(const std::wstring& query, uint32_t generation) {
+bool EverythingIndex::Request(const std::wstring& query, uint32_t generation,
+                              const FilterGroup* filter, bool allowPushdown) {
   if (!hwnd_) return false;
   const std::wstring cleaned = SanitizeQuery(query);
   if (cleaned.empty()) return false;
-  ApplySearchState(cleaned, generation, true);
+  // 纯扩展名白名单可以直接下推给 Everything；含「文件夹 / 无扩展名」的组只做本地后过滤。
+  std::wstring search = cleaned;
+  bool pushed = false;
+  if (allowPushdown && filter && FilterIsExtensionWhitelist(*filter)) {
+    search += L" ext:";
+    search += FilterEverythingSpec(*filter);
+    pushed = true;
+  }
+  lastRequestHadFilter_ = pushed;
+  ApplySearchState(search, ToLower(StripQuotes(cleaned)), generation, true, filter);
   const BOOL ok = Everything_Query(FALSE);
   if (!ok) {
     Log(L"Everything 查询请求失败: %ls", EverythingErrorText(Everything_GetLastError()).c_str());
@@ -186,10 +204,18 @@ bool EverythingIndex::HandleReply(UINT message, WPARAM wParam, LPARAM lParam,
 }
 
 bool EverythingIndex::QueryBlocking(const std::wstring& query, std::vector<FileHit>* hits,
-                                    uint64_t* elapsedMs) {
+                                    uint64_t* elapsedMs, const FilterGroup* filter) {
   const std::wstring cleaned = SanitizeQuery(query);
   if (cleaned.empty()) return false;
-  ApplySearchState(cleaned, 0, false);
+  std::wstring search = cleaned;
+  bool pushed = false;
+  if (filter && FilterIsExtensionWhitelist(*filter)) {
+    search += L" ext:";
+    search += FilterEverythingSpec(*filter);
+    pushed = true;
+  }
+  lastRequestHadFilter_ = pushed;
+  ApplySearchState(search, ToLower(StripQuotes(cleaned)), 0, false, filter);
 
   LARGE_INTEGER frequency{};
   LARGE_INTEGER start{};
@@ -226,12 +252,15 @@ void EverythingIndex::CollectHits(std::vector<FileHit>* hits) const {
 
   for (DWORD index = 0; index < total; ++index) {
     if (Everything_IsVolumeResult(index)) continue;  // 盘符/卷根不当作文件结果
+    const bool isDirectory = Everything_IsFolderResult(index) != FALSE;
     buffer[0] = 0;
     if (Everything_GetResultFullPathNameW(index, buffer.data(),
                                           static_cast<DWORD>(buffer.size())) == 0) {
       continue;
     }
     std::wstring path(buffer.data());
+    // 组规则总是再过滤一遍：即使 ext: 下推的语义有出入，也不会返回别的类型。
+    if (hasFilter_ && !FilterMatchesPath(activeFilter_, path, isDirectory)) continue;
     const size_t slash = path.find_last_of(L"\\/");
     const std::wstring name = slash == std::wstring::npos ? path : path.substr(slash + 1);
     const std::wstring lowerName = ToLower(name);
@@ -248,7 +277,7 @@ void EverythingIndex::CollectHits(std::vector<FileHit>* hits) const {
 
     FileHit hit;
     hit.path = std::move(path);
-    hit.isDirectory = Everything_IsFolderResult(index) != FALSE;
+    hit.isDirectory = isDirectory;
     hit.score = scored.score + 40;  // 与 FileIndex::Search 的 +40 对齐
     hit.quality = scored.quality;
     hit.pathOnly = pathOnly;

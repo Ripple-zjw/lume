@@ -14,10 +14,12 @@ D2D1_COLOR_F Rgba(UINT32 rgb, float alpha) {
 
 }  // namespace
 
-float PanelHeight(const Theme& theme, int rows) {
+float PanelHeight(const Theme& theme, int rows, bool withChips) {
+  // 芯片行插在搜索框与列表之间：有关闭筛选时整行不占高度，几何与旧版完全一致。
+  const float listTop = theme.listTop + (withChips ? theme.filterRow : 0.0f);
   // rows == 0：没有推荐/结果时面板只留输入框（列表起点 + 底部内边距）。
-  if (rows < 1) return theme.listTop + theme.bottomPadding;
-  return theme.listTop + rows * (theme.rowHeight + theme.rowGap) - theme.rowGap +
+  if (rows < 1) return listTop + theme.bottomPadding;
+  return listTop + rows * (theme.rowHeight + theme.rowGap) - theme.rowGap +
          theme.bottomPadding;
 }
 

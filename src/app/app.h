@@ -31,6 +31,9 @@ struct AppOptions {
   // 覆盖文件搜索来源：local / everything（只影响本次运行，不写盘）
   std::wstring fileSearch;
   bool fileSearchSpecified = false;
+  // 覆盖筛选组：--filter=<名称|序号|all|off>（只影响本次运行）
+  std::wstring filterSpec;
+  bool filterSpecified = false;
   std::wstring testCapture;
 };
 

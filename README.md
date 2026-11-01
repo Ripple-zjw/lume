@@ -2,9 +2,9 @@
 
 Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤出、输入即搜、回车启动应用与文件。C++20 + Win32 + Direct2D/DirectWrite + DirectComposition，免安装、免管理员、单 exe。
 
-**当前版本：0.2.1。**Windows 11（build 22621+）x64，免安装单 exe；发布包在 `dist\Lume-0.2.1-win64.zip`。
+**当前版本：0.2.3。**Windows 11（build 22621+）x64，免安装单 exe；发布包在 `dist\Lume-0.2.3-win64.zip`。
 
-**当前进度：P6 搜索质量修复（紧凑索引、按大小限制、精确匹配优先），P5.1 已完成。**
+**当前进度：P6 搜索质量修复（紧凑索引、按大小限制、精确匹配优先），P6.4 筛选组已完成。**
 
 ![自绘深色设置窗](docs/images/p5/settings-dark.png)
 
@@ -104,10 +104,25 @@ Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤�
 
 ![设置 → 关于页：版本、运行环境、数据目录，可一键复制](docs/images/p6/settings-about.png)
 
-- **第三个页签「关于」**（在最后），只读展示：版本（`Lume 0.2.1`）、运行环境（`Windows 11（build 26200） · x64 · DPI 120 (125%)`）、当前热键、文件搜索来源、Everything 版本与连接状态，以及 `settings.conf` / `usage.conf` / 日志 / 索引目录四个路径。
+- **第三个页签「关于」**（在最后），只读展示：版本（`Lume <版本号>`）、运行环境（`Windows 11（build 26200） · x64 · DPI 120 (125%)`）、当前热键、文件搜索来源、Everything 版本与连接状态，以及 `settings.conf` / `usage.conf` / 日志 / 索引目录四个路径。
 - **「复制版本信息」**：把上面整段（含路径与组件许可）写到剪贴板，方便反馈问题；状态行提示「版本信息已复制到剪贴板」。
 - **版本单一来源**：代码里新增 `src/app/version.h`（`kAppName`/`kAppVersion`），`--version`、用法文本与关于页都读它；改版本时它与 `assets/app.rc`、`assets/app.manifest`、`build.ps1 -Version` 四处一起改（`version.h` 里有注释提醒）。
 - 关于页不做自动刷新：只在切到该页时读一次（与索引页一致，避免静态文本反复重绘）。
+
+**P6.4：搜索筛选组（2026-11-01）**
+
+![搜索框下方的筛选组：全部 / 应用程序 / 图片 / 文档 / 音频 / 视频 / 压缩包](docs/images/p6/filters-chips.png)
+
+![设置 → 筛选页：启用开关、组列表、扩展名规则与三个开关，可恢复默认](docs/images/p6/settings-filters.png)
+
+- **搜索框下方常驻一排筛选芯片**：默认 `全部 / 应用程序 / 图片 / 文档 / 音频 / 视频 / 压缩包`，当前组用强调色描边高亮；芯片放不下时整行左移、当前组始终完整可见。**鼠标点击**、`Tab` / `Shift+Tab` 循环、`Ctrl+1..9` 直达三种方式都能切换。
+- **一组 = 扩展名白名单 + 三个开关**：`包含应用索引`（开始菜单 / 商店应用 / App Paths）、`包含文件夹`、`包含无扩展名文件`（README 之类）。按 `.` 之后的扩展名匹配、不区分大小写；默认只给「应用程序」打开「包含应用索引」，所以选「图片」时开始菜单应用会一起消失。
+- **设置 → 筛选页（第 3 个页签）**：新建 / 删除 / 上移 / 下移 / 改名 / 改规则（空格、逗号、分号都能分隔，`*.PNG` 归一成 `png`）/ 三个开关 / 一键「恢复默认」。`全部` 固定在最前，不能改名或删除；校验在点「应用 / 保存」时做，重名、空规则、超过 12 组都会被拦下并在状态行说明原因。
+- **两种来源口径一致**：本地索引在**候选打分之后**过滤（不增加扫描开销，也不会因为先截断 80 条而漏掉同类型命中）；Everything 模式下纯扩展名组会把 `ext:png;jpg;…` 下推进查询串（候选集直接变小），结果仍按组规则再过滤一遍——若下推后 0 条，会自动去掉下推重试一次（**延后到消息循环里发**：Everything 投递回复是同步 `SendMessage`，在回复处理里再查询会互相等待，表现成切组时卡 3 秒；已踩过并修好）。
+- **空查询与直达路径**：空查询时 MRU 推荐同样按组过滤；直接输入完整路径时该行不受筛选影响（仍可回车打开）。没有匹配时占位行提示「没有符合「图片」的结果 · 按 Tab 换一组，或切回「全部」」。
+- **持久化**：`settings.conf` 新增 `filterEnabled=` / `filterActive=` / `filterGroup=名称|exe;png|apps|folders|noext`（可重复，顺序即芯片顺序，`version=3`）；切组时立即写盘，下次唤出仍停在同一组。
+- **诊断**：`--filter=<名称|序号|all|off>` 覆盖本次运行的筛选组，`--list-filters` 打印解析后的组与规则，`--search-rows` / `--search-files` / `--search-live` / `--everything-check` 都会多打印一行 `filter=`；`--self-check` 增加 `filters=PASS`（默认组校验 + 编码/解码往返 + 扩展名匹配抽检）。
+- 实测（Everything 1.4.1.1028 / 约 116 万文件）：`--everything-check=photo --filter=图片` 的查询串是 `photo ext:png;jpg;…`，命中 80 条 / 22ms；`--everything-check=notepad --filter=应用程序` 查 `notepad ext:exe;lnk;…`，12 条文件命中 + 2 条应用行；面板内切组 1–3ms（含重发查询）。
 
 **P6（进行中）：搜索质量修复**
 
@@ -160,10 +175,10 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Run
 ```powershell
 # 编译 + 打 zip 发布包（版本号同时用于目录/文件名，需与 assets/app.rc 一致）
 powershell -ExecutionPolicy Bypass -File .\build.ps1 -Recompile -Package
-# 产物：dist\Lume-0.2.1-win64.zip（以及同名目录，便于先本地试跑）
+# 产物：dist\Lume-0.2.3-win64.zip（以及同名目录，便于先本地试跑）
 ```
 
-压缩包内容：`Lume.exe`（单文件、静态链接）+ `Install.cmd` + `README.txt`（系统要求、快捷键、首次索引、卸载）。解压即用，不需要安装。`README.txt` 模板在 `packaging\README.txt`；`-Package` 会校验 exe 的 `ProductVersion` 与 `-Version`（默认 `0.2.1`）一致，并打印 zip 的 SHA256。
+压缩包内容：`Lume.exe`（单文件、静态链接）+ `Install.cmd` + `README.txt`（系统要求、快捷键、首次索引、卸载）。解压即用，不需要安装。`README.txt` 模板在 `packaging\README.txt`；`-Package` 会校验 exe 的 `ProductVersion` 与 `-Version`（默认 `0.2.3`）一致，并打印 zip 的 SHA256。
 
 ### 低完整性环境（DSH/受限工作区）
 
@@ -178,7 +193,10 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Recompile -Package
 .\build\Lume.exe --show --ms=3000      # 直接显示 3 秒（便于测试）
 .\build\Lume.exe --capture=cap.png     # 显示并截取真实合成结果
 .\build\Lume.exe --shot=out.png --scale=1.5 --theme=light
+.\build\Lume.exe --shot=out.png --query=photo --filter=图片   # 带筛选芯片的离屏图
 .\build\Lume.exe --shot-matrix=docs\images\p2   # 生成 3×2 基线矩阵
+.\build\Lume.exe --list-filters                # 打印筛选组与规则（UTF-8）
+.\build\Lume.exe --bench-search=8000000        # 内存里造 800 万条假条目压测搜索（见下方「压力测试」）
 .\build\Lume.exe --type=cod --keys=down,down    # 输入与选择（配合 --capture）
 .\build\Lume.exe --list-apps                    # 打印真实应用索引（UTF-8，每行一条）
 ```
@@ -214,11 +232,49 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Recompile -Package
 | `--index-dir=<dir>` | 覆盖索引快照目录（默认 `%LOCALAPPDATA%\Lume`） |
 | `--search-live=<query>` | 现场重建索引并搜索（诊断上限/排序） |
 | `--file-search=local\|everything` | 覆盖文件搜索来源（只影响本次运行） |
+| `--filter=<name\|index\|all\|off>` | 覆盖筛选组（序号从 1 起，1 = 全部；`off` = 关闭筛选） |
+| `--list-filters` | 打印筛选组、规则与当前选中项（验证 settings.conf 解析） |
+| `--bench-search[=<n>]` | 在内存里造 n 条假条目（默认 100 万）并跑真实搜索，打印 min/med/p95 |
+| `--bench-iters=<n>` | 每个基准用例的迭代次数（默认 5） |
 | `--everything-check[=<query>]` | 检查 Everything 连接/版本，跑一次查询并打印命中与合并结果 |
 | `--settings` | 启动时打开设置窗 |
 | `--self-check` | 检查热键/托盘/自启/打开文件/设置写入并打印 PASS/FAIL |
 | `--no-hotkey` | 不注册全局热键 |
 | `--log=<path>` | 指定日志文件（默认 `%LOCALAPPDATA%\Lume\logs`，不可写时退回 exe 同目录） |
+
+## 压力测试（内存合成数据）
+
+`--bench-search=<n>` 在内存里造 n 条假条目（目录表 + 名字 arena + charMask/pathHash 的填充方式与真实枚举一致），
+然后跑**同一份** `FileIndex::Search()`：字符位图预筛 → 打分 → 筛选组过滤 → 排序截断。
+造数据不参与计时；每个用例先预热一次，再取 min/med/p95。
+
+```powershell
+.\build\Lume.exe --bench-search=8000000            # 800 万条，约 467MB 常驻
+.\build\Lume.exe --bench-search=1000000 --bench-iters=20
+```
+
+本机实测（Windows 11 26200 / i7 级 CPU，单位 ms，`hits` 固定截断到 80）：
+
+| 条目 | 查询 | 全部 | 图片组 | 过滤增量 | 扫描吞吐 |
+| --- | --- | --- | --- | --- | --- |
+| 100 万 | report | 8.34 | 8.47 | +0.13 | 120 M/s |
+| 100 万 | 2024 | 3.94 | 4.27 | +0.33 | 254 M/s |
+| 100 万 | a（单字符） | 28.40 | 40.68 | +12.3 | 35 M/s |
+| 100 万 | 文档（CJK） | 11.36 | 11.98 | +0.62 | 88 M/s |
+| 400 万 | report | 31.80 | 34.77 | +2.97 | 126 M/s |
+| 400 万 | a | 106.74 | 162.56 | +55.8 | 38 M/s |
+| 800 万 | report | 63.55 | 69.60 | +6.05 | 126 M/s |
+| 800 万 | a | 210.55 | 322.48 | +111.9 | 38 M/s |
+
+结论：
+
+- **扫描是线性、可预测的**：100 万 → 800 万，耗时严格 ×8（`report` 8.3 → 63.6 ms），吞吐稳定在 ~120–128 M 条/秒；数字型查询命中字符位图预筛，能到 ~250 M/秒。
+- **过滤的边际成本只和「命中数」有关**：常规 3 字符以上查询 +0.1–6 ms（相对 +1–10%）；`a` 这种几乎命中全表的单字符查询是唯一明显变慢的情况（800 万时 +112 ms），因为每条命中都要过一次谓词。
+- 谓词本身约 **70 ns/次**（2M 次重复调用，8/9/12 个扩展名的组几乎一样快——耗时在「取基名 + 找最后一个点」上，不在逐个比扩展名）。
+- 常驻内存约 **76 B/条**（100 万 76MB / 400 万 244MB / 800 万 467MB），造数据 0.46 / 1.84 / 3.57 s。
+- 合成数据比真实索引快（真实 116 万条实测 22–35 ms）：真实条目名更长、目录路径更分散、缓存局部性差，而且线上那条日志还包含合并层与窗口布局。
+
+回归脚本已把这个基准挂成**防退化闸门**：`tools\regression.ps1` 默认跑 100 万条，检查 `bench_report` ≤ 60 ms、`bench_a_1char` ≤ 200 ms 与 `filter_check=ok`，超阈值即 FAIL；`-SkipBench` 跳过、`-BenchMs` / `-BenchShortMs` 调阈值、`-BenchEntries` 换数据量（参数用空格分隔，如 `-BenchMs 60`）。阈值按本机 8.3 / 26 ms 留了 7 倍余量，只拦「数量级变慢」。
 
 ## 目录
 
@@ -228,10 +284,10 @@ src/app/version.h          应用名与版本号（代码侧单一来源，改�
 src/app/                   常驻应用：单实例、热键、显示/隐藏、截图模式、测试注入
 src/app/settings.cpp       设置读写（settings.conf，多路径回退）
 src/ui/window.cpp          窗口、托盘、设置入口、定位/激活、输入与 IME、键盘、动效、动态高度
-src/ui/settings_window.cpp 设置窗（常规 / 索引 / 关于三页）
+src/ui/settings_window.cpp 设置窗（常规 / 索引 / 筛选 / 关于四页）
 src/ui/input.cpp           单行输入状态（码点移动、粘贴、组字）
 src/ui/renderer.cpp        D3D11/DXGI/DirectComposition/D2D/DWrite/WIC 与出图
-src/ui/scene.cpp           面板绘制（阴影、输入、虚拟化列表、组字下划线、动画 Alpha）
+src/ui/scene.cpp           面板绘制（阴影、输入、筛选芯片、虚拟化列表、组字下划线、动画 Alpha）
 src/ui/theme.cpp           暗/亮主题 token、强调色解析
 src/platform/system.cpp    系统版本门禁、DPI、工作区、暗色/强调色读取
 src/platform/hotkey.cpp    全局热键注册与预设组合
@@ -244,6 +300,7 @@ src/search/file_index.cpp  文件枚举、快照、watcher、文件检索
 src/search/file_hit.h      文件命中模型（两个搜索来源共用）+ 单次上限
 src/search/file_score.*    文件名/路径评分口径（本地索引与 Everything 共用）
 src/search/everything_index.* Everything 文件搜索后端（官方 SDK 源码、非阻塞 IPC）
+src/search/filter.*        筛选组模型、规整/校验、settings.conf 编解码、扩展名匹配
 src/search/merge.cpp       应用/文件/路径直通合并排序
 src/search/usage.cpp       使用频次/最近性（usage.conf）
 src/search/result.h        显示层结果行
@@ -262,6 +319,7 @@ docs/images/p2/            P2 设计基线与交互状态截图
 docs/images/p3/            P3 真实索引/图标/选中态截图
 docs/images/p4/            P4 文件搜索/watcher/窗口截图
 docs/images/p5/            P5 动态高度截图
+docs/images/p6/            P6 排序修复 / Everything / 关于页 / 筛选组截图
 ```
 
 ## 已知事项
@@ -277,9 +335,11 @@ docs/images/p5/            P5 动态高度截图
 - **Everything 模式的限制**：需要 Everything 1.4/1.5 **正在运行**（SDK 只是 IPC 客户端；`--everything-check` 会打印 `available=0` 与原因）；只认默认实例的 IPC 窗口，1.5-alpha 的命名实例可能找不到；结果**不按**设置里的「文件索引目录」过滤；不支持内容搜索/正则（查询里的语法字符会被净化掉）；单次最多取 500 条候选再本地评分。
 - **托盘与开机自启**：在 agent 沙箱内会被系统拒绝（`Shell_NotifyIcon` 返回失败、`HKCU\...\Run` 不可写），但**真实桌面会话已实测通过**（`regression.ps1` 五项全 PASS），不影响正常使用。
 - 设置窗已改为自绘深色（主题/强调色循环按钮、热键捕获、深色列表与按钮）；设置保存路径优先 `%APPDATA%\Lume\settings.conf`，不可写时退回 exe 同目录。
+- **筛选组**：芯片行（40 DIP）会让面板比之前高一点；关掉设置 → 筛选 → 「在搜索框下方显示筛选组」就回到旧几何。芯片放不下时只做裁剪，没有横向滚动条——被裁掉的组用 `Tab` / `Ctrl+1..9` 仍能选中。
+- **筛选 + Everything**：含「文件夹 / 无扩展名」开关的组没法用 `ext:` 表达，只做本地后过滤，候选仍受「500 条、按名称升序」的上限影响，可能比预期少；纯扩展名组会下推，结果更全。
 - 图标缓存位于 `%LOCALAPPDATA%\Lume\icons`（沙箱等不可写环境退回 exe 同目录 `icons\`），按解析名哈希存 PNG；删掉目录会重新取图。
 - 动态面板高度已实现（1–6 行）；文件内容搜索仍未做。
-- **真实会话回归**：`powershell -ExecutionPolicy Bypass -File tools\regression.ps1` 已跑通（exit=0）；后续改托盘/自启/启动链路时重跑即可。人工项（托盘菜单、设置重启生效、注销后自启）仍建议过一遍。
+- **真实会话回归**：`powershell -ExecutionPolicy Bypass -File tools\regression.ps1` 已跑通（exit=0，含 self-check 与 100 万条 `--bench-search` 的防退化阈值）；后续改搜索/托盘/自启链路时重跑即可。人工项（托盘菜单、设置重启生效、注销后自启）仍建议过一遍。
 - 唤出淡入通过场景整体 alpha 实现（mingw 的 `dcomp.h` 漏声明 `IDCompositionVisual::SetOpacity`，未用 ABI hack）。
 
 ## 路线
@@ -295,4 +355,6 @@ docs/images/p5/            P5 动态高度截图
 | P5.1 ✅ | 图标磁盘缓存、深色自绘设置窗、自定义热键、真实会话自检全 PASS |
 | P6.1 ✅ | 设置窗「索引」页：索引文件目录可配置、快照大小/条目/重建状态、清除与重建分离、打开索引目录 |
 | P6.2 ✅ | Everything 可选文件搜索来源（官方 SDK 源码编进 exe、来源切换、删除本地快照、非阻塞查询、状态页） |
+| P6.3 ✅ | 设置窗「关于」页（版本/系统/数据目录、复制版本信息、版本单一来源） |
+| P6.4 ✅ | 搜索筛选组（芯片切换、组规则可编辑、恢复默认、Everything `ext:` 下推与零结果重试） |
 | P6（进行中） | 搜索质量修复（配额/路径降权/稳定排序/预筛）、文件内容搜索、打包与签名 |

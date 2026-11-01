@@ -24,6 +24,9 @@ class Renderer;
 
 const wchar_t* WindowClassName();
 constexpr UINT kMsgToggle = WM_APP + 1;
+// Everything 的「去掉 ext: 下推」重试：必须从 WM_COPYDATA 处理里延后出来发，
+// 否则会和 Everything 投递回复的 SendMessage 互相等待（它的投递超时是 3 秒）。
+constexpr UINT kMsgEverythingRetry = WM_APP + 2;
 
 class LauncherWindow {
  public:
@@ -83,6 +86,11 @@ class LauncherWindow {
   void RefreshResults();
   void UpdateFileHits();
   void RequestEverythingRows();
+  // 当前生效的筛选组；nullptr = 「全部」或筛选已关闭。
+  const FilterGroup* CurrentFilterGroup() const;
+  // 切换筛选组（0 = 全部）。会重新查询、淡入、持久化并记日志。
+  void SelectFilter(int index);
+  void CycleFilter(int delta);
   // Everything 模式下按需删除本地快照：只有连上并索引就绪时才删，否则留到下次重试。
   void TryDeleteSnapshotForEverything();
   void Refilter();
@@ -132,6 +140,12 @@ class LauncherWindow {
   int selected_ = 0;
   int scroll_ = 0;
   int visibleRows_ = Scene::kMaxVisibleRows;
+  int hoverChip_ = -1;        // 鼠标悬停的筛选芯片（-1 = 没有）
+  bool mouseTracking_ = false;  // 已向系统登记 TME_LEAVE
+  // 纯扩展名组下推 Everything 后 0 条时的一次性重试标记（"查询\n组名"）。
+  std::wstring pushdownRetryKey_;
+  // 正在处理 Everything 的回复：此期间绝不能回调 Everything（否则卡 3 秒，见 kMsgEverythingRetry）。
+  bool handlingEverythingReply_ = false;
   float selectionRow_ = 0.0f;
   float contentAlpha_ = 1.0f;
   float showAlpha_ = 1.0f;

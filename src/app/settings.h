@@ -3,6 +3,8 @@
 #include <string>
 #include <vector>
 
+#include "search/filter.h"
+
 struct AppSettings {
   std::wstring theme = L"system";  // system/dark/light
   std::wstring accent;             // 空 = 设计蓝；system；#RRGGBB
@@ -14,9 +16,10 @@ struct AppSettings {
   std::vector<std::wstring> indexDirHistory;  // 最近用过的自定义快照目录（最多 5 条）
   std::vector<std::wstring> fileRoots;  // 空 = 桌面/文档/下载
   std::wstring fileSearch = L"local";   // local = Lume 本地索引；everything = 全盘走 Everything
+  FilterSet filters = DefaultFilterSet();  // 搜索框下方的筛选组（含内置「全部」）
 };
 
-// settings.conf：UTF-8 行式 key=value；fileRoot 可重复。
+// settings.conf：UTF-8 行式 key=value；fileRoot / filterGroup 可重复。
 class SettingsStore {
  public:
   static std::wstring Path();

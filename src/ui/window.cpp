@@ -3,6 +3,7 @@
 #include <dwmapi.h>
 #include <imm.h>
 #include <shellapi.h>
+#include <windowsx.h>
 
 #include <algorithm>
 #include <cmath>
@@ -224,7 +225,7 @@ void LauncherWindow::SetOnTimer(std::function<void(UINT_PTR)> callback) {
 void LauncherWindow::ApplyDpi(UINT dpi) {
   dpi_ = dpi < 48 ? 96 : dpi;
   const float scale = static_cast<float>(dpi_) / 96.0f;
-  const float panelHeight = PanelHeight(theme_, visibleRows_);
+  const float panelHeight = PanelHeight(theme_, visibleRows_, settings_.filters.enabled);
   widthPx_ = static_cast<UINT>(std::lround((theme_.panelWidth + theme_.shadowMargin * 2.0f) * scale));
   heightPx_ =
       static_cast<UINT>(std::lround((panelHeight + theme_.shadowMargin * 2.0f) * scale));
@@ -287,7 +288,9 @@ void LauncherWindow::UpdateLayoutForRows() {
   visibleRows_ = wanted;
   const float scale = static_cast<float>(dpi_) / 96.0f;
   heightPx_ = static_cast<UINT>(
-      std::lround((PanelHeight(theme_, visibleRows_) + theme_.shadowMargin * 2.0f) * scale));
+      std::lround((PanelHeight(theme_, visibleRows_, settings_.filters.enabled) +
+                   theme_.shadowMargin * 2.0f) *
+                  scale));
   if (renderer_ && renderer_->kind() != RenderTargetKind::None) {
     renderer_->Resize(widthPx_, heightPx_);
   }
@@ -458,6 +461,8 @@ void LauncherWindow::TryDeleteSnapshotForEverything() {
 void LauncherWindow::ApplySettings(const AppSettings& settings) {
   const bool wasEverything = FileSearchIsEverything();
   settings_ = settings;
+  // 组被删/改过之后 active 可能越界：收敛到合法范围再查询。
+  ClampFilterActive(&settings_.filters);
   SetTheme(MakeTheme(ParseThemeMode(settings_.theme), ParseAccent(settings_.accent)));
   std::wstring error;
   if (!SetAutostart(settings_.autostart, &error)) {
@@ -577,7 +582,8 @@ AboutInfo LauncherWindow::QueryAboutInfo() const {
 }
 
 void LauncherWindow::RebuildRows() {
-  rows_ = BuildMergedRows(apps_, fileHits_, &usage_, input_.text());
+  rows_ = BuildMergedRows(apps_, fileHits_, &usage_, input_.text(), 200, true,
+                          CurrentFilterGroup());
   selected_ = 0;
   scroll_ = 0;
   selectionRow_ = 0.0f;
@@ -587,6 +593,37 @@ void LauncherWindow::RebuildRows() {
   UpdateSceneState();
 }
 
+const FilterGroup* LauncherWindow::CurrentFilterGroup() const {
+  return ActiveFilterGroup(settings_.filters);
+}
+
+void LauncherWindow::SelectFilter(int index) {
+  if (!settings_.filters.enabled) return;
+  const int chips = static_cast<int>(settings_.filters.groups.size()) + 1;
+  if (index < 0 || index >= chips) return;
+  if (index == settings_.filters.active) return;
+  settings_.filters.active = index;
+  const std::wstring label = FilterChipLabels(settings_.filters)[static_cast<size_t>(index)];
+  LARGE_INTEGER start{};
+  QueryPerformanceCounter(&start);
+  RefreshResults();
+  StartContentFade();
+  hoverChip_ = -1;
+  UpdateSceneState();
+  if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+  Log(L"筛选: %ls（第 %d 组）-> %zu 条 (%.1f ms)", label.c_str(), index + 1, rows_.size(),
+      ElapsedMs(start));
+  // 记住上次选中的组（settings.conf 的 filterActive=）；只有切组时才会写这一次盘。
+  if (onSettingsChanged_) onSettingsChanged_(settings_);
+}
+
+void LauncherWindow::CycleFilter(int delta) {
+  const int chips = static_cast<int>(settings_.filters.groups.size()) + 1;
+  if (chips <= 1) return;
+  const int current = std::clamp(settings_.filters.active, 0, chips - 1);
+  SelectFilter(((current + delta) % chips + chips) % chips);
+}
+
 void LauncherWindow::RefreshResults() {
   UpdateFileHits();
   RebuildRows();
@@ -594,8 +631,9 @@ void LauncherWindow::RefreshResults() {
 
 void LauncherWindow::UpdateFileHits() {
   const std::wstring& query = input_.text();
+  const FilterGroup* filter = CurrentFilterGroup();
   if (!FileSearchIsEverything()) {
-    fileHits_ = files_.Search(query, kMaxFileHits);
+    fileHits_ = files_.Search(query, kMaxFileHits, filter);
     return;
   }
   if (query.empty()) {
@@ -608,10 +646,19 @@ void LauncherWindow::UpdateFileHits() {
 
 void LauncherWindow::RequestEverythingRows() {
   if (!hwnd_) return;
+  if (handlingEverythingReply_) {
+    // 防御：正在处理 Everything 的回复（它阻塞在投递上），此时不能再发查询，改到消息循环里发。
+    PostMessageW(hwnd_, kMsgEverythingRetry, 0, 0);
+    return;
+  }
   const uint32_t generation = ++queryGeneration_;
+  const FilterGroup* filter = CurrentFilterGroup();
+  // 同一次「查询 + 组」如果已经因为 ext: 下推拿过 0 条，就不再下推（见 WM_COPYDATA 里的重试）。
+  const std::wstring key = input_.text() + L'\n' + (filter ? filter->name : L"");
+  const bool allowPushdown = (key != pushdownRetryKey_);
   LARGE_INTEGER sendStart{};
   QueryPerformanceCounter(&sendStart);
-  const bool sent = everything_.Request(input_.text(), generation);
+  const bool sent = everything_.Request(input_.text(), generation, filter, allowPushdown);
   const double sendMs = ElapsedMs(sendStart);
   QueryPerformanceCounter(&everythingRequestedAt_);  // 往返计时从「发完」开始
   if (sent) {
@@ -646,6 +693,18 @@ void LauncherWindow::UpdateSceneState() {
   sceneState_.compositionLength = input_.composing() ? input_.composition().size() : 0;
   sceneState_.caretVisible = caretVisible_;
   sceneState_.rows = rows_;
+  sceneState_.chips.clear();
+  if (settings_.filters.enabled) {
+    const std::vector<std::wstring> labels = FilterChipLabels(settings_.filters);
+    const int active = std::clamp(settings_.filters.active, 0, static_cast<int>(labels.size()) - 1);
+    for (size_t i = 0; i < labels.size(); ++i) {
+      ChipState chip;
+      chip.label = labels[i];
+      chip.active = static_cast<int>(i) == active;
+      sceneState_.chips.push_back(std::move(chip));
+    }
+  }
+  sceneState_.hoverChip = hoverChip_;
   sceneState_.selected = selected_;
   sceneState_.scroll = scroll_;
   sceneState_.visibleRows = visibleRows_;
@@ -832,6 +891,8 @@ void LauncherWindow::Hide() {
   ShowWindow(hwnd_, SW_HIDE);
   if (visible_) Log(L"隐藏窗口");
   visible_ = false;
+  hoverChip_ = -1;
+  mouseTracking_ = false;
   KillTimer(hwnd_, kTimerCaret);
   KillTimer(hwnd_, kTimerAnim);
   KillTimer(hwnd_, kTimerIcons);
@@ -845,6 +906,20 @@ void LauncherWindow::Hide() {
 
 bool LauncherWindow::HandleKeyDown(WPARAM key) {
   const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+  // 筛选组：Tab / Shift+Tab 循环，Ctrl+1..9 直达（「全部」= 第 1 个）。
+  if (key == VK_TAB) {
+    if (!settings_.filters.enabled || input_.composing()) return false;
+    const bool shiftTab = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    CycleFilter(shiftTab ? -1 : 1);
+    return true;
+  }
+  if (ctrl && key >= '1' && key <= '9') {
+    if (!settings_.filters.enabled) return false;
+    const int index = static_cast<int>(key - '1');
+    if (index >= static_cast<int>(settings_.filters.groups.size()) + 1) return true;  // 吞掉，不动
+    SelectFilter(index);
+    return true;
+  }
   switch (key) {
     case VK_ESCAPE:
       if (input_.composing()) {
@@ -1055,11 +1130,34 @@ LRESULT LauncherWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
   }
   if (message == WM_COPYDATA) {
     // Everything 的查询回复：SDK 把结果拷进自己的全局列表后这里再读出来。
+    // 注意：处理期间 Everything 正阻塞在「把这条回复投给我们」的 SendMessage 上（3 秒超时），
+    // 所以这段代码里不能再去调用 Everything（Request / Status），只能拷贝 + 重排 + 延后重试。
     uint32_t generation = 0;
     std::vector<FileHit> hits;
-    if (everything_.HandleReply(message, wParam, lParam, &generation, &hits)) {
+    handlingEverythingReply_ = true;
+    const bool handled = everything_.HandleReply(message, wParam, lParam, &generation, &hits);
+    handlingEverythingReply_ = false;
+    if (handled) {
       if (generation == queryGeneration_) {
         fileHits_ = std::move(hits);
+        // 纯扩展名组把 ext: 下推给 Everything 后 0 条：去掉下推重试一次（每次查询 + 组只重试一次），
+        // 免得某个扩展名在 ext: 语法里表现异常时界面空白。
+        const FilterGroup* filter = CurrentFilterGroup();
+        const std::wstring key = input_.text() + L'\n' + (filter ? filter->name : L"");
+        if (fileHits_.empty() && everything_.lastRequestHadFilter() && key != pushdownRetryKey_) {
+          pushdownRetryKey_ = key;
+          Log(L"Everything 下推 ext: 后 0 条，改用本地过滤重试: \"%ls\"",
+              everything_.lastSearch().c_str());
+          // 重试必须延后到消息循环里：这里直接 Request 会与 Everything 互相等待，
+          // 最后只能等它的 3 秒投递超时，表现为切换筛选组时卡顿。
+          PostMessageW(hwnd_, kMsgEverythingRetry, 0, 0);
+          // 先把这一批（空）结果画出来：占位行或应用行，不要让界面停在旧结果上。
+          RebuildRows();
+          StartContentFade();
+          UpdateSceneState();
+          InvalidateRect(hwnd_, nullptr, FALSE);
+          return 0;
+        }
         RebuildRows();
         StartContentFade();
         UpdateSceneState();
@@ -1109,6 +1207,48 @@ LRESULT LauncherWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_IME_ENDCOMPOSITION:
       if (HandleIme(message, wParam, lParam)) return 0;
       break;
+    case WM_LBUTTONDOWN: {
+      // 只有筛选芯片一行吃鼠标；其余区域保持纯键盘交互（与旧版一致）。
+      if (!scene_ || sceneState_.chips.empty()) break;
+      const float scale = static_cast<float>(dpi_) / 96.0f;
+      const float x = static_cast<float>(GET_X_LPARAM(lParam)) / scale - theme_.shadowMargin;
+      const float y = static_cast<float>(GET_Y_LPARAM(lParam)) / scale - theme_.shadowMargin;
+      const int chip = scene_->ChipAt(sceneState_, x, y);
+      if (chip >= 0) {
+        SelectFilter(chip);
+        return 0;
+      }
+      break;
+    }
+    case WM_MOUSEMOVE: {
+      if (!scene_ || sceneState_.chips.empty()) break;
+      if (!mouseTracking_) {
+        TRACKMOUSEEVENT track{};
+        track.cbSize = sizeof(track);
+        track.dwFlags = TME_LEAVE;
+        track.hwndTrack = hwnd_;
+        TrackMouseEvent(&track);
+        mouseTracking_ = true;
+      }
+      const float scale = static_cast<float>(dpi_) / 96.0f;
+      const float x = static_cast<float>(GET_X_LPARAM(lParam)) / scale - theme_.shadowMargin;
+      const float y = static_cast<float>(GET_Y_LPARAM(lParam)) / scale - theme_.shadowMargin;
+      const int chip = scene_->ChipAt(sceneState_, x, y);
+      if (chip != hoverChip_) {
+        hoverChip_ = chip;
+        UpdateSceneState();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+      }
+      return 0;
+    }
+    case WM_MOUSELEAVE:
+      mouseTracking_ = false;
+      if (hoverChip_ != -1) {
+        hoverChip_ = -1;
+        UpdateSceneState();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+      }
+      return 0;
     case WM_MOUSEWHEEL: {
       const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
       ScrollBy(delta > 0 ? -1 : 1);
@@ -1180,6 +1320,13 @@ LRESULT LauncherWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
     case kMsgToggle:
       ShowAndFocus();
       return 0;
+    case kMsgEverythingRetry: {
+      // 从 WM_COPYDATA 里延后出来的重试：只在「查询 + 组」还没变时补发一次。
+      const FilterGroup* filter = CurrentFilterGroup();
+      const std::wstring key = input_.text() + L'\n' + (filter ? filter->name : L"");
+      if (key == pushdownRetryKey_) RequestEverythingRows();
+      return 0;
+    }
     case WM_CLOSE:
       DestroyWindow(hwnd_);
       return 0;
