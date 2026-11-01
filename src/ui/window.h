@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -66,6 +67,8 @@ class LauncherWindow {
   void TestHotkeyCapture(const std::wstring& combo);
   // 测试钩子：把鼠标消息投到第 row 行（0 起）的中心，验证命中测试与点击启动。
   void InjectMouseRow(int row, bool click);
+  // 测试钩子：模拟一次托盘左键（v4 会先后送来 NIN_SELECT 与 WM_LBUTTONUP 两条通知）。
+  void InjectTrayClick();
   bool visible() const { return visible_; }
   HWND hwnd() const { return hwnd_; }
   const AppSettings& settings() const { return settings_; }
@@ -93,6 +96,8 @@ class LauncherWindow {
   // 切换筛选组（0 = 全部）。会重新查询、淡入、持久化并记日志。
   void SelectFilter(int index);
   void CycleFilter(int delta);
+  // 托盘左键：只显示、不切换（一次点击会来两条通知，去抖后只处理一次）。
+  void ShowFromTray();
   // Everything 模式下按需删除本地快照：只有连上并索引就绪时才删，否则留到下次重试。
   void TryDeleteSnapshotForEverything();
   void Refilter();
@@ -155,6 +160,8 @@ class LauncherWindow {
   int hoverChip_ = -1;        // 鼠标悬停的筛选芯片（-1 = 没有）
   int hoverRow_ = -1;         // 鼠标悬停的结果行（绝对值，-1 = 没有）
   int pressedRow_ = -1;       // 左键按下时的行（抬起时同一行才启动）
+  // 最近一次托盘左键的时间（GetTickCount64）：用于去抖和「shell 抢前台不算失活」。
+  uint64_t lastTrayClickAt_ = 0;
   bool mouseTracking_ = false;  // 已向系统登记 TME_LEAVE
   // 纯扩展名组下推 Everything 后 0 条时的一次性重试标记（"查询\n组名"）。
   std::wstring pushdownRetryKey_;

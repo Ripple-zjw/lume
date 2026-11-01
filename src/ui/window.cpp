@@ -53,6 +53,10 @@ constexpr UINT_PTR kTimerFileRefresh = 0x22;
 constexpr UINT_PTR kTimerIcons = 0x23;
 constexpr UINT_PTR kTimerTrayRetry = 0x24;
 constexpr UINT kCaretBlinkMs = 530;
+// 托盘左键去抖：一次点击 shell 会送来两条通知（NIN_SELECT + WM_LBUTTONUP），窗口只处理一次。
+constexpr uint64_t kTrayClickDebounceMs = 400;
+// 托盘点开的这一下，shell 收尾时会把前台抢回 taskbar；这段时间内由 shell 触发的失活不作数。
+constexpr uint64_t kTrayDeactivateGraceMs = 600;
 constexpr double kShowAnimMs = 90.0;
 constexpr double kSelectionAnimMs = 120.0;
 constexpr double kContentAnimMs = 80.0;
@@ -74,6 +78,17 @@ double ElapsedMs(const LARGE_INTEGER& start) {
 double Progress(const LARGE_INTEGER& start, double durationMs) {
   const double t = ElapsedMs(start) / durationMs;
   return t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
+}
+
+// 是不是 shell 自己的界面（任务栏 / 托盘溢出区 / XAML 托管的溢出面板）。
+// 托盘左键处理过程中前台会短暂落到这些窗口上，用来区分「用户真的去点别处了」和「点击收尾」。
+bool IsShellSurface(HWND window) {
+  if (!window) return false;
+  wchar_t name[64] = {};
+  if (!GetClassNameW(window, name, ARRAYSIZE(name))) return false;
+  return wcscmp(name, L"Shell_TrayWnd") == 0 || wcscmp(name, L"Shell_SecondaryTrayWnd") == 0 ||
+         wcscmp(name, L"NotifyIconOverflowWindow") == 0 ||
+         wcscmp(name, L"TopLevelWindowForOverflowXamlIsland") == 0;
 }
 
 float EaseOut(double t) {
@@ -869,6 +884,27 @@ void LauncherWindow::RenderNow() {
   renderer_->EndFrame();
 }
 
+void LauncherWindow::ShowFromTray() {
+  // 托盘左键只负责「打开」，不做切换：一次点击 shell 会先后送来 NIN_SELECT 与 WM_LBUTTONUP 两条
+  // 通知，任何「切换」语义都会变成「显示 → 隐藏」，用户看到的就是搜索框闪一下消失。
+  const uint64_t now = GetTickCount64();
+  if (lastTrayClickAt_ != 0 && now - lastTrayClickAt_ < kTrayClickDebounceMs) {
+    Log(L"托盘左键: 忽略重复通知（距上次 %llu ms）", now - lastTrayClickAt_);
+    return;
+  }
+  lastTrayClickAt_ = now;
+  Log(L"托盘左键: 显示窗口");
+  ShowAndFocus();
+}
+
+void LauncherWindow::InjectTrayClick() {
+  if (!hwnd_) return;
+  // v4 的真实顺序：先 NIN_SELECT，再 WM_LBUTTONUP（都是 kTrayMessage，通知码在 lParam 低字）。
+  Log(L"注入托盘左键: NIN_SELECT + WM_LBUTTONUP");
+  PostMessageW(hwnd_, kTrayMessage, 0, MAKELPARAM(NIN_SELECT, 1));
+  PostMessageW(hwnd_, kTrayMessage, 0, MAKELPARAM(WM_LBUTTONUP, 1));
+}
+
 void LauncherWindow::Toggle() {
   if (visible_) {
     Hide();
@@ -1271,9 +1307,13 @@ LRESULT LauncherWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_ERASEBKGND:
       return 1;
     case kTrayMessage: {
+      // NOTIFYICON_VERSION_4 的布局：lParam 低字是通知码（NIN_SELECT / WM_LBUTTONUP / WM_CONTEXTMENU
+      // 等），高字是图标 id。一次左键点击 shell 会**先后**送来两条（NIN_SELECT + WM_LBUTTONUP），
+      // 因此这里绝不能直接 Toggle()：那会「显示 → 隐藏」，用户看到的就是搜索框闪一下没了。
       const UINT event = LOWORD(lParam);
+      Log(L"托盘通知: event=%u wParam=%llu", event, static_cast<unsigned long long>(wParam));
       if (event == WM_LBUTTONUP || event == NIN_SELECT || event == NIN_KEYSELECT) {
-        Toggle();
+        ShowFromTray();
       } else if (event == WM_RBUTTONUP || event == WM_CONTEXTMENU) {
         const UINT command = tray_.ShowMenu(settings_.autostart);
         if (command) HandleTrayCommand(command);
@@ -1388,6 +1428,14 @@ LRESULT LauncherWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
     }
     case WM_ACTIVATE:
       if (LOWORD(wParam) == WA_INACTIVE && visible_) {
+        // 托盘点开的那一下，shell 收尾时会把前台抢回任务栏，紧跟的失活会把刚显示的窗口立刻藏起来
+        // ——同样表现为「闪一下就没了」。只在「刚处理过托盘左键」且新前台是 shell 自己的界面时放行它。
+        const uint64_t now = GetTickCount64();
+        if (lastTrayClickAt_ != 0 && now - lastTrayClickAt_ < kTrayDeactivateGraceMs &&
+            IsShellSurface(GetForegroundWindow())) {
+          Log(L"托盘左键: 忽略 shell 抢前台导致的失活（%llu ms）", now - lastTrayClickAt_);
+          return 0;
+        }
         Hide();
       }
       return 0;

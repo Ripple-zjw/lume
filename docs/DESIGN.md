@@ -134,7 +134,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 ## 11. P5 实测结论
 
 1. **设置**：`settings.conf`（UTF-8 `key=value`，`fileRoot` 可重复）。路径候选 `%APPDATA%\Lume` → exe 同目录，读写都逐个尝试；`theme/accent/hotkey/autostart/tray/fileRoot`。CLI `--theme/--accent` 用 `themeSpecified/accentSpecified` 区分“显式覆盖”与用户设置。实测写入自定义设置后启动日志为 `theme=dark accent="#FF6A00" hotkey=Ctrl+Alt+Space`，热键成功注册 `Ctrl+Alt+Space`。
-2. **托盘**：`Shell_NotifyIconW(NIM_ADD + NIM_SETVERSION v4)`，`NOTIFYICON_VERSION_4` 回调用 `LOWORD(lParam)` 判断事件；左键切换窗口、右键弹菜单（显示/开机自启/设置/退出）；监听 `RegisterWindowMessage("TaskbarCreated")` 在资源管理器重启后重挂。沙箱内 `NIM_ADD` 失败，但真实桌面会话自检 `tray=PASS`。
+2. **托盘**：`Shell_NotifyIconW(NIM_ADD + NIM_SETVERSION v4)`，`NOTIFYICON_VERSION_4` 回调用 `LOWORD(lParam)` 判断事件；左键只唤出（13.8 修掉了「闪一下消失」）、右键弹菜单（显示/开机自启/设置/退出）；监听 `RegisterWindowMessage("TaskbarCreated")` 在资源管理器重启后重挂。沙箱内 `NIM_ADD` 失败，但真实桌面会话自检 `tray=PASS`。
 3. **自启**：写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Lume = "<exe>" --autostart`；沙箱中 `RegOpenKeyExW(KEY_SET_VALUE)` 被拒绝（Win32 5），真实会话自检 `autostart=PASS (set=1 read=1 restore=1)`。
 4. **设置窗**：P5 为原生 Win32 控件（ComboBox/Checkbox/ListBox/Button），按 `DpiForPoint` 缩放；P5.1 已替换为自绘深色控件（见 §12），保存回调链不变：窗口 `ApplySettings` → 主题重绘、`files_.Stop/SetRoots/Start`、`SetAutostart`，再由 app 持久化并重注册热键。
 5. **动态高度**：`visibleRows_ = clamp(rows.size(),1,6)`，变化时 `ResizeBuffers + SetWindowPos`；实测 3 条结果窗口 960×360（125% DPI），6 条 960×540。结果为空且有查询时给占位行，高度 1 行。
@@ -265,6 +265,20 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
     - 代价/取舍：阴影不再有向下偏移的「投影感」（原本底部 +2 DIP），换来四边对称、角落与面板同心。
     - 角部安全：不裁圆角之后窗口四角不再参与裁剪，面板圆角（16 DIP）与阴影外圈（同为 16 DIP）直接由 D2D 抗锯齿绘制，不会再出现「被削掉一角」或「外圈更方」。
     - 阴影与边距是耦合的：`shadowMargin` 同时决定透明带宽度和阴影扩散上限（`shadowMargin - 2`），改它即可整体放大/收紧投影；代价是边距越宽越容易看成「多套了一个框」。
+
+## 13.8 托盘左键唤出修复（2026-11-01）
+
+1. **症状**：左键点托盘图标，搜索框闪一下就消失；期望是「点开就停在屏幕上」。
+2. **根因**：`NOTIFYICON_VERSION_4` 下，一次左键点击 shell 会**先后送来两条** `uCallbackMessage`——`NIN_SELECT`（`event=1024`，选择语义）和 `WM_LBUTTONUP`（`event=514`，鼠标抬起），通知码都在 `lParam` 低字、图标 id 在高字（`wParam` 高低字是锚点坐标）。旧代码把这两个通知码都映射到 `Toggle()`，于是一次点击 = 「显示 → 隐藏」，肉眼看到的就是闪一下。日志直接证实（`--tray-click` 注入同样的两条）：
+
+   ```
+   托盘通知: event=1024 wParam=0   → 托盘左键: 显示窗口 → 显示窗口 (…)
+   托盘通知: event=514 wParam=0    → 托盘左键: 忽略重复通知（距上次 0 ms）
+   ```
+
+3. **第二层原因**：即使只处理一条通知，托盘点击收尾时 shell 会把前台抢回任务栏，紧跟的 `WM_ACTIVATE(WA_INACTIVE)` 仍会把刚显示的窗口藏掉。现在 `WM_ACTIVATE` 里加了一条放行条件：「刚处理过托盘左键 600ms 内」且「新前台是 shell 自己的界面」（`Shell_TrayWnd` / `Shell_SecondaryTrayWnd` / `NotifyIconOverflowWindow` / `TopLevelWindowForOverflowXamlIsland`）。用户真的去点别的应用时，前台不是这些窗口，照常隐藏。
+4. **新语义**：左键 = **只打开、不切换**（`ShowFromTray()`），并做 400ms 去抖；隐藏仍走 Esc / 点到别处 / 热键，热键仍是 Toggle。这样连点两下托盘也只是「保持在屏幕上」，不会闪。
+5. **验证手段**：加了 `--tray-click`（进程内 `PostMessage` 两条 v4 通知，顺序与真实 shell 一致），日志里能看到「显示窗口」一次、无「隐藏窗口」。托盘本身在沙箱里 `NIM_ADD` 会被 UIPI 拒绝（`tray=FAIL`），所以真机手感仍需人工确认：`tools\regression.ps1` 的手检清单第 1 条已改成「左键应让搜索框停在屏幕上」。
 
 ## 14. 后续方向
 

@@ -115,7 +115,9 @@ if ($SkipBench) {
 
 Write-Host ''
 Write-Host 'Manual checks (not covered by self-check):' -ForegroundColor Yellow
-Write-Host '  1. Tray: a Lume icon appears; right-click shows Show / Autostart / Settings / Exit; left-click toggles.'
+Write-Host '  1. Tray: a Lume icon appears; right-click shows Show / Autostart / Settings / Exit;'
+Write-Host '     left-click opens the launcher and it stays on screen (no flash-and-hide).'
+Write-Host '     `Lume.exe --tray-click --ms=1500` replays the two v4 notifications in-process.'
 Write-Host '  2. Hotkey: Alt+Space (or your configured combo) shows/hides the launcher.'
 Write-Host '  3. Open: when open=PASS above, the default editor should have opened %TEMP%\lume-selfcheck-opened.txt.'
 Write-Host '  4. Settings: --settings opens the dark settings window; save, restart, values persist.'

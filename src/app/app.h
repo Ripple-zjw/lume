@@ -25,6 +25,8 @@ struct AppOptions {
   // 测试钩子（1 起，0 = 关闭）：把鼠标消息投到某一行，验证悬停高亮与点击启动。
   int hoverRow = 0;
   int clickRow = 0;
+  // 测试钩子：模拟一次托盘左键（两条 v4 通知），验证「只打开、不闪烁」。
+  bool trayClickTest = false;
   bool noHotkey = false;
   bool glass = false;
   bool openSettings = false;

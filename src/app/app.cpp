@@ -318,6 +318,7 @@ int RunLauncher(const AppOptions& options) {
     // 测试钩子：合成鼠标消息（先悬停再点，和真人操作顺序一致）。
     if (options.hoverRow > 0) window.InjectMouseRow(options.hoverRow - 1, false);
     if (options.clickRow > 0) window.InjectMouseRow(options.clickRow - 1, true);
+    if (options.trayClickTest) window.InjectTrayClick();
 
     MSG msg{};
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
