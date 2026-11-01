@@ -357,9 +357,12 @@ void Scene::Draw(const Theme& theme, const SceneState& state, bool fakeWallpaper
       D2D1::RectF(panel.x, panel.y, panel.x + theme.panelWidth, panel.y + panelHeight),
       theme.corner, theme.corner};
 
-  // 分层柔和阴影：扩散量不超过 shadowMargin，否则会被窗口边缘截断成硬边。
-  // margin 只有 3 DIP 时就退化成贴着面板的一圈薄阴影（几乎看不见），面板轮廓靠 border 那 1px。
-  const float shadowLimit = std::max(0.0f, theme.shadowMargin - 0.5f);
+  // 分层柔和阴影。两条约束：
+  // 1) 扩散量比 shadowMargin 少 2 DIP，外面留一圈纯透明——窗口自己的圆角裁剪（DWM 的半径比面板小）
+  //    就不会切到阴影，四角不会出现「比面板更方的硬弧」；
+  // 2) 每层的圆角半径都用 theme.corner（不随扩散变大）：外圈轮廓的圆角与面板一致，
+  //    否则同心放大（radius + spread）会让外圈看起来比面板更「方」。
+  const float shadowLimit = std::max(0.0f, theme.shadowMargin - 2.0f);
   for (int layer = 6; layer >= 1; --layer) {
     const float spread = std::min(static_cast<float>(layer) * 2.2f, shadowLimit);
     if (spread <= 0.0f) break;
@@ -367,8 +370,8 @@ void Scene::Draw(const Theme& theme, const SceneState& state, bool fakeWallpaper
     ctx->FillRoundedRectangle(
         D2D1::RoundedRect(
             D2D1::RectF(panelRect.rect.left - spread, panelRect.rect.top - spread,
-                        panelRect.rect.right + spread, panelRect.rect.bottom + spread + 2.0f),
-            theme.corner + spread, theme.corner + spread),
+                        panelRect.rect.right + spread, panelRect.rect.bottom + spread),
+            theme.corner, theme.corner),
         brush_.Get());
   }
 

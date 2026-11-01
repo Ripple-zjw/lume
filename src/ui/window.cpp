@@ -33,8 +33,8 @@
 #ifndef DWMSBT_NONE
 #define DWMSBT_NONE 1
 #endif
-#ifndef DWMWCP_ROUND
-#define DWMWCP_ROUND 2
+#ifndef DWMWCP_DONOTROUND
+#define DWMWCP_DONOTROUND 1
 #endif
 // 窗口描边颜色：DWMWA_COLOR_NONE 让 DWM 不画那圈 1px 边框。
 #ifndef DWMWA_BORDER_COLOR
@@ -246,14 +246,17 @@ void LauncherWindow::ApplyBackdrop() {
   LogHr(L"DwmSetWindowAttribute(dark)",
         DwmSetWindowAttribute(hwnd_, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark)));
   // 不能开系统背景（Mica）。它填满的是**整个窗口矩形**（暗色下是 #202020），而我们的窗口比面板
-  // 大整整一圈 shadowMargin（24 DIP）：于是面板外面那圈透明区域被 Mica 涂成一个不透明的方框，
+  // 大整整一圈 shadowMargin：于是面板外面那圈透明区域被 Mica 涂成一个不透明的方框，
   // 看上去就是「搜索框外面又套了一个框」。实测（窗口背后垫一块纯品红）：带 Mica 时窗口边缘那一圈
   // 是 (32,32,32) 的死色（品红完全透不出来），关掉后同一圈变成品红被自绘阴影压暗的渐变。
   const int backdrop = DWMSBT_NONE;
   const HRESULT backdropHr =
       DwmSetWindowAttribute(hwnd_, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, sizeof(backdrop));
   if (FAILED(backdropHr)) LogHr(L"DwmSetWindowAttribute(backdrop)", backdropHr);
-  const int corner = DWMWCP_ROUND;
+  // 也不要 DWM 给窗口裁圆角（DWMWCP_ROUND）。它的半径是系统定的（约 8–10px），比面板的
+  // theme.corner（16 DIP）小得多；裁剪会沿窗口矩形切掉自绘阴影的四角，看起来就像外框的圆角
+  // 「比面板方」。窗口本身没有填充，形状全靠自绘的面板 + 阴影，所以不裁圆角没有任何副作用。
+  const int corner = DWMWCP_DONOTROUND;
   DwmSetWindowAttribute(hwnd_, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
   // 系统背景还会沿窗口矩形画一圈 1px 描边，同样多余（阴影是我们自己画的）。
   const COLORREF borderNone = static_cast<COLORREF>(DWMWA_COLOR_NONE);
