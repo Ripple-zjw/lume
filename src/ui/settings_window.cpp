@@ -344,9 +344,11 @@ void SettingsWindow::CreateControls() {
                                    nullptr, nullptr);
   applyFont(hotkeyCapture_);
 
+  // BS_AUTOCHECKBOX 与 BS_OWNERDRAW 共用低位类型字段：两者按位或后类型变成 BS_OWNERDRAW，
+  // 控件既不再自动切换勾选，也不再响应 BM_GETCHECK/BM_SETCHECK。所以这里只用 BS_OWNERDRAW，
+  // 勾选状态由 settings_.autostart 维护（见 Handle 的 WM_COMMAND 与 DrawButton）。
   autostartCheck_ = CreateWindowExW(0, L"BUTTON", L"开机自动启动",
-                                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX |
-                                        BS_OWNERDRAW,
+                                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
                                     Scale(20), Scale(136), Scale(300), Scale(26), hwnd_,
                                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdAutostart)),
                                     nullptr, nullptr);
@@ -398,7 +400,8 @@ void SettingsWindow::Populate() {
   SetWindowTextW(hotkeyCapture_, settings_.hotkey.c_str());
   hotkeyConflict_ = false;
   SetWindowTextW(capEdit_, std::to_wstring(settings_.indexSizeMB).c_str());
-  SendMessageW(autostartCheck_, BM_SETCHECK, settings_.autostart ? BST_CHECKED : BST_UNCHECKED, 0);
+  // 该控件是 BS_OWNERDRAW：BM_SETCHECK/BM_GETCHECK 对它无效，勾选状态直接取自设置。
+  InvalidateRect(autostartCheck_, nullptr, FALSE);
 
   SendMessageW(rootsList_, LB_RESETCONTENT, 0, 0);
   for (const std::wstring& root : roots_) {
@@ -453,7 +456,7 @@ void SettingsWindow::OnSave() {
     return;
   }
   settings_.indexSizeMB = static_cast<int>(cap);
-  settings_.autostart = SendMessageW(autostartCheck_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+  // settings_.autostart 已在点击「开机自动启动」时切换，无需再从控件读回勾选状态。
 
   std::vector<std::wstring> roots;
   for (const std::wstring& root : roots_) {
@@ -478,19 +481,27 @@ void SettingsWindow::DrawButton(const DRAWITEMSTRUCT* item) {
   DeleteObject(background);
 
   if (id == kIdAutostart) {
+    // 自绘勾选框：勾选状态来自 settings_.autostart，未勾选时按下也立即用强调色描边，
+    // 让点击有明确反馈（BS_OWNERDRAW 控件不会自己切换状态）。
+    const bool checked = settings_.autostart;
     RECT box = rect;
     box.right = box.left + Scale(18);
     box.top = rect.top + (rect.bottom - rect.top - Scale(18)) / 2;
     box.bottom = box.top + Scale(18);
-    HPEN pen = CreatePen(PS_SOLID, 1, kBorder);
+
+    HBRUSH boxFill = CreateSolidBrush(checked ? (pressed ? RGB(0x4C, 0x86, 0xDD) : kAccent)
+                                              : kControl);
+    HGDIOBJ oldBrush = SelectObject(dc, boxFill);
+    HPEN pen = CreatePen(PS_SOLID, 1, (checked || pressed) ? kAccent : kBorder);
     HGDIOBJ oldPen = SelectObject(dc, pen);
-    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
     RoundRect(dc, box.left, box.top, box.right, box.bottom, 4, 4);
-    SelectObject(dc, oldBrush);
     SelectObject(dc, oldPen);
+    SelectObject(dc, oldBrush);
     DeleteObject(pen);
-    if (SendMessageW(item->hwndItem, BM_GETCHECK, 0, 0) == BST_CHECKED) {
-      HPEN checkPen = CreatePen(PS_SOLID, 2, kAccent);
+    DeleteObject(boxFill);
+
+    if (checked) {
+      HPEN checkPen = CreatePen(PS_SOLID, 2, RGB(0x10, 0x18, 0x28));
       oldPen = SelectObject(dc, checkPen);
       MoveToEx(dc, box.left + 4, box.top + 9, nullptr);
       LineTo(dc, box.left + 8, box.top + 13);
@@ -503,7 +514,15 @@ void SettingsWindow::DrawButton(const DRAWITEMSTRUCT* item) {
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, disabled ? RGB(0x80, 0x80, 0x88) : kText);
     HGDIOBJ oldFont = SelectObject(dc, font_);
-    DrawTextW(dc, L"开机自动启动", -1, &text, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    wchar_t label[64] = {};
+    GetWindowTextW(item->hwndItem, label, ARRAYSIZE(label));
+    DrawTextW(dc, label, -1, &text, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    if (item->itemState & ODS_FOCUS) {
+      RECT focus = text;
+      DrawTextW(dc, label, -1, &focus, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_CALCRECT);
+      InflateRect(&focus, Scale(2), Scale(1));
+      DrawFocusRect(dc, &focus);
+    }
     SelectObject(dc, oldFont);
     return;
   }
@@ -579,6 +598,12 @@ LRESULT SettingsWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         SetWindowTextW(accentButton_,
                        accentIndex_ == 1 ? L"跟随系统强调色" : L"设计蓝 #6EA8FF");
         InvalidateRect(accentButton_, nullptr, TRUE);
+        return 0;
+      }
+      if (id == kIdAutostart) {
+        settings_.autostart = !settings_.autostart;
+        InvalidateRect(autostartCheck_, nullptr, FALSE);
+        Log(L"设置窗自启开关: %ls", settings_.autostart ? L"开" : L"关");
         return 0;
       }
       if (id == kIdClearIndex) {

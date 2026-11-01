@@ -151,6 +151,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 5. **设置保存实测**：真实会话中通过设置窗保存了 `theme=light, accent=system, fileRoot=F:\, E:\`，说明保存链路与多路径回退可用；`--self-check` 会打印实际写入路径而不是首选路径，并原地重写同一份设置（不改内容）。
 6. **体积**：exe 约 1.76MB；图标 PNG 6 个共约 5KB；启动读取 PNG 后首帧恢复 15.6ms。
 7. **热键捕获修复**：设置窗捕获时窗口只收到 `VK_PROCESSKEY`（Ctrl+Space 被输入法切换占用），拼出残缺的 `Ctrl`。现于捕获框获得焦点时安装 `WH_KEYBOARD_LL` 钩子：在输入法处理前拿原始按键、命中组合时吞掉该键及其 keyup（避免触发 IME 切换），投递到 UI 线程做格式化和冲突预检；放行 Alt+Tab/Alt+F4/Esc。`--test-capture=Ctrl+Space` 通过 `SendInput` 合成按键做端到端验证：日志 `热键捕获测试: 合成 Ctrl+Space -> 捕获框 "Ctrl+Space"`。
+8. **自启勾选框修复**：自绘复选框原先写成 `BS_AUTOCHECKBOX | BS_OWNERDRAW`。按钮样式类型占低位 4 位（`BS_AUTOCHECKBOX=0x3`、`BS_OWNERDRAW=0xB`），按位或后类型变成 `BS_OWNERDRAW`：控件不再自动切换勾选，`BM_GETCHECK`/`BM_SETCHECK` 也全部失效——表现为「点不动」，且保存时永远读到未勾选，`autostart` 无法从设置窗开启。现只用 `BS_OWNERDRAW`，勾选状态由 `settings_.autostart` 维护：`WM_COMMAND` 里翻转并 `InvalidateRect`，`DrawButton` 按该值画（勾选为强调色实心块 + 深色对勾，未勾选按下时描边强调色），`OnSave` 直接取该值。探针（真实鼠标消息点击 + 保存回调 + 截图）三例均通过。
 
 ## 13. P6 搜索质量修复（2026-10-31）
 
