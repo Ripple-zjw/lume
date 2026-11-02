@@ -2,13 +2,21 @@
 
 Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤出、输入即搜、回车启动应用与文件。C++20 + Win32 + Direct2D/DirectWrite + DirectComposition，免安装、免管理员、单 exe。
 
-**当前版本：0.2.3。**Windows 11（build 22621+）x64，免安装单 exe；发布包在 `dist\Lume-0.2.3-win64.zip`。
+**当前版本：0.2.4。**Windows 11（build 22621+）x64，免安装单 exe；发布包在 `dist\Lume-0.2.4-win64.zip`。
 
 **当前进度：P6 搜索质量修复（紧凑索引、按大小限制、精确匹配优先），P6.4 筛选组已完成。**
 
 ![自绘深色设置窗](docs/images/p5/settings-dark.png)
 
 ![磁盘缓存图标与动态高度](docs/images/p5/icons-cached.png)
+
+## 下载
+
+[![Release](https://github.com/Ripple-zjw/lume/actions/workflows/release.yml/badge.svg)](https://github.com/Ripple-zjw/lume/actions/workflows/release.yml)
+
+从 [Releases](https://github.com/Ripple-zjw/lume/releases/latest) 下载 `Lume-<版本>-win64.zip`，解压后双击 `Install.cmd` 即可（免安装、免管理员）。
+
+发布由 GitHub Actions 自动完成（`.github/workflows/release.yml`）：推送 `v*` 标签即以该标签为唯一版本来源，写入 exe 资源后构建，产物连同 `SHA256SUMS.txt` 一起发到 Release。工具链版本锁定，重建不会漂移。
 
 ## 系统要求
 
@@ -219,7 +227,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Run
 ```powershell
 # 编译 + 打 zip 发布包（版本号同时用于目录/文件名，需与 assets/app.rc 一致）
 powershell -ExecutionPolicy Bypass -File .\build.ps1 -Recompile -Package
-# 产物：dist\Lume-0.2.3-win64.zip（以及同名目录，便于先本地试跑）
+# 产物：dist\Lume-0.2.4-win64.zip（以及同名目录，便于先本地试跑）
 ```
 
 压缩包内容：`Lume.exe`（单文件、静态链接）+ `Install.cmd` + `README.txt`（系统要求、快捷键、首次索引、卸载）。解压即用，不需要安装。`README.txt` 模板在 `packaging\README.txt`；`-Package` 会校验 exe 的 `ProductVersion` 与 `-Version`（默认 `0.2.3`）一致，并打印 zip 的 SHA256。
@@ -413,3 +421,7 @@ docs/images/p6/            P6 排序修复 / Everything / 关于页 / 筛选组 
 | P6.5 ✅ | 结果行鼠标操作（悬停高亮 + 单击启动，抬起才执行）与去掉 DWM 窗口外框 |
 | P6.6 ✅ | 托盘左键唤出修复（v4 一条点击两条通知 → 只打开不切换、去抖、shell 抢前台不算失活） |
 | P6（进行中） | 搜索质量修复（配额/路径降权/稳定排序/预筛）、文件内容搜索、打包与签名 |
+
+## 许可
+
+[MIT](LICENSE) © 2026 Ripple-zjw
