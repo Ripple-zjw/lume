@@ -89,6 +89,7 @@ jobs:
 
           $pk = [IO.File]::ReadAllText('packaging/README.txt', [Text.Encoding]::UTF8)
           $pk = $pk -replace '(?m)^Lume\s+[\d.]+', ('Lume ' + $ver)
+          $pk = $pk -replace '(版本：Lume )[\d.]+', ('${1}' + $ver)
           [IO.File]::WriteAllText('packaging/README.txt', $pk, $utf8)
 
           git --no-pager diff --stat

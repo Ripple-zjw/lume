@@ -1,207 +1,94 @@
 # Lume
 
-Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：热键唤出、输入即搜、回车启动应用与文件。C++20 + Win32 + Direct2D/DirectWrite + DirectComposition，免安装、免管理员、单 exe。
-
-**当前版本：0.2.4。**Windows 11（build 22621+）x64，免安装单 exe；发布包在 `dist\Lume-0.2.4-win64.zip`。
-
-**当前进度：P6 搜索质量修复（紧凑索引、按大小限制、精确匹配优先），P6.4 筛选组已完成。**
-
-![自绘深色设置窗](docs/images/p5/settings-dark.png)
-
-![磁盘缓存图标与动态高度](docs/images/p5/icons-cached.png)
-
-## 下载
+Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：按 `Alt+Space` 唤出，输入即搜应用与文件，回车启动。C++20 + Win32 + Direct2D/DirectWrite + DirectComposition 实现，免安装、免管理员、单 exe。
 
 [![Release](https://github.com/Ripple-zjw/lume/actions/workflows/release.yml/badge.svg)](https://github.com/Ripple-zjw/lume/actions/workflows/release.yml)
 
-从 [Releases](https://github.com/Ripple-zjw/lume/releases/latest) 下载 `Lume-<版本>-win64.zip`，解压后双击 `Install.cmd` 即可（免安装、免管理员）。
+## 下载与安装
 
-发布由 GitHub Actions 自动完成（`.github/workflows/release.yml`）：推送 `v*` 标签即以该标签为唯一版本来源，写入 exe 资源后构建，产物连同 `SHA256SUMS.txt` 一起发到 Release。工具链版本锁定，重建不会漂移。
+从 [Releases](https://github.com/Ripple-zjw/lume/releases/latest) 下载最新的 `Lume-<版本>-win64.zip`，解压后双击 `Install.cmd` 即可。包内容：`Lume.exe` + `Install.cmd` + `README.txt`。
+
+- `Install.cmd` 会把 `Lume.exe` 复制到 `%LOCALAPPDATA%\Programs\Lume` 并从那里启动。从受限目录（例如带 Low Integrity 标记的工作区或下载目录）直接双击时，Windows 会阻止创建托盘图标，所以推荐用 `Install.cmd`。
+- 也可以手动把 `Lume.exe` 放到桌面或 `C:\Apps\Lume` 再双击，效果相同。
+- 程序未签名，SmartScreen 提示「未知发布者」时选「仍要运行」。
+- 卸载：托盘右键「退出」，删除 `%LOCALAPPDATA%\Programs\Lume`、`%APPDATA%\Lume`、`%LOCALAPPDATA%\Lume`；开过开机自启的，再删除 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 下的 `Lume`。
+
+## 使用教程
+
+### 唤出与搜索
+
+1. 启动后程序常驻托盘，不显示窗口。
+2. 按 `Alt+Space` 唤出/隐藏（默认备选 `Ctrl+Alt+Space`、`Ctrl+Shift+Space`，可在设置里改成别的组合）。
+3. 输入应用名或文件名即时出结果；空查询只推荐最常用/最近的条目（还没有使用记录时只显示输入框）。
+4. 选中后按 `Enter` 启动或打开。
+
+### 键盘
+
+| 按键 | 作用 |
+| --- | --- |
+| `Enter` | 启动应用 / 打开文件 |
+| `Shift+Enter` | 在资源管理器中定位 |
+| `Ctrl+Enter` | 以管理员身份运行（应用） |
+| `↑` `↓`、`PgUp` `PgDn`、`Home` `End` | 选择结果并自动滚动 |
+| `Tab` / `Shift+Tab` / `Ctrl+1..9` | 切换筛选组（`1` 是「全部」） |
+| `Esc` | 清空输入，或隐藏窗口 |
+| `Ctrl+V` | 粘贴（会清洗换行） |
+
+### 鼠标
+
+- 结果行：指针移上去高亮，单击即启动/打开（`Shift` 定位、`Ctrl` 管理员）。
+- 筛选芯片：单击切换。
+- 滚轮：滚动结果列表。
+
+### 托盘菜单
+
+右键托盘图标：显示、开机自启、设置…、退出。左键单击只唤出，不切换显隐。
+
+### 设置（四页）
+
+| 页 | 内容 |
+| --- | --- |
+| 常规 | 主题（跟随系统 / 深色 / 浅色）、强调色、全局热键、开机自启、详细日志开关 |
+| 索引 | 文件搜索来源、索引大小上限（默认 512 MB，64–262144）、索引文件目录、索引状态、文件索引根目录增删、清除/重建索引 |
+| 筛选 | 筛选组开关、组的增删改与恢复默认 |
+| 关于 | 版本、运行环境、当前热键、文件搜索来源与 Everything 状态、四个数据路径、复制版本信息 |
+
+底部按钮：应用（生效但不关窗）、保存（生效并关窗）、取消（丢弃修改）。
+
+### 文件搜索来源
+
+- **Lume 本地索引**（默认）：只索引「文件索引目录」里的根目录（默认桌面、文档、下载），快照写 `files.idx`。
+- **Everything 全盘索引**：改用本机正在运行的 Everything（1.4 / 1.5）的全盘索引。切过去后本地索引停止并删除 `files.idx`；索引大小、索引目录、根目录等本地专用设置随之禁用。
+- 切换时若 Everything 没在运行，不会删快照，文件结果暂时为空；等它启动后点「刷新状态」或重新应用即可。
+
+### 数据与日志
+
+| 内容 | 位置 |
+| --- | --- |
+| 设置 | `%APPDATA%\Lume\settings.conf`（不可写时退回 exe 同目录） |
+| 使用记录 | `%APPDATA%\Lume\usage.conf`（退出时写入） |
+| 索引快照 / 图标缓存 | `%LOCALAPPDATA%\Lume` |
+| 日志 | exe 同目录的 `Lume.log`（不可写时退回 `%LOCALAPPDATA%\Lume\logs`） |
+
+日志分四级，默认只记正常使用轨迹；排查问题可在「设置 → 常规」勾选详细日志（或命令行加 `--debug`），会额外记录每次按键、悬停与 Everything 往返。日志超过 2 MB 在下次启动时轮转为 `Lume.log.1`。
+
+## 功能特性
+
+- **单 exe、静态链接**：免安装、免管理员，无外部运行库依赖。
+- **低延迟唤出**：隐藏预热 + 同步出帧，显示到首帧实测 13–14 ms。
+- **统一搜索**：应用（开始菜单 / 商店应用 / App Paths）与文件一起搜；支持子串与子序列模糊匹配，按类型分层排序。
+- **两种文件搜索口径**：本地索引（多线程枚举 + 快照 + 实时 watcher，实测 0.4–0.6 ms）或 Everything 全盘索引，可随时切换。
+- **筛选组**：搜索框下方一排芯片（全部 / 应用程序 / 图片 / 文档 / 音频 / 视频 / 压缩包），扩展名规则可自定义。
+- **MRU 推荐**：空查询按「最常用 + 最近」推荐应用与文件。
+- **图标**：shell 图标异步加载 + 磁盘缓存，二次启动不再逐个取图（首帧 29.4 ms → 15.6 ms）。
+- **托盘与自启**：托盘菜单、开机自启、自定义全局热键、深色自绘设置窗。
+- **输入体验**：自绘单行输入、IME 组字（下划线渲染 + 候选窗跟随光标）、码点级光标移动。
 
 ## 系统要求
 
 - **Windows 11 22H2（build 22621）及以上，x64**。只使用系统自带的圆角与 DirectComposition（系统云母 P6.5 起关闭，见该节），不提供 Win10 视觉回退。
 - 免管理员、免安装；无外部运行库依赖（静态链接，UCRT 为系统组件）。
 - 启动时校验系统版本，低于要求弹出明确提示并退出。
-
-## 已实现
-
-**P0：工具链与渲染闸门**
-
-- 免安装 MinGW-w64 工具链获取脚本：下载、SHA256（GitHub API digest）校验、解压到 `.toolchain/`。
-- 一键增量构建 `build.ps1`：资源/清单嵌入、`-static -s` 单文件；当前产物约 315KB，链接约 170ms。
-- DirectComposition + D3D11 翻转模型合成交换链 + Direct2D：透明圆角窗口，真实桌面内容可透过面板（已用屏幕合成截图验证）。
-- Win11 云母背景：`DWMWA_SYSTEMBACKDROP_TYPE` 在 DComp 窗口上生效（**P6.5 起关闭**：它会把面板外那圈透明区域填成实色方块）。
-- 离屏 PNG 自检：窗口与离屏共用同一份绘制代码。
-
-**P1：视觉骨架 + 唤出链路**
-
-- 模块化拆分：`core/`、`platform/`、`ui/`、`app/`（见下方目录）。
-- 主题 token 化：暗/亮/跟随系统；尺寸、颜色、字号集中定义；默认强调色为设计蓝 `#6EA8FF`，可 `--accent=system` 跟随系统。
-- 系统版本门禁（build ≥ 22621）、Per-Monitor V2 DPI、按光标显示器定位（水平居中、垂直 18%）。
-- 全局热键 `Alt+Space`（冲突时自动尝试 `Ctrl+Alt+Space`、`Ctrl+Shift+Space`）；失焦自动隐藏、Esc 隐藏。
-- 单实例：重复启动会把已有实例唤到前台。
-- 隐藏预热渲染 + 同步出帧：**显示→首帧实测 13–14ms**（ShowWindow ~12ms + 绘制 ~1.7ms）。
-- 3 DPI × 2 主题基线矩阵。
-
-**P2：输入 / IME / 列表交互 / 动效**
-
-- 自绘单行输入：UTF-16 码点级左右移动、退格/删除、Home/End、Ctrl+V 粘贴（清洗换行）、光标闪烁。
-- IME 接入：`WM_IME_START/COMPOSITION/ENDCOMPOSITION`、`GCS_COMPSTR`/`GCS_RESULTSTR`/`GCS_CURSORPOS`；组字串带下划线渲染，`ImmSetCompositionWindow(CFS_POINT)` 跟随光标定位候选窗，`ImmSetCompositionFontW` 同步字号。
-- 虚拟化列表：12 条样例、可见 6 行、滚动窗口只绘制可见行；↑↓/PgUp/PgDn/Home/End 选择并自动滚动。
-- 键盘语义：Enter 记录启动（P3 接真实启动）、Shift+Enter/Ctrl+Enter 预留、Esc 取消组字或隐藏。
-- 动效：唤出 90ms 淡入、选中迁移 120ms 缓动、结果刷新 80ms 淡入；QPC 帧计时器按需启停。
-- 资源缓存：查询布局按「显示文本 + 组字区间」缓存，行布局按内容签名缓存，光标/组字只在变化时重建。
-- 自动化验证钩子：`--type`（输入）、`--keys`（按键序列）、`--compose`（注入组字）、`--capture-ms`（任意时刻截图）。
-- 3 DPI × 2 主题基线 + 输入/组字/淡入状态截图：`docs/images/p2/`。
-
-**P3：应用索引 / 评分 / 真实启动 / 图标**
-
-- 索引三源合并：开始菜单 `.lnk`（`IShellLinkW` 解析真实目标）、`shell:AppsFolder`（`IPropertyStore` 读 `PKEY_AppUserModel_ID`，覆盖商店应用）、注册表 `App Paths`；按标题与解析后目标双重去重。
-- 磁盘缓存：`%LOCALAPPDATA%\Lume\apps.idx`（不可写时退回 exe 同目录），开始菜单目录有更新则自动重建；实测 **首次 650ms → 缓存 1.1ms**。
-- 模糊评分：子串命中（前缀加分）、子序列命中（连续/词首加分）、长度惩罚；`--list-apps` 可直接检查索引内容。
-- 真实启动：Shell 条目走 `ShellExecuteEx`（`.lnk` 保留参数/工作目录/清单），商店应用走 `IApplicationActivationManager::ActivateApplication`（失败回退 `shell:AppsFolder\<AUMID>`）；`Ctrl+Enter` 以管理员运行，`Shift+Enter` 打开所在位置。
-- shell 图标：`IShellItemImageFactory` 取 32px → WIC 转 `32bppPBGRA` → D2D 位图，内存缓存（失败也缓存避免重试），无图标时回退首字色块。
-- 过滤结果实时刷新，无匹配时显示占位行。
-
-**P4：文件/文件夹搜索**
-
-- 默认索引桌面、文档、下载；`FindFirstFileExW(FIND_FIRST_EX_LARGE_FETCH)` 多线程枚举，跳过 reparse point 与 `.git/node_modules` 等噪声目录；上限按**索引文件大小**设置（默认 512MB，最大 256GB），每个根目录平分预算。
-- 二进制快照 `files.idx`（ETF4：目录树 + 名字 arena + 条目数组；AppData 不可写时退回 exe 同目录）；常驻启动先读最新快照再后台重建，首次/手动清除时写回。
-- 每个根目录 `ReadDirectoryChangesW` 递归监听：新增文件立即入索引、删除即摘除、目录/重命名触发防抖重建；窗口 1s 内自动刷新结果。
-- 查询与应用共用评分器（文件名命中加权，路径命中降权）；实测 **0.4–0.6ms**（1361 文件 / 228 应用），路径直通输入可直接打开。
-- 异步图标：worker 取 shell 位图、UI 线程转 D2D，先画首字色块兜底；查询延迟从 56.7ms 降到 0.6ms。
-- `--list-files` / `--file-stats` / `--file-root` 可检查索引；`--open` 可单独验证打开路径。
-
-**P5：托盘、设置、自启、动态高度、MRU**
-
-- 托盘图标 + 右键菜单（显示 / 开机自启 / 设置… / 退出），左键唤出（只打开、不切换，见 P6.6）；资源管理器重启后通过 `TaskbarCreated` 自动重挂。
-- 设置窗（原生控件）：主题（跟随系统/深色/浅色）、强调色（设计蓝/系统）、热键预设（Alt+Space / Ctrl+Alt+Space / Ctrl+Shift+Space）、开机自启、文件索引目录增删（文件夹选择器）。
-- 设置持久化 `settings.conf`（UTF-8 key=value，AppData 不可写时退回 exe 同目录）；改动即时应用：主题/强调色重绘、热键重新注册、文件索引按新根目录重建。
-- 开机自启写 `HKCU\...\Run`（命令 `"Lume.exe" --autostart`）。
-- 动态面板高度：结果 1–6 行时窗口高度跟随收缩/展开，不再固定留白。
-- MRU：`usage.conf` 记录目标的使用次数与最近时间；**空查询只推荐使用记录里“最常用 + 最近”的条目**（应用与文件都在内，按热度排序，每次唤出前重建），没有使用记录时列表为空、面板只剩输入框；非空查询叠加 0–200 分。
-- 修复：多份索引快照并存时，按“根目录匹配”逐个尝试，而不是读到第一份就放弃。
-- 说明：本 agent 沙箱内 `Shell_NotifyIcon` 与 `HKCU\...\Run` 写入被系统拒绝（托盘/自启代码路径需在真实会话验证）；设置窗仍是原生浅色控件，深色主题留作 P5.1。
-
-**P5.1：图标磁盘缓存 / 深色设置窗 / 自定义热键 / 自检**
-
-- 图标磁盘缓存：worker 先查 `%LOCALAPPDATA%\Lume\icons\<hash>.png`（不可写时 exe 同目录），未命中才走 shell 取图并写回 PNG；`Warm()` 启动预热、异步队列走同一路径。实测冷启动 **12 次 shell 取图、首帧 29.4ms**，二次启动 **12 次磁盘命中、0 次 shell、首帧 15.6ms**。
-- 设置窗自绘深色：统一 `#202024` 背景/白色文字，主题与强调色改为自绘循环按钮（跟随系统 → 深色 → 浅色），文件目录列表与按钮全部深色，去掉原生 ComboBox 的白色箭头块。
-- 自定义热键：新增 `ParseHotkey`/`FormatHotkey`（Ctrl/Alt/Shift/Win + 字母/数字/F1–F24/方向键等），设置窗内点击热键框后直接按下组合键捕获，并用 `RegisterHotKey` 预检冲突；配置里可写任意组合（如 `Ctrl+Alt+K`）。
-- 捕获期间用 `WH_KEYBOARD_LL` 低级钩子取原始按键，**修复 Ctrl+Space 被输入法吞掉、只显示 Ctrl 的问题**；同时放行 Alt+Tab / Alt+F4 / Esc，避免捕获时卡住系统快捷键。实测 Ctrl+Space、Ctrl+Alt+K 均能正确捕获。
-- `--hotkey=<combo>` 可临时覆盖热键（不影响已保存设置），用于验证解析与注册。
-- `--self-check`：一次性检查热键注册、托盘、自启读写、文件打开、设置写入并输出 `PASS/FAIL`；配合 `tools/regression.ps1` 在**真实桌面会话**做回归。
-- 真实会话自检（2026-10-31，Windows 11 25H2 26200）：`hotkey/tray/autostart/open/settings_save` 全部 PASS；沙箱里 tray/autostart/open 会失败属环境限制。
-
-**P6.2：Everything 可选文件搜索来源（2026-11-01）**
-
-![索引页：文件搜索来源切到 Everything](docs/images/p6/settings-everything.png)
-
-- **来源可切换**：设置 → 索引 → 「文件搜索来源」= `Lume 本地索引` ⇄ `Everything 全盘索引`（点「应用/保存」生效，存 `settings.conf` 的 `fileSearch=`）。
-- **切到 Everything 时**：本地索引线程全部停止（枚举、`ReadDirectoryChangesW` watcher、快照读写），内存索引清空，`files.idx` **删除**（日志「已切到 Everything，删除本地快照」）；索引页里本地专用控件整体禁用。
-- **未连上不误删**：Everything 没运行/没装时只提示原因并保留 `files.idx`，等它连上后补删——避免切过去后既没有 Everything 也没有本地索引。
-- **官方 SDK 源码编进 exe**：`third_party/everything/`（官方 `include/Everything.h` + `ipc/Everything_IPC.h` + `src/Everything.c`，MIT，逐字节未改动，SHA256 见该目录 README）。不随包发 DLL、仍单 exe，也没有「找不到 DLL → 降级」的运行期失败模式；`tools/fetch-everything-sdk.mjs` 可复现下载与校验（整包 SHA256 `F5716D95…`）。
-- **非阻塞查询**：`Everything_SetReplyWindow` + `Everything_Query(FALSE)`，回复走 `WM_COPYDATA` 回主窗口，用查询生成号丢弃过期回复；打字时 UI 不被阻塞（实测「过滤」0.3–2.5 ms，Everything 往返 ~25 ms）。
-- **排序口径不变**：Everything 只提供候选（单次最多 500 条），仍用本地评分算 `score`/`quality`，分层（应用 → 可执行文件 → 文件 → 目录 → 仅路径）与本地一致；应用索引、图标、MRU、启动链路都不受影响。
-- **查询净化**：去掉 `& | ! < > * ? "` 等 Everything 语法字符，含 `:` 或路径分隔符的词加引号，避免用户输入被当成 `regex:` / `content:` 触发内容搜索。
-- **诊断**：`--everything-check[=<query>]` 打印连接状态、版本、命中与耗时，并用同一批命中过一遍合并层；`--self-check` 增加 `everything=PASS/SKIP/FAIL`；`--search-rows` 等仍只操作本地索引，但会打印 `file_search=<mode>` 口径行。
-- 实测（Windows 11 26200 / Everything 1.4.1.1028 / 索引约 116 万文件）：`--everything-check=notepad` 命中 80 条、20 ms；exe 体积 +27 KB（2008 → 2063 KB）。
-
-**P6.3：设置窗「关于」页（2026-11-01）**
-
-![设置 → 关于页：版本、运行环境、数据目录，可一键复制](docs/images/p6/settings-about.png)
-
-- **第三个页签「关于」**（在最后），只读展示：版本（`Lume <版本号>`）、运行环境（`Windows 11（build 26200） · x64 · DPI 120 (125%)`）、当前热键、文件搜索来源、Everything 版本与连接状态，以及 `settings.conf` / `usage.conf` / 日志 / 索引目录四个路径。
-- **「复制版本信息」**：把上面整段（含路径与组件许可）写到剪贴板，方便反馈问题；状态行提示「版本信息已复制到剪贴板」。
-- **版本单一来源**：代码里新增 `src/app/version.h`（`kAppName`/`kAppVersion`），`--version`、用法文本与关于页都读它；改版本时它与 `assets/app.rc`、`assets/app.manifest`、`build.ps1 -Version` 四处一起改（`version.h` 里有注释提醒）。
-- 关于页不做自动刷新：只在切到该页时读一次（与索引页一致，避免静态文本反复重绘）。
-
-**P6.4：搜索筛选组（2026-11-01）**
-
-![搜索框下方的筛选组：全部 / 应用程序 / 图片 / 文档 / 音频 / 视频 / 压缩包](docs/images/p6/filters-chips.png)
-
-![设置 → 筛选页：启用开关、组列表、扩展名规则与三个开关，可恢复默认](docs/images/p6/settings-filters.png)
-
-- **搜索框下方常驻一排筛选芯片**：默认 `全部 / 应用程序 / 图片 / 文档 / 音频 / 视频 / 压缩包`，当前组用强调色描边高亮；芯片放不下时整行左移、当前组始终完整可见。**鼠标点击**、`Tab` / `Shift+Tab` 循环、`Ctrl+1..9` 直达三种方式都能切换。
-- **一组 = 扩展名白名单 + 三个开关**：`包含应用索引`（开始菜单 / 商店应用 / App Paths）、`包含文件夹`、`包含无扩展名文件`（README 之类）。按 `.` 之后的扩展名匹配、不区分大小写；默认只给「应用程序」打开「包含应用索引」，所以选「图片」时开始菜单应用会一起消失。
-- **设置 → 筛选页（第 3 个页签）**：新建 / 删除 / 上移 / 下移 / 改名 / 改规则（空格、逗号、分号都能分隔，`*.PNG` 归一成 `png`）/ 三个开关 / 一键「恢复默认」。`全部` 固定在最前，不能改名或删除；校验在点「应用 / 保存」时做，重名、空规则、超过 12 组都会被拦下并在状态行说明原因。
-- **两种来源口径一致**：本地索引在**候选打分之后**过滤（不增加扫描开销，也不会因为先截断 80 条而漏掉同类型命中）；Everything 模式下纯扩展名组会把 `ext:png;jpg;…` 下推进查询串（候选集直接变小），结果仍按组规则再过滤一遍——若下推后 0 条，会自动去掉下推重试一次（**延后到消息循环里发**：Everything 投递回复是同步 `SendMessage`，在回复处理里再查询会互相等待，表现成切组时卡 3 秒；已踩过并修好）。
-- **空查询与直达路径**：空查询时 MRU 推荐同样按组过滤；直接输入完整路径时该行不受筛选影响（仍可回车打开）。没有匹配时占位行提示「没有符合「图片」的结果 · 按 Tab 换一组，或切回「全部」」。
-- **持久化**：`settings.conf` 新增 `filterEnabled=` / `filterActive=` / `filterGroup=名称|exe;png|apps|folders|noext`（可重复，顺序即芯片顺序，`version=3`）；切组时立即写盘，下次唤出仍停在同一组。
-- **诊断**：`--filter=<名称|序号|all|off>` 覆盖本次运行的筛选组，`--list-filters` 打印解析后的组与规则，`--search-rows` / `--search-files` / `--search-live` / `--everything-check` 都会多打印一行 `filter=`；`--self-check` 增加 `filters=PASS`（默认组校验 + 编码/解码往返 + 扩展名匹配抽检）。
-- 实测（Everything 1.4.1.1028 / 约 116 万文件）：`--everything-check=photo --filter=图片` 的查询串是 `photo ext:png;jpg;…`，命中 80 条 / 22ms；`--everything-check=notepad --filter=应用程序` 查 `notepad ext:exe;lnk;…`，12 条文件命中 + 2 条应用行；面板内切组 1–3ms（含重发查询）。
-
-**P6.5：结果行鼠标操作 + 去掉窗口外框（2026-11-01）**
-
-![鼠标悬停第 2 行时的浅色高亮（暗色主题，离屏渲染）](docs/images/p6/hover-row.png)
-
-- **结果行可以用鼠标点开了**：指针移到行上给浅色高亮 + 手型光标，单击即启动 / 打开（`Shift` 定位、`Ctrl` 管理员，与回车同一套逻辑）。在此之前只有筛选芯片吃鼠标，列表必须用键盘。
-- **抬起才启动**：`WM_LBUTTONDOWN` 只记住按下的行，`WM_LBUTTONUP` 落在同一行才执行——启动后鼠标抬起不会落进新打开的窗口；按下后拖到别的行（或拖出面板）不会误启动。
-- **命中与绘制共用一套几何**：`Scene::RowAt()` 与列表绘制共用 `listTop` / `rowHeight` / `rowGap` / 滚动偏移，行间隙 4 DIP 不算命中；占位提示行（`RowAction::None`）不响应悬停与点击。
-- **悬停不重抄数据**：`WM_MOUSEMOVE` 只改 `SceneState::hoverRow` / `hoverChip` 两个字段再 `InvalidateRect`，不复制 200 行结果（原先切芯片悬停会整份 `rows_` 拷贝）。
-- **「搜索框外面那圈框」= 系统背景（Mica）**：`DWMWA_SYSTEMBACKDROP_TYPE=DWMSBT_MAINWINDOW` 填满的是**整个窗口矩形**（暗色下就是 `#202020` 的一整块），而我们的窗口为了放自绘阴影比面板大一圈 `shadowMargin`——于是面板外面那圈本该透明的区域被涂成不透明的方块，看着就是一个 20–30px 的框。现在 `ApplyBackdrop()` 改成 `DWMSBT_NONE`（注意它是 `1`，`0` = `DWMSBT_AUTO` 等于没关），窗口除自绘的面板与柔和阴影外完全透明；顺带把系统背景沿窗口矩形画的 1px 描边也关掉（`DWMWA_BORDER_COLOR = DWMWA_COLOR_NONE`）。面板自身那 1px 边线（`theme.border`）保留。
-- **透明边距从 24 DIP 收到 8 DIP**：`Theme::shadowMargin` 现在决定窗口 = 面板 + 16 DIP（125% 缩放下每边约 10px）。原来 24 DIP 是为了放 6 层柔和阴影，但那圈「毛玻璃边」本身就容易被当成多余的框；现在阴影的扩散量被 `shadowMargin - 2` 夹住，最外还留 2 DIP 纯透明（四边对称，去掉了原先给底部 +2 的偏移），面板轮廓靠 `border` 的 1px + 圆角。`--shot` 输出的画布尺寸随之变小（面板尺寸不变，历史截图还是旧边距）。
-- **外圈圆角和面板对齐**：阴影每一层的圆角半径都固定用 `theme.corner`（16 DIP），不再随扩散变大；同时把 `DWMWA_WINDOW_CORNER_PREFERENCE` 改成 `DWMWCP_DONOTROUND`——DWM 给窗口裁的圆角半径是系统定的（约 8–10px），比面板小得多，会在窗口四角沿小半径弧线切掉自绘阴影，看起来正是「外框圆角不如内框圆」。窗口本身没有填充（形状全来自自绘面板 + 阴影），所以不裁圆角没有副作用。
-- **验证方式**：在窗口背后垫一块纯品红窗口再 `--capture`。关云母之前窗口边缘那一圈是 `(32,32,32)` 的死色（品红一点透不出来，`#202020` 正是暗色云母的底色）；关云母之后变成品红渐变；边距收到 8 DIP 后，最外 2px 是纯品红（`(255,0,255)` 两像素），接着约 8px 是阴影渐变（`239 → 225 → 221 → 218 → 211`），第 10px 起才是面板（`(62,38,65)` → `(50,24,53)`）。四边的像素序列完全一致；沿对角线看，最外 8px 仍是纯品红、阴影从第 8px 起——说明角落不再被 DWM 的小半径弧线切掉，外圈圆角与面板同为 16 DIP。
-- **副作用**：面板 0.88 的不透明度现在直接与桌面内容混合（以前叠在云母的壁纸模糊上），亮色壁纸下面板会略浅一点；觉得太透就把 `theme.panel` 的 alpha 抬到 0.93 左右。
-- **诊断钩子**：`--hover-row=<n>` / `--click-row=<n>`（1 起）把鼠标消息投到第 n 行，`--shot` 配合 `--hover-row` 可以直接渲染悬停高亮截图；日志会打印 `悬停: 行 2 notepad`、`点击: [1] …`、`激活: [1] …`，用来验证坐标换算与启动链路（合成消息下 `TrackMouseEvent` 会立刻回 `WM_MOUSELEAVE`，所以悬停视觉验证走离屏渲染）。
-
-**P6.6：托盘左键唤出修复（2026-11-01）**
-
-- **症状**：用鼠标左键点托盘图标，搜索框闪一下就消失。
-- **原因**：托盘用 `NOTIFYICON_VERSION_4`，一次左键点击 shell 会**先后送来两条通知**——`NIN_SELECT`（`event=1024`）和 `WM_LBUTTONUP`（`event=514`），两者的通知码都放在 `lParam` 低字里。旧代码两条都匹配 `Toggle()`，于是「显示 → 隐藏」，看起来就是闪一下没了。
-- **修法**：左键改成「只打开、不切换」的 `ShowFromTray()`，并加 400ms 去抖（一次点击只处理一次）。另外托盘点开的那一下 shell 收尾时会把前台抢回任务栏，紧跟的 `WM_ACTIVATE(WA_INACTIVE)` 也会把刚显示的窗口立刻藏起来——现在「刚处理过托盘左键 600ms 内」且「新前台是 shell 自己的界面（`Shell_TrayWnd` / `Shell_SecondaryTrayWnd` / `NotifyIconOverflowWindow` / `TopLevelWindowForOverflowXamlIsland`）」时忽略这条失活。隐藏仍然走 Esc / 点到别处 / 热键，行为不变。
-- **验证**：新增 `--tray-click`（模拟 v4 的两条通知）。日志实测：
-
-  ```
-  托盘通知: event=1024 wParam=0          ← NIN_SELECT
-  托盘左键: 显示窗口
-  显示窗口 (dpi=120, 前台=是, …)
-  托盘通知: event=514 wParam=0           ← WM_LBUTTONUP
-  托盘左键: 忽略重复通知（距上次 0 ms）   ← 不再 Toggle，窗口留在屏幕上
-  ```
-
-  整段日志里没有「隐藏窗口」。托盘在本 agent 沙箱里建不出来（`NIM_ADD` 被 UIPI 拒），所以真机上的手感仍需你确认一次。
-
-**P6.7：日志落点与等级（2026-11-01）**
-
-- **改造前**：日志固定写 `%LOCALAPPDATA%\Lume\logs\lume.log`（AppData 不可写时才退回 exe 目录），188 处调用一把梭全量输出，行首只有 `[HH:MM:SS.mmm]`——没有日期（文件是追加的，跨天分不清）、没有等级、也没有「正常使用」与「排查」的区别。实测一次普通使用（唤出 + 打 7 个字符 + 退出）就写 387KB，里面大半是每次按键的 `查询` / `过滤`、鼠标 `悬停`、`托盘通知 event=…` 和 Everything 往返。
-- **落点改为 exe 同目录**：`Lume.log` 就在 `Lume.exe` 旁边（免安装/绿色运行最常见的位置），`--log=<路径>` 优先；该目录不可写（装进 `Program Files`、只读介质）时自动退回 `%LOCALAPPDATA%\Lume\logs\lume.log`，两个候选都失败才只输出到调试器。每行 `[YYYY-MM-DD HH:MM:SS.mmm][I] 正文`，UTF-8、逐行 `fflush`，常驻进程运行中可以直接用编辑器/`Get-Content -Tail` 跟着看。
-- **会话横幅**：每次启动第一行是 `[*] ===== Lume 0.2.3 启动 2026-11-01 21:46:35 等级=info pid=4180 =====`，不受等级过滤；`--log-level=error` 的日志里也一定有这一行，方便确认「这几行是哪次启动的」。
-- **四个等级**：`error < warn < info（默认）< debug`，行首单字母 `E/W/I/D`，横幅用 `*`。同一段 `--show --type=notepad` 会话实测 **info 22 行、debug 40 行**：debug 多出来的正是每次按键的 `过滤: "not" -> 22 条 (0.6 ms)` + `查询: "not" (caret=3)`、`WM_PAINT 到达`、`Everything 结果: 80 条（往返 56.1 ms）`、`图标缓存: 磁盘命中 19, shell 取图 11`。
-- **分级口径**：Info = 会话开始、设置、唤出/隐藏（含定位/Show/首帧耗时）、启动/打开、切筛选组、索引重建完成；Warn = 自动降级（热键被占用后回退、托盘重试、Everything 不可用或发送偏慢、索引触顶截断、DWM 属性设置失败）；Error = 初始化失败、启动/打开失败、写盘失败、托盘/热键彻底不可用；Debug = 每次按键的查询与过滤、鼠标悬停、托盘通知码、Everything 往返、文件索引内存/统计、图标缓存命中率。
-- **等级怎么定**：`--log-level=error|warn|info|debug`（或 `--debug`）> 环境变量 `LUME_LOG_LEVEL` > `settings.conf` 的 `logLevel=` > 默认 `info`。设置窗「常规」页新增 **「详细日志（开发排查用）」** 勾选框 + **「打开日志」** 按钮（用默认程序打开 `Lume.log`，文件还不存在时打开所在目录），勾上=debug、不勾=info，点「应用 / 保存」即时生效、不用重启：`日志等级: info -> debug（来自设置）`，同时写回 `settings.conf`。关于页的「日志」一行现在会带等级：`…\Lume.log（debug）`。
-- **轮转**：启动时若现有文件超过 **2MB**，改名成 `Lume.log.1`（旧的 `.1` 直接覆盖）再新建。实测把文件撑到 2,098,921 字节后启动：`.1` 保留了 2,098,921 字节，新 `Lume.log` 从横幅重新开始（419 字节）。
-- **不和索引打架**：`Lume.log` 通常在 exe 目录里，而 exe 目录很可能就在索引根内；watcher 把 `lume.log` / `lume.log.1` 加进忽略名单（和 `files.idx`、`settings.conf` 同级），否则常驻进程每写一行都会触发一次「增量更新」。
-- **验证**：`tools/regression.ps1` 新增一组自动检查 `log_banner` / `log_info` / `log_no_debug_by_default` / `log_debug` / `log_error_only`（分别跑默认、`--debug`、`--log-level=error` 三次并检查行前缀）；设置窗交互用新增的 `--settings-probe=<控件 id,…>` 验证（`--settings-probe=148,130` = 勾「详细日志」+ 点「应用」，日志出现 `设置窗日志开关: debug` → `日志等级: info -> debug（来自设置）` → `设置已保存`）。
-
-**P6（进行中）：搜索质量修复**
-
-![层级排序：game](docs/images/p6/game-ranking.png)
-
-![精确命中：AlanWake2.exe](docs/images/p6/alanwake2.png)
-
-![设置窗：索引大小按 MB 设置，默认 512MB](docs/images/p6/settings-size.png)
-
-![应用索引里的 Notepad（C 盘）与文件索引](docs/images/p6/app-index-c-drive.png)
-
-- **应用索引与文件索引是两套**：`apps.idx` 来自开始菜单/AppsFolder/App Paths，天然包含 C 盘的系统应用；`files.idx` 只扫设置里的根目录（当前 **C:/F:/E:/D:**）。搜 `notepad` 第一条是 Notepad 应用，副标题显示 `应用 · C:\Program Files\WindowsApps\...`，下面的才是文件索引结果。启动日志会逐条打印 `文件索引根: C:\ / F:\ / E:\ / D:\`。
-- 注意：`--file-stats` / `--list-files` 在未指定 `--file-root` 时使用默认的桌面/文档/下载（C 盘），这是诊断命令的默认值；要验证实际索引请用 `--search-live=<query>` 或 `--file-root=`。
-- **上限改为“索引文件大小”**：设置窗“索引大小”以 MB 为单位，默认 **512**，范围 **64–262144**（最大 256GB）；也支持 `settings.conf` 的 `indexSizeMB=` 或 `--index-size-mb`。4 个根平均分配预算（512MB → 每根 128MB），按“4 字节长度 + UTF-16 路径 + 1 字节类型”的序列化大小累计，达到预算即停。旧的 `fileCap` 条目上限已移除，老配置直接使用 512MB 默认。
-- **快照优先 + 后台重建**：启动先读最新的 `files.idx`（ETF4 紧凑格式，100 万条 **656ms** 可用），随后后台全量重建（512MB 预算下约 **20.8s**）。启动不删除/重写快照；首次或“清除索引并重建”才写回。写快照不会再触发自己的 watcher，目录高频变化有 60s 冷却，退出可取消，快照流式写临时文件后原子替换。
-- **手动清除**：设置窗「索引」页的「清除索引」只删快照并清空内存（不自动重建），「重建索引」立即后台重建并写回快照（会跳过 watcher 的 60s 冷却）；两者替代了原来的「清除索引并重建」，`--clear-index` 仍按“删快照并重建”执行。
-- **索引页（P6.1）**：设置窗拆成「常规 / 索引」两页。索引页集中索引大小上限、索引文件目录、索引状态（快照大小 / 条目数 / 上限占用率 / 重建中 / 上次重建耗时）、文件索引根目录增删，以及清除 / 重建 / 刷新状态三个动作。索引文件目录是**只读下拉框**（不能手打，鼠标可选中），列出当前目录、默认目录和最近用过的 5 个目录（**已经不存在的不显示**），下面一行是「修改目录 / 打开索引目录 / 恢复默认」。状态**不自动轮询**，需要时点「刷新状态」（避免状态块反复重绘闪烁）。窗口底部有 **应用 / 保存 / 取消**：应用=立即应用配置但不关窗，保存=应用并关闭，取消=丢弃本次修改。索引文件目录写入 `settings.conf` 的 `indexDir=`，历史写入 `indexDirHistory=`（最多 5 条；填默认目录会归一化成空值，留空 = `%LOCALAPPDATA%\Lume`；应用前校验绝对路径、可创建与可写）。
-- **快照格式 ETF4**：目录按“父目录 id + 组件名”存，条目不存完整路径；名称放在连续 arena，条目固定 29 字节字段。**230MB → 124.4MB**（999,842 条，130,480,000 字节）。
-- **512MB 预算实测**：999,842 条、快照 **124.4MB**（预算按完整路径保守估算，所以实际文件小于 512MB），重建 20.8s；进程 **323MB 常驻 / 410MB 峰值**（无快照首次），读快照后再重建峰值约 560MB。查询 `AlanWake2.exe` **4.8ms**。
-- **存储占用**：`files.idx` **124.4MB**、`apps.idx` **48KB**、日志/图标/配置 **0.83MB**，正常会话总计约 **125MB**。沙箱写不进 AppData 时快照落在 exe 同目录（本机还残留旧的 170MB AppData 快照，所以看起来更大）；启动取最新修改时间的那份，正常会话只有一份。
-- **紧凑索引**：目录表 + 文件名 arena，条目 32B；47 万条索引 83MB、进程 123MB。字符位图预筛、1–2 字符只做子串、路径命中仅最后兜底（查询≥3、分数÷6、最多 2000 条）。
-- **匹配质量优先**：`quality`（5 直接路径 / 4 字面完全一致 / 3 忽略扩展名一致 / 2 前缀 / 1 子串 / 0 模糊或路径）→ 类型 tier（应用、可执行文件 → 其他文件 → 目录 → 仅路径）→ 分数。
-- **启动工作目录**：打开文件/直接 exe 时把 `ShellExecuteEx` 的 `lpDirectory` 设为文件所在目录（`.lnk` 例外，保留快捷方式自带的工作目录），修复游戏按自身目录找 `data` 却跑到启动器目录的问题；版本资源改为 ASCII 描述，避免任务管理器显示乱码。
-- **光标缓存修复**：查询布局缓存之前只按文本/组字区间判断，左右/Home/End 移动光标时视觉光标不动。现在文本不变时单独重算 `HitTestTextPosition` 并处理左右滚动，光标会跟随实际插入点（长查询滚动也正确）。
-- **正式版外壳**：主程序改为 Windows GUI 子系统，双击运行不再出现黑色控制台窗口；命令行模式会复用继承的 stdout 或附加父控制台（`--version`、`--list-apps` 等仍可用）。退出统一走托盘菜单，避免误关窗口把常驻进程带走。
-- **托盘图标**：使用蓝底白色镜头的独立高对比图标（`assets/tray.ico`），深/浅色任务栏都可见；如果在托盘找不到，先检查任务栏溢出区（^）并拖到常驻区。
-- 仍未解决：子序列噪声；非精确目录仍排在文件后；230MB 快照可进一步改成目录树+名字 arena 压缩。
 
 ## 构建
 
@@ -222,7 +109,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Config Test
 powershell -ExecutionPolicy Bypass -File .\build.ps1 -Run
 ```
 
-## 发布包
+### 发布包
 
 ```powershell
 # 编译 + 打 zip 发布包（版本号同时用于目录/文件名，需与 assets/app.rc 一致）
@@ -230,7 +117,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Recompile -Package
 # 产物：dist\Lume-0.2.4-win64.zip（以及同名目录，便于先本地试跑）
 ```
 
-压缩包内容：`Lume.exe`（单文件、静态链接）+ `Install.cmd` + `README.txt`（系统要求、快捷键、首次索引、卸载）。解压即用，不需要安装。`README.txt` 模板在 `packaging\README.txt`；`-Package` 会校验 exe 的 `ProductVersion` 与 `-Version`（默认 `0.2.3`）一致，并打印 zip 的 SHA256。
+压缩包内容：`Lume.exe`（单文件、静态链接）+ `Install.cmd` + `README.txt`（系统要求、快捷键、首次索引、卸载）。解压即用，不需要安装。`README.txt` 模板在 `packaging\README.txt`；`-Package` 会校验 exe 的 `ProductVersion` 与 `-Version`（默认 `0.2.4`）一致，并打印 zip 的 SHA256。
 
 ### 低完整性环境（DSH/受限工作区）
 
@@ -238,7 +125,9 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Recompile -Package
 
 解决办法：双击发布包里的 **`Install.cmd`**，它会复制到 `%LOCALAPPDATA%\Programs\Lume` 并从普通目录启动；或手动把 `Lume.exe` 复制到桌面/`C:\Apps\Lume` 再运行。普通用户目录下不会有这个问题。
 
-## 运行
+发布由 GitHub Actions 自动完成（`.github/workflows/release.yml`）：推送 `v*` 标签即以该标签为版本号构建，并把 zip 与 `SHA256SUMS.txt` 发到 Release；工具链版本锁定，重建不会漂移。
+
+## 命令行参数（开发 / 测试）
 
 ```powershell
 .\build\Lume.exe                       # 常驻：按 Alt+Space 唤出/隐藏
@@ -336,7 +225,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Recompile -Package
 
 回归脚本已把这个基准挂成**防退化闸门**：`tools\regression.ps1` 默认跑 100 万条，检查 `bench_report` ≤ 60 ms、`bench_a_1char` ≤ 200 ms 与 `filter_check=ok`，超阈值即 FAIL；`-SkipBench` 跳过、`-BenchMs` / `-BenchShortMs` 调阈值、`-BenchEntries` 换数据量（参数用空格分隔，如 `-BenchMs 60`）。阈值按本机 8.3 / 26 ms 留了 7 倍余量，只拦「数量级变慢」。
 
-## 目录
+## 目录结构
 
 ```
 src/main.cpp               CLI 解析与入口分发
@@ -403,7 +292,170 @@ docs/images/p6/            P6 排序修复 / Everything / 关于页 / 筛选组 
 - **真实会话回归**：`powershell -ExecutionPolicy Bypass -File tools\regression.ps1` 已跑通（exit=0，含 self-check 与 100 万条 `--bench-search` 的防退化阈值）；后续改搜索/托盘/自启链路时重跑即可。人工项（托盘菜单、设置重启生效、注销后自启）仍建议过一遍。
 - 唤出淡入通过场景整体 alpha 实现（mingw 的 `dcomp.h` 漏声明 `IDCompositionVisual::SetOpacity`，未用 ABI hack）。
 
-## 路线
+## 实现进展（开发笔记）
+
+按阶段记录实现细节与实测数据（面向开发与排查）；阶段总览见文末「路线与进度」。
+
+**P0：工具链与渲染闸门**
+
+- 免安装 MinGW-w64 工具链获取脚本：下载、SHA256（GitHub API digest）校验、解压到 `.toolchain/`。
+- 一键增量构建 `build.ps1`：资源/清单嵌入、`-static -s` 单文件；当前产物约 315KB，链接约 170ms。
+- DirectComposition + D3D11 翻转模型合成交换链 + Direct2D：透明圆角窗口，真实桌面内容可透过面板（已用屏幕合成截图验证）。
+- Win11 云母背景：`DWMWA_SYSTEMBACKDROP_TYPE` 在 DComp 窗口上生效（**P6.5 起关闭**：它会把面板外那圈透明区域填成实色方块）。
+- 离屏 PNG 自检：窗口与离屏共用同一份绘制代码。
+
+**P1：视觉骨架 + 唤出链路**
+
+- 模块化拆分：`core/`、`platform/`、`ui/`、`app/`（见下方目录）。
+- 主题 token 化：暗/亮/跟随系统；尺寸、颜色、字号集中定义；默认强调色为设计蓝 `#6EA8FF`，可 `--accent=system` 跟随系统。
+- 系统版本门禁（build ≥ 22621）、Per-Monitor V2 DPI、按光标显示器定位（水平居中、垂直 18%）。
+- 全局热键 `Alt+Space`（冲突时自动尝试 `Ctrl+Alt+Space`、`Ctrl+Shift+Space`）；失焦自动隐藏、Esc 隐藏。
+- 单实例：重复启动会把已有实例唤到前台。
+- 隐藏预热渲染 + 同步出帧：**显示→首帧实测 13–14ms**（ShowWindow ~12ms + 绘制 ~1.7ms）。
+- 3 DPI × 2 主题基线矩阵。
+
+**P2：输入 / IME / 列表交互 / 动效**
+
+- 自绘单行输入：UTF-16 码点级左右移动、退格/删除、Home/End、Ctrl+V 粘贴（清洗换行）、光标闪烁。
+- IME 接入：`WM_IME_START/COMPOSITION/ENDCOMPOSITION`、`GCS_COMPSTR`/`GCS_RESULTSTR`/`GCS_CURSORPOS`；组字串带下划线渲染，`ImmSetCompositionWindow(CFS_POINT)` 跟随光标定位候选窗，`ImmSetCompositionFontW` 同步字号。
+- 虚拟化列表：12 条样例、可见 6 行、滚动窗口只绘制可见行；↑↓/PgUp/PgDn/Home/End 选择并自动滚动。
+- 键盘语义：Enter 记录启动（P3 接真实启动）、Shift+Enter/Ctrl+Enter 预留、Esc 取消组字或隐藏。
+- 动效：唤出 90ms 淡入、选中迁移 120ms 缓动、结果刷新 80ms 淡入；QPC 帧计时器按需启停。
+- 资源缓存：查询布局按「显示文本 + 组字区间」缓存，行布局按内容签名缓存，光标/组字只在变化时重建。
+- 自动化验证钩子：`--type`（输入）、`--keys`（按键序列）、`--compose`（注入组字）、`--capture-ms`（任意时刻截图）。
+- 3 DPI × 2 主题基线 + 输入/组字/淡入状态截图：`docs/images/p2/`。
+
+**P3：应用索引 / 评分 / 真实启动 / 图标**
+
+- 索引三源合并：开始菜单 `.lnk`（`IShellLinkW` 解析真实目标）、`shell:AppsFolder`（`IPropertyStore` 读 `PKEY_AppUserModel_ID`，覆盖商店应用）、注册表 `App Paths`；按标题与解析后目标双重去重。
+- 磁盘缓存：`%LOCALAPPDATA%\Lume\apps.idx`（不可写时退回 exe 同目录），开始菜单目录有更新则自动重建；实测 **首次 650ms → 缓存 1.1ms**。
+- 模糊评分：子串命中（前缀加分）、子序列命中（连续/词首加分）、长度惩罚；`--list-apps` 可直接检查索引内容。
+- 真实启动：Shell 条目走 `ShellExecuteEx`（`.lnk` 保留参数/工作目录/清单），商店应用走 `IApplicationActivationManager::ActivateApplication`（失败回退 `shell:AppsFolder\<AUMID>`）；`Ctrl+Enter` 以管理员运行，`Shift+Enter` 打开所在位置。
+- shell 图标：`IShellItemImageFactory` 取 32px → WIC 转 `32bppPBGRA` → D2D 位图，内存缓存（失败也缓存避免重试），无图标时回退首字色块。
+- 过滤结果实时刷新，无匹配时显示占位行。
+
+**P4：文件/文件夹搜索**
+
+- 默认索引桌面、文档、下载；`FindFirstFileExW(FIND_FIRST_EX_LARGE_FETCH)` 多线程枚举，跳过 reparse point 与 `.git/node_modules` 等噪声目录；上限按**索引文件大小**设置（默认 512MB，最大 256GB），每个根目录平分预算。
+- 二进制快照 `files.idx`（ETF4：目录树 + 名字 arena + 条目数组；AppData 不可写时退回 exe 同目录）；常驻启动先读最新快照再后台重建，首次/手动清除时写回。
+- 每个根目录 `ReadDirectoryChangesW` 递归监听：新增文件立即入索引、删除即摘除、目录/重命名触发防抖重建；窗口 1s 内自动刷新结果。
+- 查询与应用共用评分器（文件名命中加权，路径命中降权）；实测 **0.4–0.6ms**（1361 文件 / 228 应用），路径直通输入可直接打开。
+- 异步图标：worker 取 shell 位图、UI 线程转 D2D，先画首字色块兜底；查询延迟从 56.7ms 降到 0.6ms。
+- `--list-files` / `--file-stats` / `--file-root` 可检查索引；`--open` 可单独验证打开路径。
+
+**P5：托盘、设置、自启、动态高度、MRU**
+
+- 托盘图标 + 右键菜单（显示 / 开机自启 / 设置… / 退出），左键唤出（只打开、不切换，见 P6.6）；资源管理器重启后通过 `TaskbarCreated` 自动重挂。
+- 设置窗（原生控件）：主题（跟随系统/深色/浅色）、强调色（设计蓝/系统）、热键预设（Alt+Space / Ctrl+Alt+Space / Ctrl+Shift+Space）、开机自启、文件索引目录增删（文件夹选择器）。
+- 设置持久化 `settings.conf`（UTF-8 key=value，AppData 不可写时退回 exe 同目录）；改动即时应用：主题/强调色重绘、热键重新注册、文件索引按新根目录重建。
+- 开机自启写 `HKCU\...\Run`（命令 `"Lume.exe" --autostart`）。
+- 动态面板高度：结果 1–6 行时窗口高度跟随收缩/展开，不再固定留白。
+- MRU：`usage.conf` 记录目标的使用次数与最近时间；**空查询只推荐使用记录里“最常用 + 最近”的条目**（应用与文件都在内，按热度排序，每次唤出前重建），没有使用记录时列表为空、面板只剩输入框；非空查询叠加 0–200 分。
+- 修复：多份索引快照并存时，按“根目录匹配”逐个尝试，而不是读到第一份就放弃。
+- 说明：本 agent 沙箱内 `Shell_NotifyIcon` 与 `HKCU\...\Run` 写入被系统拒绝（托盘/自启代码路径需在真实会话验证）；设置窗仍是原生浅色控件，深色主题留作 P5.1。
+
+**P5.1：图标磁盘缓存 / 深色设置窗 / 自定义热键 / 自检**
+
+- 图标磁盘缓存：worker 先查 `%LOCALAPPDATA%\Lume\icons\<hash>.png`（不可写时 exe 同目录），未命中才走 shell 取图并写回 PNG；`Warm()` 启动预热、异步队列走同一路径。实测冷启动 **12 次 shell 取图、首帧 29.4ms**，二次启动 **12 次磁盘命中、0 次 shell、首帧 15.6ms**。
+- 设置窗自绘深色：统一 `#202024` 背景/白色文字，主题与强调色改为自绘循环按钮（跟随系统 → 深色 → 浅色），文件目录列表与按钮全部深色，去掉原生 ComboBox 的白色箭头块。
+- 自定义热键：新增 `ParseHotkey`/`FormatHotkey`（Ctrl/Alt/Shift/Win + 字母/数字/F1–F24/方向键等），设置窗内点击热键框后直接按下组合键捕获，并用 `RegisterHotKey` 预检冲突；配置里可写任意组合（如 `Ctrl+Alt+K`）。
+- 捕获期间用 `WH_KEYBOARD_LL` 低级钩子取原始按键，**修复 Ctrl+Space 被输入法吞掉、只显示 Ctrl 的问题**；同时放行 Alt+Tab / Alt+F4 / Esc，避免捕获时卡住系统快捷键。实测 Ctrl+Space、Ctrl+Alt+K 均能正确捕获。
+- `--hotkey=<combo>` 可临时覆盖热键（不影响已保存设置），用于验证解析与注册。
+- `--self-check`：一次性检查热键注册、托盘、自启读写、文件打开、设置写入并输出 `PASS/FAIL`；配合 `tools/regression.ps1` 在**真实桌面会话**做回归。
+- 真实会话自检（2026-10-31，Windows 11 25H2 26200）：`hotkey/tray/autostart/open/settings_save` 全部 PASS；沙箱里 tray/autostart/open 会失败属环境限制。
+
+**P6.2：Everything 可选文件搜索来源（2026-11-01）**
+
+- **来源可切换**：设置 → 索引 → 「文件搜索来源」= `Lume 本地索引` ⇄ `Everything 全盘索引`（点「应用/保存」生效，存 `settings.conf` 的 `fileSearch=`）。
+- **切到 Everything 时**：本地索引线程全部停止（枚举、`ReadDirectoryChangesW` watcher、快照读写），内存索引清空，`files.idx` **删除**（日志「已切到 Everything，删除本地快照」）；索引页里本地专用控件整体禁用。
+- **未连上不误删**：Everything 没运行/没装时只提示原因并保留 `files.idx`，等它连上后补删——避免切过去后既没有 Everything 也没有本地索引。
+- **官方 SDK 源码编进 exe**：`third_party/everything/`（官方 `include/Everything.h` + `ipc/Everything_IPC.h` + `src/Everything.c`，MIT，逐字节未改动，SHA256 见该目录 README）。不随包发 DLL、仍单 exe，也没有「找不到 DLL → 降级」的运行期失败模式；`tools/fetch-everything-sdk.mjs` 可复现下载与校验（整包 SHA256 `F5716D95…`）。
+- **非阻塞查询**：`Everything_SetReplyWindow` + `Everything_Query(FALSE)`，回复走 `WM_COPYDATA` 回主窗口，用查询生成号丢弃过期回复；打字时 UI 不被阻塞（实测「过滤」0.3–2.5 ms，Everything 往返 ~25 ms）。
+- **排序口径不变**：Everything 只提供候选（单次最多 500 条），仍用本地评分算 `score`/`quality`，分层（应用 → 可执行文件 → 文件 → 目录 → 仅路径）与本地一致；应用索引、图标、MRU、启动链路都不受影响。
+- **查询净化**：去掉 `& | ! < > * ? "` 等 Everything 语法字符，含 `:` 或路径分隔符的词加引号，避免用户输入被当成 `regex:` / `content:` 触发内容搜索。
+- **诊断**：`--everything-check[=<query>]` 打印连接状态、版本、命中与耗时，并用同一批命中过一遍合并层；`--self-check` 增加 `everything=PASS/SKIP/FAIL`；`--search-rows` 等仍只操作本地索引，但会打印 `file_search=<mode>` 口径行。
+- 实测（Windows 11 26200 / Everything 1.4.1.1028 / 索引约 116 万文件）：`--everything-check=notepad` 命中 80 条、20 ms；exe 体积 +27 KB（2008 → 2063 KB）。
+
+**P6.3：设置窗「关于」页（2026-11-01）**
+
+- **第三个页签「关于」**（在最后），只读展示：版本（`Lume <版本号>`）、运行环境（`Windows 11（build 26200） · x64 · DPI 120 (125%)`）、当前热键、文件搜索来源、Everything 版本与连接状态，以及 `settings.conf` / `usage.conf` / 日志 / 索引目录四个路径。
+- **「复制版本信息」**：把上面整段（含路径与组件许可）写到剪贴板，方便反馈问题；状态行提示「版本信息已复制到剪贴板」。
+- **版本单一来源**：代码里新增 `src/app/version.h`（`kAppName`/`kAppVersion`），`--version`、用法文本与关于页都读它；改版本时它与 `assets/app.rc`、`assets/app.manifest`、`build.ps1 -Version` 四处一起改（`version.h` 里有注释提醒）。
+- 关于页不做自动刷新：只在切到该页时读一次（与索引页一致，避免静态文本反复重绘）。
+
+**P6.4：搜索筛选组（2026-11-01）**
+
+- **搜索框下方常驻一排筛选芯片**：默认 `全部 / 应用程序 / 图片 / 文档 / 音频 / 视频 / 压缩包`，当前组用强调色描边高亮；芯片放不下时整行左移、当前组始终完整可见。**鼠标点击**、`Tab` / `Shift+Tab` 循环、`Ctrl+1..9` 直达三种方式都能切换。
+- **一组 = 扩展名白名单 + 三个开关**：`包含应用索引`（开始菜单 / 商店应用 / App Paths）、`包含文件夹`、`包含无扩展名文件`（README 之类）。按 `.` 之后的扩展名匹配、不区分大小写；默认只给「应用程序」打开「包含应用索引」，所以选「图片」时开始菜单应用会一起消失。
+- **设置 → 筛选页（第 3 个页签）**：新建 / 删除 / 上移 / 下移 / 改名 / 改规则（空格、逗号、分号都能分隔，`*.PNG` 归一成 `png`）/ 三个开关 / 一键「恢复默认」。`全部` 固定在最前，不能改名或删除；校验在点「应用 / 保存」时做，重名、空规则、超过 12 组都会被拦下并在状态行说明原因。
+- **两种来源口径一致**：本地索引在**候选打分之后**过滤（不增加扫描开销，也不会因为先截断 80 条而漏掉同类型命中）；Everything 模式下纯扩展名组会把 `ext:png;jpg;…` 下推进查询串（候选集直接变小），结果仍按组规则再过滤一遍——若下推后 0 条，会自动去掉下推重试一次（**延后到消息循环里发**：Everything 投递回复是同步 `SendMessage`，在回复处理里再查询会互相等待，表现成切组时卡 3 秒；已踩过并修好）。
+- **空查询与直达路径**：空查询时 MRU 推荐同样按组过滤；直接输入完整路径时该行不受筛选影响（仍可回车打开）。没有匹配时占位行提示「没有符合「图片」的结果 · 按 Tab 换一组，或切回「全部」」。
+- **持久化**：`settings.conf` 新增 `filterEnabled=` / `filterActive=` / `filterGroup=名称|exe;png|apps|folders|noext`（可重复，顺序即芯片顺序，`version=3`）；切组时立即写盘，下次唤出仍停在同一组。
+- **诊断**：`--filter=<名称|序号|all|off>` 覆盖本次运行的筛选组，`--list-filters` 打印解析后的组与规则，`--search-rows` / `--search-files` / `--search-live` / `--everything-check` 都会多打印一行 `filter=`；`--self-check` 增加 `filters=PASS`（默认组校验 + 编码/解码往返 + 扩展名匹配抽检）。
+- 实测（Everything 1.4.1.1028 / 约 116 万文件）：`--everything-check=photo --filter=图片` 的查询串是 `photo ext:png;jpg;…`，命中 80 条 / 22ms；`--everything-check=notepad --filter=应用程序` 查 `notepad ext:exe;lnk;…`，12 条文件命中 + 2 条应用行；面板内切组 1–3ms（含重发查询）。
+
+**P6.5：结果行鼠标操作 + 去掉窗口外框（2026-11-01）**
+
+- **结果行可以用鼠标点开了**：指针移到行上给浅色高亮 + 手型光标，单击即启动 / 打开（`Shift` 定位、`Ctrl` 管理员，与回车同一套逻辑）。在此之前只有筛选芯片吃鼠标，列表必须用键盘。
+- **抬起才启动**：`WM_LBUTTONDOWN` 只记住按下的行，`WM_LBUTTONUP` 落在同一行才执行——启动后鼠标抬起不会落进新打开的窗口；按下后拖到别的行（或拖出面板）不会误启动。
+- **命中与绘制共用一套几何**：`Scene::RowAt()` 与列表绘制共用 `listTop` / `rowHeight` / `rowGap` / 滚动偏移，行间隙 4 DIP 不算命中；占位提示行（`RowAction::None`）不响应悬停与点击。
+- **悬停不重抄数据**：`WM_MOUSEMOVE` 只改 `SceneState::hoverRow` / `hoverChip` 两个字段再 `InvalidateRect`，不复制 200 行结果（原先切芯片悬停会整份 `rows_` 拷贝）。
+- **「搜索框外面那圈框」= 系统背景（Mica）**：`DWMWA_SYSTEMBACKDROP_TYPE=DWMSBT_MAINWINDOW` 填满的是**整个窗口矩形**（暗色下就是 `#202020` 的一整块），而我们的窗口为了放自绘阴影比面板大一圈 `shadowMargin`——于是面板外面那圈本该透明的区域被涂成不透明的方块，看着就是一个 20–30px 的框。现在 `ApplyBackdrop()` 改成 `DWMSBT_NONE`（注意它是 `1`，`0` = `DWMSBT_AUTO` 等于没关），窗口除自绘的面板与柔和阴影外完全透明；顺带把系统背景沿窗口矩形画的 1px 描边也关掉（`DWMWA_BORDER_COLOR = DWMWA_COLOR_NONE`）。面板自身那 1px 边线（`theme.border`）保留。
+- **透明边距从 24 DIP 收到 8 DIP**：`Theme::shadowMargin` 现在决定窗口 = 面板 + 16 DIP（125% 缩放下每边约 10px）。原来 24 DIP 是为了放 6 层柔和阴影，但那圈「毛玻璃边」本身就容易被当成多余的框；现在阴影的扩散量被 `shadowMargin - 2` 夹住，最外还留 2 DIP 纯透明（四边对称，去掉了原先给底部 +2 的偏移），面板轮廓靠 `border` 的 1px + 圆角。`--shot` 输出的画布尺寸随之变小（面板尺寸不变，历史截图还是旧边距）。
+- **外圈圆角和面板对齐**：阴影每一层的圆角半径都固定用 `theme.corner`（16 DIP），不再随扩散变大；同时把 `DWMWA_WINDOW_CORNER_PREFERENCE` 改成 `DWMWCP_DONOTROUND`——DWM 给窗口裁的圆角半径是系统定的（约 8–10px），比面板小得多，会在窗口四角沿小半径弧线切掉自绘阴影，看起来正是「外框圆角不如内框圆」。窗口本身没有填充（形状全来自自绘面板 + 阴影），所以不裁圆角没有副作用。
+- **验证方式**：在窗口背后垫一块纯品红窗口再 `--capture`。关云母之前窗口边缘那一圈是 `(32,32,32)` 的死色（品红一点透不出来，`#202020` 正是暗色云母的底色）；关云母之后变成品红渐变；边距收到 8 DIP 后，最外 2px 是纯品红（`(255,0,255)` 两像素），接着约 8px 是阴影渐变（`239 → 225 → 221 → 218 → 211`），第 10px 起才是面板（`(62,38,65)` → `(50,24,53)`）。四边的像素序列完全一致；沿对角线看，最外 8px 仍是纯品红、阴影从第 8px 起——说明角落不再被 DWM 的小半径弧线切掉，外圈圆角与面板同为 16 DIP。
+- **副作用**：面板 0.88 的不透明度现在直接与桌面内容混合（以前叠在云母的壁纸模糊上），亮色壁纸下面板会略浅一点；觉得太透就把 `theme.panel` 的 alpha 抬到 0.93 左右。
+- **诊断钩子**：`--hover-row=<n>` / `--click-row=<n>`（1 起）把鼠标消息投到第 n 行，`--shot` 配合 `--hover-row` 可以直接渲染悬停高亮截图；日志会打印 `悬停: 行 2 notepad`、`点击: [1] …`、`激活: [1] …`，用来验证坐标换算与启动链路（合成消息下 `TrackMouseEvent` 会立刻回 `WM_MOUSELEAVE`，所以悬停视觉验证走离屏渲染）。
+
+**P6.6：托盘左键唤出修复（2026-11-01）**
+
+- **症状**：用鼠标左键点托盘图标，搜索框闪一下就消失。
+- **原因**：托盘用 `NOTIFYICON_VERSION_4`，一次左键点击 shell 会**先后送来两条通知**——`NIN_SELECT`（`event=1024`）和 `WM_LBUTTONUP`（`event=514`），两者的通知码都放在 `lParam` 低字里。旧代码两条都匹配 `Toggle()`，于是「显示 → 隐藏」，看起来就是闪一下没了。
+- **修法**：左键改成「只打开、不切换」的 `ShowFromTray()`，并加 400ms 去抖（一次点击只处理一次）。另外托盘点开的那一下 shell 收尾时会把前台抢回任务栏，紧跟的 `WM_ACTIVATE(WA_INACTIVE)` 也会把刚显示的窗口立刻藏起来——现在「刚处理过托盘左键 600ms 内」且「新前台是 shell 自己的界面（`Shell_TrayWnd` / `Shell_SecondaryTrayWnd` / `NotifyIconOverflowWindow` / `TopLevelWindowForOverflowXamlIsland`）」时忽略这条失活。隐藏仍然走 Esc / 点到别处 / 热键，行为不变。
+- **验证**：新增 `--tray-click`（模拟 v4 的两条通知）。日志实测：
+
+  ```
+  托盘通知: event=1024 wParam=0          ← NIN_SELECT
+  托盘左键: 显示窗口
+  显示窗口 (dpi=120, 前台=是, …)
+  托盘通知: event=514 wParam=0           ← WM_LBUTTONUP
+  托盘左键: 忽略重复通知（距上次 0 ms）   ← 不再 Toggle，窗口留在屏幕上
+  ```
+
+  整段日志里没有「隐藏窗口」。托盘在本 agent 沙箱里建不出来（`NIM_ADD` 被 UIPI 拒），所以真机上的手感仍需你确认一次。
+
+**P6.7：日志落点与等级（2026-11-01）**
+
+- **改造前**：日志固定写 `%LOCALAPPDATA%\Lume\logs\lume.log`（AppData 不可写时才退回 exe 目录），188 处调用一把梭全量输出，行首只有 `[HH:MM:SS.mmm]`——没有日期（文件是追加的，跨天分不清）、没有等级、也没有「正常使用」与「排查」的区别。实测一次普通使用（唤出 + 打 7 个字符 + 退出）就写 387KB，里面大半是每次按键的 `查询` / `过滤`、鼠标 `悬停`、`托盘通知 event=…` 和 Everything 往返。
+- **落点改为 exe 同目录**：`Lume.log` 就在 `Lume.exe` 旁边（免安装/绿色运行最常见的位置），`--log=<路径>` 优先；该目录不可写（装进 `Program Files`、只读介质）时自动退回 `%LOCALAPPDATA%\Lume\logs\lume.log`，两个候选都失败才只输出到调试器。每行 `[YYYY-MM-DD HH:MM:SS.mmm][I] 正文`，UTF-8、逐行 `fflush`，常驻进程运行中可以直接用编辑器/`Get-Content -Tail` 跟着看。
+- **会话横幅**：每次启动第一行是 `[*] ===== Lume 0.2.3 启动 2026-11-01 21:46:35 等级=info pid=4180 =====`，不受等级过滤；`--log-level=error` 的日志里也一定有这一行，方便确认「这几行是哪次启动的」。
+- **四个等级**：`error < warn < info（默认）< debug`，行首单字母 `E/W/I/D`，横幅用 `*`。同一段 `--show --type=notepad` 会话实测 **info 22 行、debug 40 行**：debug 多出来的正是每次按键的 `过滤: "not" -> 22 条 (0.6 ms)` + `查询: "not" (caret=3)`、`WM_PAINT 到达`、`Everything 结果: 80 条（往返 56.1 ms）`、`图标缓存: 磁盘命中 19, shell 取图 11`。
+- **分级口径**：Info = 会话开始、设置、唤出/隐藏（含定位/Show/首帧耗时）、启动/打开、切筛选组、索引重建完成；Warn = 自动降级（热键被占用后回退、托盘重试、Everything 不可用或发送偏慢、索引触顶截断、DWM 属性设置失败）；Error = 初始化失败、启动/打开失败、写盘失败、托盘/热键彻底不可用；Debug = 每次按键的查询与过滤、鼠标悬停、托盘通知码、Everything 往返、文件索引内存/统计、图标缓存命中率。
+- **等级怎么定**：`--log-level=error|warn|info|debug`（或 `--debug`）> 环境变量 `LUME_LOG_LEVEL` > `settings.conf` 的 `logLevel=` > 默认 `info`。设置窗「常规」页新增 **「详细日志（开发排查用）」** 勾选框 + **「打开日志」** 按钮（用默认程序打开 `Lume.log`，文件还不存在时打开所在目录），勾上=debug、不勾=info，点「应用 / 保存」即时生效、不用重启：`日志等级: info -> debug（来自设置）`，同时写回 `settings.conf`。关于页的「日志」一行现在会带等级：`…\Lume.log（debug）`。
+- **轮转**：启动时若现有文件超过 **2MB**，改名成 `Lume.log.1`（旧的 `.1` 直接覆盖）再新建。实测把文件撑到 2,098,921 字节后启动：`.1` 保留了 2,098,921 字节，新 `Lume.log` 从横幅重新开始（419 字节）。
+- **不和索引打架**：`Lume.log` 通常在 exe 目录里，而 exe 目录很可能就在索引根内；watcher 把 `lume.log` / `lume.log.1` 加进忽略名单（和 `files.idx`、`settings.conf` 同级），否则常驻进程每写一行都会触发一次「增量更新」。
+- **验证**：`tools/regression.ps1` 新增一组自动检查 `log_banner` / `log_info` / `log_no_debug_by_default` / `log_debug` / `log_error_only`（分别跑默认、`--debug`、`--log-level=error` 三次并检查行前缀）；设置窗交互用新增的 `--settings-probe=<控件 id,…>` 验证（`--settings-probe=148,130` = 勾「详细日志」+ 点「应用」，日志出现 `设置窗日志开关: debug` → `日志等级: info -> debug（来自设置）` → `设置已保存`）。
+
+**P6（进行中）：搜索质量修复**
+
+- **应用索引与文件索引是两套**：`apps.idx` 来自开始菜单/AppsFolder/App Paths，天然包含 C 盘的系统应用；`files.idx` 只扫设置里的根目录（当前 **C:/F:/E:/D:**）。搜 `notepad` 第一条是 Notepad 应用，副标题显示 `应用 · C:\Program Files\WindowsApps\...`，下面的才是文件索引结果。启动日志会逐条打印 `文件索引根: C:\ / F:\ / E:\ / D:\`。
+- 注意：`--file-stats` / `--list-files` 在未指定 `--file-root` 时使用默认的桌面/文档/下载（C 盘），这是诊断命令的默认值；要验证实际索引请用 `--search-live=<query>` 或 `--file-root=`。
+- **上限改为“索引文件大小”**：设置窗“索引大小”以 MB 为单位，默认 **512**，范围 **64–262144**（最大 256GB）；也支持 `settings.conf` 的 `indexSizeMB=` 或 `--index-size-mb`。4 个根平均分配预算（512MB → 每根 128MB），按“4 字节长度 + UTF-16 路径 + 1 字节类型”的序列化大小累计，达到预算即停。旧的 `fileCap` 条目上限已移除，老配置直接使用 512MB 默认。
+- **快照优先 + 后台重建**：启动先读最新的 `files.idx`（ETF4 紧凑格式，100 万条 **656ms** 可用），随后后台全量重建（512MB 预算下约 **20.8s**）。启动不删除/重写快照；首次或“清除索引并重建”才写回。写快照不会再触发自己的 watcher，目录高频变化有 60s 冷却，退出可取消，快照流式写临时文件后原子替换。
+- **手动清除**：设置窗「索引」页的「清除索引」只删快照并清空内存（不自动重建），「重建索引」立即后台重建并写回快照（会跳过 watcher 的 60s 冷却）；两者替代了原来的「清除索引并重建」，`--clear-index` 仍按“删快照并重建”执行。
+- **索引页（P6.1）**：设置窗拆成「常规 / 索引」两页。索引页集中索引大小上限、索引文件目录、索引状态（快照大小 / 条目数 / 上限占用率 / 重建中 / 上次重建耗时）、文件索引根目录增删，以及清除 / 重建 / 刷新状态三个动作。索引文件目录是**只读下拉框**（不能手打，鼠标可选中），列出当前目录、默认目录和最近用过的 5 个目录（**已经不存在的不显示**），下面一行是「修改目录 / 打开索引目录 / 恢复默认」。状态**不自动轮询**，需要时点「刷新状态」（避免状态块反复重绘闪烁）。窗口底部有 **应用 / 保存 / 取消**：应用=立即应用配置但不关窗，保存=应用并关闭，取消=丢弃本次修改。索引文件目录写入 `settings.conf` 的 `indexDir=`，历史写入 `indexDirHistory=`（最多 5 条；填默认目录会归一化成空值，留空 = `%LOCALAPPDATA%\Lume`；应用前校验绝对路径、可创建与可写）。
+- **快照格式 ETF4**：目录按“父目录 id + 组件名”存，条目不存完整路径；名称放在连续 arena，条目固定 29 字节字段。**230MB → 124.4MB**（999,842 条，130,480,000 字节）。
+- **512MB 预算实测**：999,842 条、快照 **124.4MB**（预算按完整路径保守估算，所以实际文件小于 512MB），重建 20.8s；进程 **323MB 常驻 / 410MB 峰值**（无快照首次），读快照后再重建峰值约 560MB。查询 `AlanWake2.exe` **4.8ms**。
+- **存储占用**：`files.idx` **124.4MB**、`apps.idx` **48KB**、日志/图标/配置 **0.83MB**，正常会话总计约 **125MB**。沙箱写不进 AppData 时快照落在 exe 同目录（本机还残留旧的 170MB AppData 快照，所以看起来更大）；启动取最新修改时间的那份，正常会话只有一份。
+- **紧凑索引**：目录表 + 文件名 arena，条目 32B；47 万条索引 83MB、进程 123MB。字符位图预筛、1–2 字符只做子串、路径命中仅最后兜底（查询≥3、分数÷6、最多 2000 条）。
+- **匹配质量优先**：`quality`（5 直接路径 / 4 字面完全一致 / 3 忽略扩展名一致 / 2 前缀 / 1 子串 / 0 模糊或路径）→ 类型 tier（应用、可执行文件 → 其他文件 → 目录 → 仅路径）→ 分数。
+- **启动工作目录**：打开文件/直接 exe 时把 `ShellExecuteEx` 的 `lpDirectory` 设为文件所在目录（`.lnk` 例外，保留快捷方式自带的工作目录），修复游戏按自身目录找 `data` 却跑到启动器目录的问题；版本资源改为 ASCII 描述，避免任务管理器显示乱码。
+- **光标缓存修复**：查询布局缓存之前只按文本/组字区间判断，左右/Home/End 移动光标时视觉光标不动。现在文本不变时单独重算 `HitTestTextPosition` 并处理左右滚动，光标会跟随实际插入点（长查询滚动也正确）。
+- **正式版外壳**：主程序改为 Windows GUI 子系统，双击运行不再出现黑色控制台窗口；命令行模式会复用继承的 stdout 或附加父控制台（`--version`、`--list-apps` 等仍可用）。退出统一走托盘菜单，避免误关窗口把常驻进程带走。
+- **托盘图标**：使用蓝底白色镜头的独立高对比图标（`assets/tray.ico`），深/浅色任务栏都可见；如果在托盘找不到，先检查任务栏溢出区（^）并拖到常驻区。
+- 仍未解决：子序列噪声；非精确目录仍排在文件后；230MB 快照可进一步改成目录树+名字 arena 压缩。
+
+## 路线与进度
 
 | 阶段 | 内容 |
 | --- | --- |
