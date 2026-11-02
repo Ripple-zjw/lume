@@ -31,18 +31,18 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
 
       # 工具链压缩包 264MB，缓存后重复运行不再走 GitHub API（也避开未认证限流）。
       - name: Cache MinGW toolchain archive
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .toolchain/download
           key: winlibs-16.2.0posix-23.1.3-14.0.0-ucrt-r3
@@ -124,7 +124,7 @@ jobs:
           Write-Host ("size: {0:N1} KB" -f ((Get-Item $zip).Length / 1KB))
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Lume-${{ steps.version.outputs.version }}-win64
           path: |
@@ -142,11 +142,40 @@ jobs:
             (Resolve-Path "dist/Lume-$($env:VER)-win64.zip").Path
             (Resolve-Path 'dist/SHA256SUMS.txt').Path
           )
+
+          # 变更列表取自标签之间的提交，避免 Release 说明只剩一行 compare 链接。
+          $prev = ''
+          git describe --tags --abbrev=0 "$($env:TAG)^" *> $null
+          if ($LASTEXITCODE -eq 0) { $prev = (git describe --tags --abbrev=0 "$($env:TAG)^").Trim() }
+          $range = if ($prev) { "$prev..$($env:TAG)" } else { $env:TAG }
+          $changes = @(git log --no-merges --pretty=format:'- %s' $range)
+          if ($changes.Count -eq 0) { $changes = @('- 维护性改动') }
+
+          $lines = @(
+            "## Lume $($env:VER)"
+            ''
+            '### 变更'
+            ($changes -join "`n")
+            ''
+            '### 安装'
+            ('下载 `Lume-' + $env:VER + '-win64.zip`，解压后双击 `Install.cmd`。Windows 11 22H2（build 22621）及以上 x64，免安装、免管理员。')
+            ''
+            '校验值见 `SHA256SUMS.txt`。'
+          )
+          if ($env:GITHUB_REPOSITORY) {
+            $link = if ($prev) { "https://github.com/$($env:GITHUB_REPOSITORY)/compare/$prev...$($env:TAG)" } else { "https://github.com/$($env:GITHUB_REPOSITORY)/commits/$($env:TAG)" }
+            $lines += ''
+            $lines += "**Full Changelog**: $link"
+          }
+          $notesFile = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+          Set-Content -LiteralPath $notesFile -Value ($lines -join "`n") -Encoding utf8
+
           gh release view $env:TAG *> $null
           if ($LASTEXITCODE -eq 0) {
-            Write-Host "Release $env:TAG 已存在，覆盖上传资源"
+            Write-Host "Release $env:TAG 已存在，覆盖资源与说明"
             gh release upload $env:TAG @assets --clobber
+            gh release edit $env:TAG --notes-file $notesFile
           } else {
-            gh release create $env:TAG @assets --title "Lume $($env:VER)" --generate-notes
+            gh release create $env:TAG @assets --title "Lume $($env:VER)" --notes-file $notesFile
           }
           gh release view $env:TAG --json url,tagName,assets --jq '"release: " + .url'
