@@ -22,7 +22,9 @@ struct FileNameScore {
   uint8_t quality = 0;
 };
 
-// 按文件名打分（供 Everything 后端使用）：
-// - 单词查询：与本地索引完全同款（ScoreLowerText + NameQuality）；
-// - 多词查询：Everything 保证每个词都在文件名里，取各词最高分再降权一半。
-FileNameScore ScoreFileName(std::wstring_view lowerName, const std::wstring& queryLower);
+// 按文件名打分（本地索引与 Everything 共用）：
+// - 单词查询：ScoreLowerText + NameQuality（子序列命中会被 gap 惩罚过滤）；
+// - 多词查询：每个词都要在文件名里命中（顺序无关），取各词平均分；
+//   整串连续命中时保留整串质量等级，否则按「分词命中」记为子串（quality=1），
+//   含模糊命中则降为 quality=0。
+FileNameScore ScoreNameForQuery(std::wstring_view lowerName, const std::wstring& queryLower);

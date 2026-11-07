@@ -271,6 +271,12 @@ bool ParseFilterSpec(const FilterSet& set, const std::wstring& spec, bool* enabl
     if (index) *index = 0;
     return true;
   }
+  // 文档里的 --filter=all 与 --filter=1（以及芯片名「全部」）等价。
+  if (EqualsIgnoreCase(text, L"all")) {
+    if (enabled) *enabled = true;
+    if (index) *index = 0;
+    return true;
+  }
 
   const std::vector<std::wstring> labels = FilterChipLabels(set);
   bool digits = true;

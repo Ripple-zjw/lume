@@ -15,7 +15,7 @@ param(
   [switch]$Recompile,
   # 打发布包：dist\Lume-<Version>-win64\{Lume.exe, Install.cmd, README.txt} + 同名 zip
   [switch]$Package,
-  [string]$Version = '0.2.4'
+  [string]$Version = '0.2.5'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -182,9 +182,21 @@ function Invoke-BuildTarget {
 }
 
 if ($Config -eq 'Test') {
-  $testSources = @(Get-Sources (Join-Path $Root 'tests')) + @(Get-Sources (Join-Path $Root 'src\core'))
-  $exe = Invoke-BuildTarget -Name 'etools_tests' -Sources $testSources -ExePath (Join-Path $BuildDir 'etools_tests.exe')
-  & $exe
+  # 单元测试：tests/ + 被测源码（core 与 search 的纯逻辑部分，不链接 UI/主程序）。
+  $testSources = @(Get-Sources (Join-Path $Root 'tests')) +
+                 @(Get-Sources (Join-Path $Root 'src\core'))
+  foreach ($relative in @(
+      'src\search\scorer.cpp',
+      'src\search\filter.cpp',
+      'src\search\file_score.cpp',
+      'src\search\merge.cpp',
+      'src\search\usage.cpp',
+      'src\search\file_index.cpp')) {
+    $testSources += Get-Item -LiteralPath (Join-Path $Root $relative)
+  }
+  $testExe = Join-Path $BuildDir 'lume_tests.exe'
+  Invoke-BuildTarget -Name 'LumeTests' -Sources $testSources -ExePath $testExe | Out-Null
+  & $testExe
   exit $LASTEXITCODE
 }
 

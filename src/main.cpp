@@ -645,8 +645,9 @@ int RunMain(int argc, wchar_t** argv) {
     for (size_t i = 0; i < hits.size() && i < 30; ++i) {
       const FileHit& hit = hits[i];
       wchar_t line[1024];
-      swprintf(line, ARRAYSIZE(line), L"%zu%s%s %ls\n", hit.score, hit.pathOnly ? L" [path]" : L"",
-               hit.isDirectory ? L" [dir]" : L"", hit.path.c_str());
+      swprintf(line, ARRAYSIZE(line), L"q=%u %zu%s%s %ls\n", hit.quality, hit.score,
+               hit.pathOnly ? L" [path]" : L"", hit.isDirectory ? L" [dir]" : L"",
+               hit.path.c_str());
       fputs(WideToUtf8(line).c_str(), stdout);
     }
     fflush(stdout);
@@ -788,8 +789,8 @@ int RunMain(int argc, wchar_t** argv) {
                              static_cast<double>(frequency.QuadPart);
     printf("search_ms=%.2f hits=%zu\n", elapsedMs, hits.size());
     for (const FileHit& hit : hits) {
-      const std::string line =
-          std::to_string(hit.score) + "  " + WideToUtf8(hit.path) + "\n";
+      const std::string line = "q=" + std::to_string(hit.quality) + " " +
+                               std::to_string(hit.score) + "  " + WideToUtf8(hit.path) + "\n";
       fputs(line.c_str(), stdout);
     }
     fflush(stdout);

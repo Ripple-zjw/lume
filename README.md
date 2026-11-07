@@ -4,6 +4,8 @@ Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：按 `Alt+S
 
 [![Release](https://github.com/Ripple-zjw/lume/actions/workflows/release.yml/badge.svg)](https://github.com/Ripple-zjw/lume/actions/workflows/release.yml)
 
+变更记录见 [CHANGELOG.md](CHANGELOG.md)。
+
 ## 下载与安装
 
 从 [Releases](https://github.com/Ripple-zjw/lume/releases/latest) 下载最新的 `Lume-<版本>-win64.zip`，解压后双击 `Install.cmd` 即可。包内容：`Lume.exe` + `Install.cmd` + `README.txt`。
@@ -76,7 +78,7 @@ Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：按 `Alt+S
 
 - **单 exe、静态链接**：免安装、免管理员，无外部运行库依赖。
 - **低延迟唤出**：隐藏预热 + 同步出帧，显示到首帧实测 13–14 ms。
-- **统一搜索**：应用（开始菜单 / 商店应用 / App Paths）与文件一起搜；支持子串与子序列模糊匹配，按类型分层排序。
+- **统一搜索**：应用（开始菜单 / 商店应用 / App Paths）与文件一起搜；子串优先、子序列按间隙扣分，多词查询顺序无关（`chrome setup` 能命中 `ChromeSetup.exe`）。
 - **两种文件搜索口径**：本地索引（多线程枚举 + 快照 + 实时 watcher，实测 0.4–0.6 ms）或 Everything 全盘索引，可随时切换。
 - **筛选组**：搜索框下方一排芯片（全部 / 应用程序 / 图片 / 文档 / 音频 / 视频 / 压缩包），扩展名规则可自定义。
 - **MRU 推荐**：空查询按「最常用 + 最近」推荐应用与文件。
@@ -103,21 +105,24 @@ node tools/fetch-everything-sdk.mjs
 # 构建（执行策略受限时用 Bypass 形式；脚本输出为 ASCII，避免 PS 5.1 编码问题）
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 
-# 调试构建 / 测试 / 构建后启动
+# 调试构建 / 单测 / 构建后启动
 powershell -ExecutionPolicy Bypass -File .\build.ps1 -Config Debug
-powershell -ExecutionPolicy Bypass -File .\build.ps1 -Config Test
+powershell -ExecutionPolicy Bypass -File .\build.ps1 -Config Test   # 编译并运行 tests/ 单测
 powershell -ExecutionPolicy Bypass -File .\build.ps1 -Run
 ```
+
+`-Config Test` 会编译 `tests/` 与 `src/core`、`src/search` 的被测源码，运行后逐条打印 `[PASS]/[FAIL]`，
+有任何断言失败就以非 0 退出（CI 用同一个入口）。
 
 ### 发布包
 
 ```powershell
 # 编译 + 打 zip 发布包（版本号同时用于目录/文件名，需与 assets/app.rc 一致）
 powershell -ExecutionPolicy Bypass -File .\build.ps1 -Recompile -Package
-# 产物：dist\Lume-0.2.4-win64.zip（以及同名目录，便于先本地试跑）
+# 产物：dist\Lume-0.2.5-win64.zip（以及同名目录，便于先本地试跑）
 ```
 
-压缩包内容：`Lume.exe`（单文件、静态链接）+ `Install.cmd` + `README.txt`（系统要求、快捷键、首次索引、卸载）。解压即用，不需要安装。`README.txt` 模板在 `packaging\README.txt`；`-Package` 会校验 exe 的 `ProductVersion` 与 `-Version`（默认 `0.2.4`）一致，并打印 zip 的 SHA256。
+压缩包内容：`Lume.exe`（单文件、静态链接）+ `Install.cmd` + `README.txt`（系统要求、快捷键、首次索引、卸载）。解压即用，不需要安装。`README.txt` 模板在 `packaging\README.txt`；`-Package` 会校验 exe 的 `ProductVersion` 与 `-Version`（默认 `0.2.5`）一致，并打印 zip 的 SHA256。
 
 ### 低完整性环境（DSH/受限工作区）
 
@@ -125,7 +130,9 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Recompile -Package
 
 解决办法：双击发布包里的 **`Install.cmd`**，它会复制到 `%LOCALAPPDATA%\Programs\Lume` 并从普通目录启动；或手动把 `Lume.exe` 复制到桌面/`C:\Apps\Lume` 再运行。普通用户目录下不会有这个问题。
 
-发布由 GitHub Actions 自动完成（`.github/workflows/release.yml`）：推送 `v*` 标签即以该标签为版本号构建，并把 zip 与 `SHA256SUMS.txt` 发到 Release；工具链版本锁定，重建不会漂移。
+发布由 GitHub Actions 自动完成：`.github/workflows/release.yml` 在推送 `v*` 标签时按标签提交构建，
+先跑单测，再把 zip 与 `SHA256SUMS.txt` 发到 Release；`.github/workflows/ci.yml` 在 push / PR 上跑单测与构建。
+工具链版本锁定，重建不会漂移。
 
 ## 命令行参数（开发 / 测试）
 
@@ -206,24 +213,24 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Recompile -Package
 
 | 条目 | 查询 | 全部 | 图片组 | 过滤增量 | 扫描吞吐 |
 | --- | --- | --- | --- | --- | --- |
-| 100 万 | report | 8.34 | 8.47 | +0.13 | 120 M/s |
-| 100 万 | 2024 | 3.94 | 4.27 | +0.33 | 254 M/s |
-| 100 万 | a（单字符） | 28.40 | 40.68 | +12.3 | 35 M/s |
-| 100 万 | 文档（CJK） | 11.36 | 11.98 | +0.62 | 88 M/s |
-| 400 万 | report | 31.80 | 34.77 | +2.97 | 126 M/s |
-| 400 万 | a | 106.74 | 162.56 | +55.8 | 38 M/s |
-| 800 万 | report | 63.55 | 69.60 | +6.05 | 126 M/s |
-| 800 万 | a | 210.55 | 322.48 | +111.9 | 38 M/s |
+| 100 万 | report | 10.25 | 10.64 | +0.39 | 98 M/s |
+| 100 万 | 2024 | 3.99 | 4.50 | +0.51 | 251 M/s |
+| 100 万 | a（单字符） | 12.17 | 14.20 | +2.03 | 82 M/s |
+| 100 万 | 文档（CJK） | 10.47 | 11.39 | +0.92 | 96 M/s |
+| 400 万 | report | 39.95 | 43.10 | +3.15 | 100 M/s |
+| 400 万 | a | 47.55 | 57.04 | +9.49 | 84 M/s |
+| 800 万 | report | 76.43 | 85.88 | +9.45 | 105 M/s |
+| 800 万 | a | 94.15 | 114.86 | +20.71 | 85 M/s |
 
 结论：
 
-- **扫描是线性、可预测的**：100 万 → 800 万，耗时严格 ×8（`report` 8.3 → 63.6 ms），吞吐稳定在 ~120–128 M 条/秒；数字型查询命中字符位图预筛，能到 ~250 M/秒。
-- **过滤的边际成本只和「命中数」有关**：常规 3 字符以上查询 +0.1–6 ms（相对 +1–10%）；`a` 这种几乎命中全表的单字符查询是唯一明显变慢的情况（800 万时 +112 ms），因为每条命中都要过一次谓词。
-- 谓词本身约 **70 ns/次**（2M 次重复调用，8/9/12 个扩展名的组几乎一样快——耗时在「取基名 + 找最后一个点」上，不在逐个比扩展名）。
-- 常驻内存约 **76 B/条**（100 万 76MB / 400 万 244MB / 800 万 467MB），造数据 0.46 / 1.84 / 3.57 s。
-- 合成数据比真实索引快（真实 116 万条实测 22–35 ms）：真实条目名更长、目录路径更分散、缓存局部性差，而且线上那条日志还包含合并层与窗口布局。
+- **扫描是线性、可预测的**：100 万 → 800 万，`report` 10.25 → 76.43 ms（×7.5），吞吐稳定在 ~100–105 M 条/秒；数字型查询命中字符位图预筛，能到 ~250 M/秒。
+- **单字符不再是最坏情况**：P7 的门槛（单字符只接受前缀/词首）让 `a` 从 28.4 ms 降到 12.2 ms（100 万），过滤增量也只有 +2 ms；旧版 `a` 的 800 万 210 ms 是逐个过谓词的代价。
+- 谓词本身约 **75 ns/次**（8/9/12 个扩展名的组几乎一样快——耗时在「取基名 + 找最后一个点」上，不在逐个比扩展名）。
+- 常驻内存约 **76 B/条**（100 万 76.2 MB / 400 万 243.8 MB / 800 万 467.4 MB），造数据 0.5 / 1.9 / 3.7 s。
+- 合成数据比真实索引快（真实 116 万条历史实测 22–35 ms）：真实条目名更长、目录路径更分散、缓存局部性差，而且线上那条日志还包含合并层与窗口布局。
 
-回归脚本已把这个基准挂成**防退化闸门**：`tools\regression.ps1` 默认跑 100 万条，检查 `bench_report` ≤ 60 ms、`bench_a_1char` ≤ 200 ms 与 `filter_check=ok`，超阈值即 FAIL；`-SkipBench` 跳过、`-BenchMs` / `-BenchShortMs` 调阈值、`-BenchEntries` 换数据量（参数用空格分隔，如 `-BenchMs 60`）。阈值按本机 8.3 / 26 ms 留了 7 倍余量，只拦「数量级变慢」。
+回归脚本已把这个基准挂成**防退化闸门**：`tools\regression.ps1` 默认跑 100 万条，检查 `bench_report` 中位 ≤ 60 ms、`bench_a_1char` 中位 ≤ 200 ms、两者 p95 不超过中位阈值的 3 倍与 `filter_check=ok`，超阈值即 FAIL；`-SkipBench` 跳过、`-BenchMs` / `-BenchShortMs` 调阈值、`-BenchEntries` 换数据量（参数用空格分隔，如 `-BenchMs 60`）。阈值按本机 10.2 / 12.2 ms 留了 5–16 倍余量，只拦「数量级变慢」。
 
 ## 目录结构
 
@@ -262,7 +269,11 @@ tools/fetch-toolchain.mjs  工具链获取与校验（锁定版本）
 tools/fetch-everything-sdk.mjs  Everything SDK 获取与校验（SHA256，只解出所需源码）
 third_party/everything/    Everything SDK 源码（官方原样，MIT，编进 exe 而不是带 DLL）
 tools/regression.ps1       真实桌面会话回归（托盘/自启/热键/文件打开）
-build.ps1                  增量构建脚本
+build.ps1                  增量构建脚本（-Config Test 跑单测，-Package 打发布包）
+tests/                     单元测试（评分/gap、多词、筛选编解码、排序合并、索引检索）
+.github/workflows/ci.yml   push/PR 闸门（单测 + 构建 + CLI/搜索冒烟）
+.github/workflows/release.yml  v* 标签发布（检 tag、校验版本、跑单测、打包发布）
+CHANGELOG.md               版本变更记录（与 tag 对齐）
 docs/DESIGN.md             架构决策、实测数据、视觉 token
 docs/images/p2/            P2 设计基线与交互状态截图
 docs/images/p3/            P3 真实索引/图标/选中态截图
@@ -289,7 +300,8 @@ docs/images/p6/            P6 排序修复 / Everything / 关于页 / 筛选组 
 - **鼠标操作范围**：芯片切组、结果行点击启动、滚轮滚动；输入框里的拖选/右键菜单还没做（仍靠键盘 + `Ctrl+V`）。单击是「按下记住行、抬起才启动」，所以按住左键拖到别的行不会误启动。
 - 图标缓存位于 `%LOCALAPPDATA%\Lume\icons`（沙箱等不可写环境退回 exe 同目录 `icons\`），按解析名哈希存 PNG；删掉目录会重新取图。
 - 动态面板高度已实现（1–6 行）；文件内容搜索仍未做。
-- **真实会话回归**：`powershell -ExecutionPolicy Bypass -File tools\regression.ps1` 已跑通（exit=0，含 self-check 与 100 万条 `--bench-search` 的防退化阈值）；后续改搜索/托盘/自启链路时重跑即可。人工项（托盘菜单、设置重启生效、注销后自启）仍建议过一遍。
+- **真实会话回归**：`powershell -ExecutionPolicy Bypass -File tools\regression.ps1` 已跑通（exit=0，含 self-check、100 万条 `--bench-search` 的防退化阈值与日志等级检查）；后续改搜索/托盘/自启链路时重跑即可。人工项（托盘菜单、设置重启生效、注销后自启）仍建议过一遍。
+- **单元测试**：`build.ps1 -Config Test` 会编译并运行 `tests/`（29 个用例、162 个断言，覆盖评分/gap、多词、筛选编解码、排序合并、设置默认值）；`.github/workflows/ci.yml` 在 push / PR 上跑同一入口。CI 在云上跑不了托盘/热键这类真实桌面项，那部分仍靠 `regression.ps1` 人工会话。
 - 唤出淡入通过场景整体 alpha 实现（mingw 的 `dcomp.h` 漏声明 `IDCompositionVisual::SetOpacity`，未用 ABI hack）。
 
 ## 实现进展（开发笔记）
@@ -428,7 +440,7 @@ docs/images/p6/            P6 排序修复 / Everything / 关于页 / 筛选组 
 
 - **改造前**：日志固定写 `%LOCALAPPDATA%\Lume\logs\lume.log`（AppData 不可写时才退回 exe 目录），188 处调用一把梭全量输出，行首只有 `[HH:MM:SS.mmm]`——没有日期（文件是追加的，跨天分不清）、没有等级、也没有「正常使用」与「排查」的区别。实测一次普通使用（唤出 + 打 7 个字符 + 退出）就写 387KB，里面大半是每次按键的 `查询` / `过滤`、鼠标 `悬停`、`托盘通知 event=…` 和 Everything 往返。
 - **落点改为 exe 同目录**：`Lume.log` 就在 `Lume.exe` 旁边（免安装/绿色运行最常见的位置），`--log=<路径>` 优先；该目录不可写（装进 `Program Files`、只读介质）时自动退回 `%LOCALAPPDATA%\Lume\logs\lume.log`，两个候选都失败才只输出到调试器。每行 `[YYYY-MM-DD HH:MM:SS.mmm][I] 正文`，UTF-8、逐行 `fflush`，常驻进程运行中可以直接用编辑器/`Get-Content -Tail` 跟着看。
-- **会话横幅**：每次启动第一行是 `[*] ===== Lume 0.2.3 启动 2026-11-01 21:46:35 等级=info pid=4180 =====`，不受等级过滤；`--log-level=error` 的日志里也一定有这一行，方便确认「这几行是哪次启动的」。
+- **会话横幅**：每次启动第一行是 `[*] ===== Lume 0.2.5 启动 2026-11-01 21:46:35 等级=info pid=4180 =====`，不受等级过滤；`--log-level=error` 的日志里也一定有这一行，方便确认「这几行是哪次启动的」。
 - **四个等级**：`error < warn < info（默认）< debug`，行首单字母 `E/W/I/D`，横幅用 `*`。同一段 `--show --type=notepad` 会话实测 **info 22 行、debug 40 行**：debug 多出来的正是每次按键的 `过滤: "not" -> 22 条 (0.6 ms)` + `查询: "not" (caret=3)`、`WM_PAINT 到达`、`Everything 结果: 80 条（往返 56.1 ms）`、`图标缓存: 磁盘命中 19, shell 取图 11`。
 - **分级口径**：Info = 会话开始、设置、唤出/隐藏（含定位/Show/首帧耗时）、启动/打开、切筛选组、索引重建完成；Warn = 自动降级（热键被占用后回退、托盘重试、Everything 不可用或发送偏慢、索引触顶截断、DWM 属性设置失败）；Error = 初始化失败、启动/打开失败、写盘失败、托盘/热键彻底不可用；Debug = 每次按键的查询与过滤、鼠标悬停、托盘通知码、Everything 往返、文件索引内存/统计、图标缓存命中率。
 - **等级怎么定**：`--log-level=error|warn|info|debug`（或 `--debug`）> 环境变量 `LUME_LOG_LEVEL` > `settings.conf` 的 `logLevel=` > 默认 `info`。设置窗「常规」页新增 **「详细日志（开发排查用）」** 勾选框 + **「打开日志」** 按钮（用默认程序打开 `Lume.log`，文件还不存在时打开所在目录），勾上=debug、不勾=info，点「应用 / 保存」即时生效、不用重启：`日志等级: info -> debug（来自设置）`，同时写回 `settings.conf`。关于页的「日志」一行现在会带等级：`…\Lume.log（debug）`。
@@ -447,13 +459,23 @@ docs/images/p6/            P6 排序修复 / Everything / 关于页 / 筛选组 
 - **快照格式 ETF4**：目录按“父目录 id + 组件名”存，条目不存完整路径；名称放在连续 arena，条目固定 29 字节字段。**230MB → 124.4MB**（999,842 条，130,480,000 字节）。
 - **512MB 预算实测**：999,842 条、快照 **124.4MB**（预算按完整路径保守估算，所以实际文件小于 512MB），重建 20.8s；进程 **323MB 常驻 / 410MB 峰值**（无快照首次），读快照后再重建峰值约 560MB。查询 `AlanWake2.exe` **4.8ms**。
 - **存储占用**：`files.idx` **124.4MB**、`apps.idx` **48KB**、日志/图标/配置 **0.83MB**，正常会话总计约 **125MB**。沙箱写不进 AppData 时快照落在 exe 同目录（本机还残留旧的 170MB AppData 快照，所以看起来更大）；启动取最新修改时间的那份，正常会话只有一份。
-- **紧凑索引**：目录表 + 文件名 arena，条目 32B；47 万条索引 83MB、进程 123MB。字符位图预筛、1–2 字符只做子串、路径命中仅最后兜底（查询≥3、分数÷6、最多 2000 条）。
-- **匹配质量优先**：`quality`（5 直接路径 / 4 字面完全一致 / 3 忽略扩展名一致 / 2 前缀 / 1 子串 / 0 模糊或路径）→ 类型 tier（应用、可执行文件 → 其他文件 → 目录 → 仅路径）→ 分数。
+- **紧凑索引**：目录表 + 文件名 arena，条目 32B；47 万条索引 83MB、进程 123MB。字符位图预筛、1–2 字符只做子串、路径命中兜底（查询≥3、分数÷6、候选不足 5 条时最多补 500 条）。
+- **匹配质量优先**：`quality`（5 直接路径 / 4 字面完全一致 / 3 忽略扩展名一致 / 2 前缀 / 1 子串 / 0 模糊或路径）→ 类型 tier（应用、可执行文件 → 其他文件 → 目录 → 仅路径）→ 分数；P7 起模糊命中还要过间隙惩罚，过于松散的子序列直接丢弃。
 - **启动工作目录**：打开文件/直接 exe 时把 `ShellExecuteEx` 的 `lpDirectory` 设为文件所在目录（`.lnk` 例外，保留快捷方式自带的工作目录），修复游戏按自身目录找 `data` 却跑到启动器目录的问题；版本资源改为 ASCII 描述，避免任务管理器显示乱码。
 - **光标缓存修复**：查询布局缓存之前只按文本/组字区间判断，左右/Home/End 移动光标时视觉光标不动。现在文本不变时单独重算 `HitTestTextPosition` 并处理左右滚动，光标会跟随实际插入点（长查询滚动也正确）。
 - **正式版外壳**：主程序改为 Windows GUI 子系统，双击运行不再出现黑色控制台窗口；命令行模式会复用继承的 stdout 或附加父控制台（`--version`、`--list-apps` 等仍可用）。退出统一走托盘菜单，避免误关窗口把常驻进程带走。
 - **托盘图标**：使用蓝底白色镜头的独立高对比图标（`assets/tray.ico`），深/浅色任务栏都可见；如果在托盘找不到，先检查任务栏溢出区（^）并拖到常驻区。
-- 仍未解决：子序列噪声；非精确目录仍排在文件后；230MB 快照可进一步改成目录树+名字 arena 压缩。
+**P7：发布收口 / 测试闸门 / 搜索质量（2026-11-07）**
+
+- **发布收口**：版本统一到 0.2.5（`version.h` / `app.rc` / `app.manifest` / `build.ps1` / 包内 README）；新增 `CHANGELOG.md`；修正包内 README「开始菜单/桌面快捷方式」的错误说明；`release.yml` 改为按 tag 检出提交构建（手动触发不再用分支 HEAD），并加版本一致性校验、zip 内 README 校验与 `gh release create --verify-tag`。
+- **测试闸门**：新增 `tests/`（29 个用例 / 162 个断言）：覆盖 `ScoreLowerText` 的 gap 惩罚与单字符门槛、多词文件名、应用质量分层、筛选组编解码与 `--filter` 解析、合并层排序与占位行、`FileIndex::Search` 的质量/多词/路径兜底/顺序稳定性、设置默认值。`build.ps1 -Config Test` 恢复可用；新增 `.github/workflows/ci.yml` 在 push / PR 上跑单测与构建；`regression.ps1` 增加 p95 阈值。
+- **搜索质量（质量分层 + gap 惩罚）**：应用侧子序列命中降为 quality=0（不再和普通子串同档）；子序列按「词内跳字 ×6 / 词首跳转 ×2 + 单次最大跳跃」扣分，低于 300 分的松散命中直接丢弃。实测 `steam` 不再带出 `Uninstall Telegram`，`StreamingBar` 仍保留但排在真实命中之后。
+- **多词查询（顺序无关）**：查询按空白分词，每个词都必须在文件名里命中（可模糊）；整串连续命中保留原质量，分词命中记 quality=1，含模糊则记 0。`chrome setup` 命中 `ChromeSetup.exe`，`studio visual` 命中 `Visual Studio Code`；本地索引与 Everything 共用 `ScoreNameForQuery`。
+- **路径与目录**：路径兜底从「0 命中才扫」改为「候选不足 5 条就补」，并删掉原分支里永不执行的死循环；目录名精确/前缀命中提到与文件同级，搜文件夹名不再被同名文件挤后。
+- **排序确定性**：合并层改为全序比较（quality → tier → score → 标题长度 → 标题 → 目标路径），应用/文件排序补齐 tie-break；同查询重复搜索结果顺序一致。
+- **短查询门槛**：单字符只接受前缀或词首（`data.txt` 不再因一个 `a` 命中），1–2 字符不做模糊匹配；`a` 的 100 万条基准从 28.4 ms 降到 12.2 ms。
+- **实测**（100 万条合成数据）：`report` 10.25 ms、`2024` 3.99 ms、`a` 12.17 ms、CJK `文档` 10.47 ms；800 万条 `report` 76.43 ms、`a` 94.15 ms，吞吐 ~85–105 M 条/秒。
+- 仍待办：文件内容搜索与 USN 全盘索引（成本高，排后续）；自动更新、代码签名、输入框选区/右键菜单。
 
 ## 路线与进度
 
@@ -472,7 +494,11 @@ docs/images/p6/            P6 排序修复 / Everything / 关于页 / 筛选组 
 | P6.4 ✅ | 搜索筛选组（芯片切换、组规则可编辑、恢复默认、Everything `ext:` 下推与零结果重试） |
 | P6.5 ✅ | 结果行鼠标操作（悬停高亮 + 单击启动，抬起才执行）与去掉 DWM 窗口外框 |
 | P6.6 ✅ | 托盘左键唤出修复（v4 一条点击两条通知 → 只打开不切换、去抖、shell 抢前台不算失活） |
-| P6（进行中） | 搜索质量修复（配额/路径降权/稳定排序/预筛）、文件内容搜索、打包与签名 |
+| P6.7 ✅ | 日志落点与等级（exe 同目录、四级、2MB 轮转、设置开关、回归检查） |
+| P7.1 ✅ | 发布收口：版本 0.2.5 统一、CHANGELOG、CI 按 tag 构建与一致校验、包内 README 修正 |
+| P7.2 ✅ | 测试闸门：tests/ 29 个单测、`-Config Test` 恢复、push/PR CI 跑单测与构建、p95 阈值 |
+| P7.3 ✅ | 搜索质量：质量分层 + gap 惩罚、多词 AND、路径/目录命中、全序排序、短查询门槛 |
+| 下一步 | 代码签名与自动更新、输入框选区/右键菜单、文件内容搜索与 USN 全盘索引 |
 
 ## 许可
 

@@ -150,20 +150,10 @@ std::vector<ResultRow> BuildMergedRows(const std::vector<AppEntry>& apps,
     for (const AppEntry* entry : FilterEntries(apps, query)) {
       const size_t bonus = usage ? usage->Bonus(entry->launchTarget) : 0;
       bool titleHit = false;
-      const size_t score = ScoreEntry(*entry, query, &titleHit);
-      // 标题命中=应用优先级；只有详情/启动路径命中时按“路径命中”处理（UWP 的 AUMID 除外）。
-      const uint8_t tier =
-          (titleHit || entry->IsUwp()) ? kTierApplication : kTierPathOnly;
       uint8_t quality = 0;
-      if (titleHit) {
-        if (_wcsicmp(entry->title.c_str(), query.c_str()) == 0) {
-          quality = 4;
-        } else if (_wcsnicmp(entry->title.c_str(), query.c_str(), query.size()) == 0) {
-          quality = 2;
-        } else {
-          quality = 1;
-        }
-      }
+      const size_t score = ScoreEntry(*entry, query, &titleHit, &quality);
+      // 标题命中=应用优先级；只有详情/启动路径命中时按“路径命中”处理（UWP 的 AUMID 除外）。
+      const uint8_t tier = (titleHit || entry->IsUwp()) ? kTierApplication : kTierPathOnly;
       rows.push_back(MakeAppRow(*entry, score + bonus, tier, quality));
     }
   }
@@ -171,14 +161,23 @@ std::vector<ResultRow> BuildMergedRows(const std::vector<AppEntry>& apps,
     // 后端通常已经过滤过（保证截断前就只剩组内类型）；这里兜底，统一所有调用方口径。
     if (filter && !FilterMatchesPath(*filter, hit.path, hit.isDirectory)) continue;
     const size_t bonus = usage ? usage->Bonus(hit.path) : 0;
-    rows.push_back(
-        MakeFileRow(hit.path, hit.isDirectory, hit.score + bonus, hit.pathOnly, hit.quality));
+    ResultRow row = MakeFileRow(hit.path, hit.isDirectory, hit.score + bonus, hit.pathOnly,
+                                hit.quality);
+    // 目录名精确/前缀命中时提到与文件同级：搜文件夹名时不该被同名的文件挤到后面。
+    if (row.tier == kTierDirectory && row.quality >= 2) row.tier = kTierFile;
+    rows.push_back(std::move(row));
   }
 
+  // 全序比较：quality → tier → score → 标题长度 → 标题 → 目标路径。
+  // 同一查询、同一份索引必须得到稳定顺序，避免结果"跳来跳去"。
   std::stable_sort(rows.begin(), rows.end(), [](const ResultRow& a, const ResultRow& b) {
     if (a.quality != b.quality) return a.quality > b.quality;
     if (a.tier != b.tier) return a.tier < b.tier;
-    return a.score > b.score;
+    if (a.score != b.score) return a.score > b.score;
+    if (a.title.size() != b.title.size()) return a.title.size() < b.title.size();
+    const int titleCompare = _wcsicmp(a.title.c_str(), b.title.c_str());
+    if (titleCompare != 0) return titleCompare < 0;
+    return _wcsicmp(a.target.c_str(), b.target.c_str()) < 0;
   });
   if (rows.size() > limit) rows.resize(limit);
 

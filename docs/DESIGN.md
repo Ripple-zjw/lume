@@ -121,9 +121,9 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 
 ## 10. P4 实测结论
 
-1. **索引范围与实现**：默认 `Desktop/Documents/Downloads`（`SHGetFolderPathW` + Downloads 注册表项）；`FindFirstFileExW(FindExInfoBasic, FIND_FIRST_EX_LARGE_FETCH)` 每个根目录一个线程，BFS 跳过 reparse point、`$RECYCLE.BIN`、`System Volume Information`、`.git/.svn/.hg/node_modules`，上限 20 万条。
+1. **索引范围与实现**：默认 `Desktop/Documents/Downloads`（`SHGetFolderPathW` + Downloads 注册表项）；`FindFirstFileExW(FindExInfoBasic, FIND_FIRST_EX_LARGE_FETCH)` 每个根目录一个线程，BFS 跳过 reparse point、`$RECYCLE.BIN`、`System Volume Information`、`.git/.svn/.hg/node_modules`；上限按**索引文件大小**预算（默认 512MB，见 §13.9），不再是固定的条目数。
 2. **实测规模**：本机默认根目录 1361 条、重建 31ms；`--file-root=C:\Windows\System32` 压测 **29640 条 / 515ms**（目标 5 万 ≤15s 有大量余量）；快照加载 1361 条 0ms。
-3. **快照**：二进制 `ETF3`（magic + 版本 + 根目录 + 路径/类型），`files.idx`；AppData 写入失败（沙箱返回 Win32 5）时自动换 exe 同目录，读取时按候选路径依次尝试；应用缓存 `apps.idx` 同样处理。
+3. **快照**：二进制 `ETF4`（目录树 + 名字 arena + 条目数组，见 §13.9），`files.idx`；AppData 写入失败（沙箱返回 Win32 5）时自动换 exe 同目录，读取时按候选路径依次尝试；应用缓存 `apps.idx` 同样处理。
 4. **watcher**：每根目录 `ReadDirectoryChangesW` 递归监听；新增文件**立即**入索引、删除按前缀摘除、目录新增/重命名置 `rebuildRequested_` 交后台重建；窗口每 1s 比对 `version()` 并自动重新过滤。实测新建 `watchtest.txt` 后日志出现「增量更新」与「文件索引已更新」。
 5. **查询性能陷阱**：最初每次按键 `PreloadIcons` 同步拉 6 个 shell 图标，查询耗时 56.7ms（远超 16ms 目标）。改为**异步图标**：worker 线程 `IShellItemImageFactory` 取 HBITMAP，UI 线程 `DrainCompleted()` 转 D2D；`Get()` 未命中即入队并返回空（先画首字色块），120ms 定时器补图。查询降到 **0.4–0.6ms**；启动时仍用 `Warm()` 同步预热首屏 6 个图标，避免首次唤出闪字块。
 6. **合并排序**：应用（`ScoreEntry`）、文件（文件名命中 +40，路径命中降权 /3）、路径直通（分数 1e6）统一 `stable_sort`，同分保持应用在前；上限 200 行。
@@ -156,13 +156,13 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 
 ## 13. P6 搜索质量修复（2026-10-31）
 
-1. **配额确定化**：`perRootQuota = 上限 / roots.size()`；默认上限 **520,000**（F:/E: 各 260,000），覆盖本机两盘全部 443,618 条。每个 `EnumerateRoot` 用独立配额，触顶分别记日志「达到上限 N 条，已截断」。两次重建快照 SHA256 相同，解决了此前两线程共享 200,000 配额导致的“谁先抢到算谁的”、结果集合不稳定的问题。上限可用 `fileCap` / `--file-cap` 调到 20 万–100 万。
-2. **路径命中降级**：`ScorePathOnly` 要求查询 ≥3 字符、命中前一个字符是 `\ / 空格 - _ .` 边界，分数 `÷6`（约 160–200）；全路径不再做子序列匹配。`Search` 先扫文件名，只有文件名命中 <6 条时才补扫路径，且路径命中最多收 2000 条。修复前 `steamapps` 这类查询会把 `\Games\` 下几千个文件顶进前 80。
+1. **配额确定化**：`perRootQuota = 上限 / roots.size()`；默认上限 **520,000**（F:/E: 各 260,000），覆盖本机两盘全部 443,618 条。每个 `EnumerateRoot` 用独立配额，触顶分别记日志「达到上限 N 条，已截断」。两次重建快照 SHA256 相同，解决了此前两线程共享 200,000 配额导致的“谁先抢到算谁的”、结果集合不稳定的问题。P6 起上限改为**索引文件大小**（MB，64–262144），见 §13.9；`fileCap` / `--file-cap` 已移除。
+2. **路径命中降级**：`ScorePathOnly` 要求查询 ≥3 字符、命中前一个字符是 `\ / 空格 - _ .` 边界，分数 `÷6`（约 160–200）；全路径不再做子序列匹配。P7 起 `Search` 先扫文件名，文件名候选不足 5 条时才补扫路径并最多收 500 条（见 §13.10），修复了原先「0 命中才扫」和兜底分支里的死循环。修复前 `steamapps` 这类查询会把 `\Games\` 下几千个文件顶进前 80。
 3. **稳定排序**：同分比较“文件名长度升序 → 文件优先于目录 → 路径长度升序 → 路径字典序”，`partial_sort` / `sort` 使用同一比较器；两次 `--search-files=gam` 输出一致、无重复。
 4. **文件名位图预筛**：`FileEntry.charMask` 记录文件名中出现的 a-z/0-9（36 位），查询为纯 ASCII 字母数字时先做包含检查，跳过不可能命中的名字；1–2 字符只做子串匹配。200k 实测从 17.5–35.5ms 降到 5.7–15.7ms。
 5. **实测（512MB 预算 / 99.98 万条）**：`AlanWake2.exe` 5.4ms（1 条命中）；47.2 万条时 `game` 6.4ms。
 6. **调试入口**：`--search-files=<query>`（文件索引）、`--search-rows=<query>`（合并 quality/tier/score）、`--search-live=<query>`（现场重建并确认文件是否被收录）。
-7. **仍未解决**：99.98 万条约 328MB 常驻（读快照后重建峰值约 560MB）；快照 230MB；子序列噪声；非精确目录仍排在文件后（字面精确目录已置顶）。
+7. **仍未解决（截至 P6）**：99.98 万条约 328MB 常驻（读快照后重建峰值约 560MB）；快照 230MB；子序列噪声；非精确目录仍排在文件后（字面精确目录已置顶）。P7 已处理子序列噪声、目录层级与快照紧凑化，见 §13.10。
 8. **排序（质量优先 + 类型层级）**：`quality` 为主键——5 直接路径，4 字面完全一致（`name == query`），3 忽略扩展名一致（`game.exe` 对 `game`），2 前缀，1 子串，0 模糊/仅路径；同 quality 再看 `tier`（0 应用/可执行文件、1 其他文件、2 目录、3 仅路径），最后比分数。`game` 先出 20 个 `Game` 目录（同层按路径长度），`AlanWake2.exe` 字面精确置顶。
 9. **快照优先 + 大小上限（2026-10-31）**：`Start` 先读最新的 `files.idx`（按候选路径 mtime 取最新，ETF4 紧凑格式 100 万条 656ms），再后台全量重建；常驻模式只在首次/手动清除时写回。上限改为**索引文件大小**：设置窗“索引大小”MB，默认 **512**，范围 64–262144（256GB），`indexSizeMB=`/`--index-size-mb`；4 个根平分预算，按完整路径 `4 + len*2 + 1` 保守累计（实际 ETF4 文件约小一半），达到即截断。设置窗“清除索引并重建”（删快照、清内存、重置冷却）。watcher 忽略自己的快照/日志/图标，目录高频变化 60s 冷却；退出可取消，快照流式写 `.tmp` 后原子替换。实测 512MB 预算：999,842 条、快照 **124.4MB**、重建 20.8s、进程 323MB 常驻 / 410MB 峰值（无快照首次）、读快照后再重建峰值约 560MB；`AlanWake2.exe` 查询 4.8ms。
 10. **紧凑索引**：目录表 `{path, lowerPath}` 每目录一份；条目 32 字节 `{父目录 id, nameOffset/len, lowerOffset/len, charMask, pathHash32, isDirectory}`。文件名/小写名放连续 `wchar_t` arena，`name == lowerName` 时（本机 78%）复用同一 offset。目录索引从字符串 map 换成 64 位哈希 `unordered_multimap` + 路径校验；路径哈希压到 32 位。并行枚举各根用本地 `RootData`，合并时逐个根重映射并立即释放，峰值从 130MB 降到 109MB。Entry 从 96B 降到 32B。
@@ -216,7 +216,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 3. **数据流**：`Callbacks` 新增 `std::function<AboutInfo()> queryAbout`，`LauncherWindow::QueryAboutInfo()` 汇总 `kAppVersion`、`QueryOsVersion()`（build ≥ 22000 记为 Windows 11）、`dpi_`、当前热键、`SettingsStore::Path()`、`UsageStore::DefaultPath()`（本次把 `UsageStore::Path()` 提成公开静态方法）、`LogPath()`、`files_.indexDirectory()`，以及 Everything 模式下 `everything_.Status()` 的版本/就绪状态。设置窗只做渲染，不碰这些来源。
 4. **交互**：`BuildAboutText()` 生成一段多行文本（关于页的 STATIC 与剪贴板共用同一份），「复制版本信息」走 `OpenClipboard`/`SetClipboardData(CF_UNICODETEXT)`，失败时在状态行说明原因（剪贴板被占用 / 内存不足）。页签与其它页一致：`SetPage()` 用 `ShowWindow` 显隐 `aboutControls_`（当时关于页是第 3 页、`SetPage(2)`；加了「筛选」页后是第 4 页、`SetPage(3)`），`DrawButton` 里页签共用一个「选中项高亮 + 底部强调色条」分支。与索引页一样**不自动刷新**，只在切到该页时读一次。
 5. **布局**：窗口高度不变（578），关于页复用索引页的纵向区间：信息块 `(20,64,500,330)` 多行 STATIC，动作行 `(20,412)` 一个「复制版本信息」按钮 + 右侧一行说明；常规页的提示文字补了一句「版本与数据目录在「关于」页」。
-6. **验证**：`--settings` + 合成 `WM_COMMAND(132)` 切页截图（`docs/images/p6/settings-about.png`，675×723）；合成 `WM_COMMAND(133)` 后读系统剪贴板，内容为完整信息块（当时为 `Lume 0.2.0`，含 `Windows 11（build 26200） · x64 · DPI 120 (125%)`、`Everything 1.4.1.1028（已连接，索引就绪）` 与四个路径），状态行显示「版本信息已复制到剪贴板」。
+6. **验证**：`--settings` + 合成 `WM_COMMAND(132)` 切页截图（`docs/images/p6/settings-about.png`，675×723）；合成 `WM_COMMAND(133)` 后读系统剪贴板，内容为完整信息块（当时为 `Lume 0.2.5`，含 `Windows 11（build 26200） · x64 · DPI 120 (125%)`、`Everything 1.4.1.1028（已连接，索引就绪）` 与四个路径），状态行显示「版本信息已复制到剪贴板」。
 
 ## 13.5 搜索筛选组（2026-11-01）
 
@@ -284,19 +284,30 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 
 1. **改造前的三点问题**：① 落点固定 `%LOCALAPPDATA%\Lume\logs\lume.log`，只有 AppData 写不进去才退回 exe 目录——绿色运行/免安装时最该看的那份日志反而在 AppData 深处；② 行首只有 `[HH:MM:SS.mmm]`，文件是追加的，跨天根本分不清哪段是这次启动；③ 没有等级，188 处 `Log()` 全量输出，一次普通使用（唤出 + 打 7 个字符 + 退出）387KB，绝大部分是每次按键的 `查询` / `过滤`、鼠标 `悬停`、`托盘通知 event=…`。
 2. **落点**：`LogInit` 按 `--log=` → `exe 目录\Lume.log` → `%LOCALAPPDATA%\Lume\logs\lume.log` 依次尝试，每个候选先 `EnsureDirectory`，打不开就换下一个；全部失败才只留调试器输出（`OutputDebugStringW`）。`--log=` 只给文件名时按 exe 目录解析，避免双击启动时当前目录是别处。
-3. **格式**：`[YYYY-MM-DD HH:MM:SS.mmm][级别] 正文`，UTF-8、每行 `fflush`（常驻进程可边跑边 tail），控制台/调试器同步输出。每次启动第一行是不受过滤的横幅：`[*] ===== Lume 0.2.3 启动 2026-11-01 21:46:35 等级=info pid=4180 =====`。
+3. **格式**：`[YYYY-MM-DD HH:MM:SS.mmm][级别] 正文`，UTF-8、每行 `fflush`（常驻进程可边跑边 tail），控制台/调试器同步输出。每次启动第一行是不受过滤的横幅：`[*] ===== Lume 0.2.5 启动 2026-11-01 21:46:35 等级=info pid=4180 =====`。
 4. **等级**：`enum class LogLevel { Error, Warn, Info, Debug }`，数值越大越啰嗦，`LogEnabled()` 用 `int(level) <= 当前等级` 做一次比较即可短路，热路径没有格式化开销。四个入口 `LogError/LogWarn/Log/LogDebug`，`LogHr(what, hr, level = Error)` 供 HRESULT 用（DWM 属性这类非致命调用传 `Warn`）。分级口径：Info = 会话/设置/唤出/启动/切组/索引重建完成，Warn = 自动降级（热键回退、托盘重试、Everything 不可用、索引截断），Error = 初始化失败与写盘失败，Debug = 每次按键、悬停、托盘通知码、Everything 往返、索引内存统计。
 5. **配置优先级**：`--log-level=` / `--debug` > `LUME_LOG_LEVEL` > `settings.conf` 的 `logLevel=` > `info`。设置窗「常规」页加了「详细日志（开发排查用）」勾选框（`BS_OWNERDRAW`，勾选状态直接读 `settings_.logLevel`，与「开机自动启动」同一套自绘分支）和「打开日志」按钮（`onOpenLog` 回调：先 `OpenPath(Lume.log)`，失败再打开其所在目录），点「应用 / 保存」时 `ApplySettings()` 里调 `LogSetLevel()` 即时生效，日志自己记一行 `日志等级: info -> debug（来自设置）`；`SettingsStore::Save` 写回 `logLevel=`。
 6. **轮转**：`LogInit` 打开前检查现有文件大小，超过 2MB 就 `MoveFileEx` 成 `Lume.log.1`（覆盖旧的再新建）。实测 2,098,921 字节 → 轮转后 `.1` 保持 2,098,921 字节、新文件从横幅重新开始。
 7. **与索引互不干扰**：`Lume.log` 在 exe 目录里，而 exe 目录常落在索引根内；`FileIndex::ShouldIgnoreSnapshotName()`（watcher 与枚举共用）把 `lume.log` / `lume.log.1` / `etools.log` 加进忽略名单，否则常驻进程每写一行都会触发 `文件索引: 增量更新`。
 8. **验证**：`tools/regression.ps1` 加了一组 `log_*` 自动检查（默认 22 行里没有 `[D]`、`--debug` 有 `[D]`、`--log-level=error` 只剩 `[E]` + 横幅）；设置窗勾选框用新增的 `--settings-probe=<控件 id,…>`（进程内 `PostMessage(WM_COMMAND)`）验证：`--settings-probe=148,130` 打出 `设置窗日志开关: debug` → `日志等级: info -> debug（来自设置）` → `设置已保存`，并且 `settings.conf` 里出现 `logLevel=debug`。
 
+## 13.10 P7 搜索质量与测试闸门（2026-11-07）
+
+1. **质量分层与 gap 惩罚**：`ScoreLowerText` 的子序列分支记录命中位置并计算 span / gaps / maxGap；打分改为 300 基准 + 连续 +8 / 非连续 +2 / 词首 +12 / 首字符 +20，再按「词内跳字 ×6、词首跳转 ×2 + 最大跳跃惩罚」扣分，低于 300 分的松散命中直接丢弃。`TextMatch` 把 contiguous/span/gaps 暴露给调用方与单测。应用侧 `ScoreEntry` 只有子串命中才可能是 quality 1–4，子序列命中固定 quality 0。
+2. **多词查询**：`SplitQueryWords` 按空白切分；`ScoreNameForQuery` 对单词查询走 `ScoreLowerText` + `NameQuality`，对多词要求每个词都命中（顺序无关），分数取平均；整串连续命中保留整串质量，分词命中记 quality=1、含模糊记 0。`FileIndex::Search` 用各词 charMask 预筛，单词查询保持内联 `find` 热路径；Everything 后端复用同一函数，两种来源口径一致。
+3. **路径与目录**：路径兜底从「文件名 0 命中」改为「候选不足 5 条」，上限 500 条，并删掉原分支里永不执行的 `nameMatched` 循环；合并层把 quality≥2 的目录提到与文件同级（tier=1），搜文件夹名不再被同名文件挤后。
+4. **全序排序**：合并层比较器扩为 quality → tier → score → 标题长度 → 标题 → 目标路径（忽略大小写）；`FilterEntries` 与 Everything 候选排序补齐确定性 tie-break，同一查询重复执行顺序一致。
+5. **短查询门槛**：1 个字符只接受前缀/词首（内联 `IsPathBoundary` 判断），1–2 字符不做子序列匹配；`a` 的 100 万条基准 28.4 → 12.2 ms。
+6. **测试闸门**：`tests/`（自研 ~60 行框架，`wmain` 入口）覆盖评分与 gap、多词、应用质量、筛选编解码与 `--filter` 解析、合并排序、`FileIndex::Search`（`LoadPathsForTest` 在内存造条目，复用真实目录表/名字 arena）、设置默认值；共 29 用例 162 断言。`build.ps1 -Config Test` 编译 tests + core + search 源码并运行，任一断言失败即非 0；`ci.yml` 在 push / PR 上跑同一入口；`regression.ps1` 增加 p95 阈值。
+7. **实测**：100 万条合成数据 `report` 10.25 ms / `a` 12.17 ms / `2024` 3.99 ms / `文档` 10.47 ms；800 万条 `report` 76.43 ms、`a` 94.15 ms，吞吐 85–105 M 条/秒；内存仍约 76 B/条。真实夹具上 `steam` 不再带出 `Uninstall Telegram`，`studio visual` 与 `chrome setup` 能正确命中。
+8. **诊断**：`--search-live` / `--search-files` 输出增加 `q=<quality>`，`--search-rows` 仍打印 tier/quality/score；`--filter=all` 现在与 README / 包内说明一致。
+
 ## 14. 后续方向
 
-- 子序列匹配加“跨度/间隙”惩罚，压掉 `steamapps → StreamingBar` 这类噪声；或对长查询要求连续片段。
-- 目录树 + 快照紧凑化：目录改存“父目录 id + 名字”，快照随之压到 <100MB；同时可把目录 arena 做掉。
+- （已完成，P7）子序列 gap 惩罚与质量分层；下一步可考虑对长查询要求更严格的连续片段。
+- （已完成，P6）ETF4 目录树 + 名字 arena 把 230MB 压到 124MB；进一步可把名字改 UTF-8 或压缩，目标 <100MB。
 - Everything 后续：等 1.5 普及后换 SDK3（命名管道，MIT C 源码，可 vendor），同接口替换传输层；可选「按目录限定结果」与「Everything 未运行时自动回退本地索引」。
 - 筛选组后续：多组同时生效（AND/OR 组合）、按大小/修改时间过滤、每组自定义快捷键；芯片行放不下时加一枚「更多」溢出芯片（现在是裁剪 + 键盘可达）。
 - 鼠标后续：输入框的拖选/双击选词/右键菜单（当前鼠标覆盖芯片、结果行点击、滚轮），结果行的右键「打开所在位置 / 复制路径」，以及按下态的视觉反馈。
 - USN 全盘索引；文件内容搜索。
-- 打包：图标资源、便携模式、可选自签证书；真实会话回归已完成（`tools\regression.ps1` 全 PASS），后续改动重跑即可。
+- 打包后续：代码签名（自签或正式证书）、便携模式、自动更新检查、卸载器；图标资源与真实会话回归已完成（`tools\regression.ps1` 全 PASS）。

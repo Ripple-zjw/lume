@@ -73,6 +73,10 @@ class FileIndex {
   // 所以 Search() 走的是和线上完全相同的「预筛 → 打分 → 过滤 → 排序」代码。
   void LoadSyntheticForBenchmark(size_t count, uint32_t seed);
 
+  // 单元测试专用：用给定路径（以 \ 结尾表示目录）填充内存索引，不碰磁盘。
+  // 与真实索引共用同一套目录表/名字 arena 结构，Search() 的排序口径因此可测。
+  void LoadPathsForTest(const std::vector<std::wstring>& paths);
+
   // 诊断用：返回前 limit 条路径。
   std::vector<std::wstring> SamplePaths(size_t limit) const;
 

@@ -31,7 +31,7 @@ struct IndexStatus {
 
 // 「关于」页的只读信息（由 LauncherWindow 汇总）。
 struct AboutInfo {
-  std::wstring version;       // "0.2.1"
+  std::wstring version;       // "0.2.5"
   std::wstring os;            // "Windows 11 (build 26200)"
   std::wstring arch;          // "x64"
   std::wstring dpi;           // "120 (125%)"

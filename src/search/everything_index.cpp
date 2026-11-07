@@ -264,7 +264,7 @@ void EverythingIndex::CollectHits(std::vector<FileHit>* hits) const {
     const size_t slash = path.find_last_of(L"\\/");
     const std::wstring name = slash == std::wstring::npos ? path : path.substr(slash + 1);
     const std::wstring lowerName = ToLower(name);
-    FileNameScore scored = ScoreFileName(lowerName, lastNeedleLower_);
+    FileNameScore scored = ScoreNameForQuery(lowerName, lastNeedleLower_);
     bool pathOnly = false;
     if (scored.score == 0) {
       // 文件名没命中：与本地索引一样退到"路径边界处的子串"，优先级最低。
@@ -288,7 +288,8 @@ void EverythingIndex::CollectHits(std::vector<FileHit>* hits) const {
     if (a.quality != b.quality) return a.quality > b.quality;
     if (a.score != b.score) return a.score > b.score;
     if (a.isDirectory != b.isDirectory) return !a.isDirectory;
-    return a.path.size() < b.path.size();
+    if (a.path.size() != b.path.size()) return a.path.size() < b.path.size();
+    return _wcsicmp(a.path.c_str(), b.path.c_str()) < 0;  // 全序：同查询结果稳定
   });
   if (candidates.size() > kMaxFileHits) candidates.resize(kMaxFileHits);
   *hits = std::move(candidates);

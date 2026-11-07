@@ -1,0 +1,101 @@
+name: CI
+
+# push / PR 上的基本闸门：单元测试 → 构建 → CLI 与搜索质量冒烟。
+# 需要真实桌面会话的项目（托盘/热键/自启/UWP）仍由 tools/regression.ps1 人工回归。
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TOOLCHAIN_CACHE_KEY: winlibs-16.2.0posix-23.1.3-14.0.0-ucrt-r3
+
+jobs:
+  build-and-test:
+    name: Unit tests and build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Cache MinGW toolchain archive
+        uses: actions/cache@v6
+        with:
+          path: .toolchain/download
+          key: ${{ env.TOOLCHAIN_CACHE_KEY }}
+
+      - name: Fetch portable MinGW-w64 toolchain
+        shell: pwsh
+        run: |
+          node tools/fetch-toolchain.mjs
+          Expand-Archive -LiteralPath .toolchain/download/winlibs.zip -DestinationPath .toolchain -Force
+          if (-not (Test-Path '.toolchain/mingw64/bin/g++.exe')) { throw 'MinGW 解压失败' }
+
+      - name: Run unit tests
+        shell: pwsh
+        run: |
+          Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+          ./build.ps1 -Config Test
+
+      - name: Build app
+        shell: pwsh
+        run: |
+          Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+          ./build.ps1
+
+      - name: CLI smoke test
+        shell: pwsh
+        run: |
+          cmd /c "build\Lume.exe --version > build\version.txt 2>&1"
+          if (-not (Select-String -Path 'build\version.txt' -Pattern '^Lume \d+\.\d+\.\d+$' -Quiet)) {
+            throw '--version 冒烟失败'
+          }
+          cmd /c "build\Lume.exe --list-filters > build\filters.txt 2>&1"
+          if (-not (Select-String -Path 'build\filters.txt' -Pattern '^selected=' -Quiet)) {
+            throw '--list-filters 冒烟失败'
+          }
+          Write-Host "cli smoke: OK"
+
+      # 用固定夹具验证搜索质量：真实命中在前、松散模糊被丢弃、多词顺序无关。
+      - name: Search quality smoke test
+        shell: pwsh
+        run: |
+          $fixture = Join-Path (Get-Location) 'build\ci-fixture'
+          Remove-Item -LiteralPath $fixture -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $fixture | Out-Null
+          foreach ($name in @(
+              'steamapps.txt','steam_setup.exe','my-steam-notes.txt','StreamingBar.txt',
+              'uninstall telegram.txt','chromesetup.exe','visual studio code notes.txt')) {
+            Set-Content -LiteralPath (Join-Path $fixture $name) -Value 'x'
+          }
+          $exe = Join-Path (Get-Location) 'build\Lume.exe'
+          $out1 = Join-Path (Get-Location) 'build\search-steam.txt'
+          $out2 = Join-Path (Get-Location) 'build\search-multi.txt'
+          $cmdFile = Join-Path (Get-Location) 'build\ci-search.cmd'
+          @"
+          @echo off
+          "$exe" --filter=1 --file-root="$fixture" --search-live=steam > "$out1" 2>&1
+          "$exe" --filter=1 --file-root="$fixture" --search-live="chrome setup" > "$out2" 2>&1
+          "@ | Set-Content -LiteralPath $cmdFile -Encoding ASCII
+          cmd /c $cmdFile
+
+          if (-not (Select-String -Path $out1 -Pattern 'steamapps\.txt' -Quiet)) {
+            throw '搜索冒烟失败：steamapps.txt 未命中'
+          }
+          if (Select-String -Path $out1 -Pattern 'uninstall telegram' -Quiet) {
+            throw '搜索冒烟失败：松散模糊命中未被 gap 惩罚丢弃'
+          }
+          if (-not (Select-String -Path $out2 -Pattern 'chromesetup\.exe' -Quiet)) {
+            throw '搜索冒烟失败：多词查询未命中 chromesetup.exe'
+          }
+          Write-Host "search quality smoke: OK"

@@ -75,12 +75,14 @@ if ($SkipBench) {
         # the unfiltered baseline, which is what the latency limits apply to.
         $seen = @{}
         $measured = @{}
+        $measuredP95 = @{}
         foreach ($line in $lines) {
             if ($line -notmatch '^(\S+)\s+\S+\s+\d+\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)$') { continue }
             $query = $Matches[1]
             if ($seen.ContainsKey($query)) { continue }
             $seen[$query] = $true
             $measured[$query] = [double]$Matches[3]
+            $measuredP95[$query] = [double]$Matches[4]
         }
         $checks = @(
             @{ Query = 'report'; Limit = $BenchMs; Label = 'report' },
@@ -93,9 +95,12 @@ if ($SkipBench) {
                 continue
             }
             $med = $measured[$check.Query]
-            $ok = $med -le $check.Limit
+            $p95 = $measuredP95[$check.Query]
+            # p95 允许 3 倍余量，只拦长尾数量级退化（偶发调度抖动不算）。
+            $p95Limit = $check.Limit * 3
+            $ok = ($med -le $check.Limit) -and ($p95 -le $p95Limit)
             $state = if ($ok) { 'PASS' } else { 'FAIL' }
-            $text = "bench_{0}={1} med={2:N2}ms limit={3}ms" -f $check.Label, $state, $med, $check.Limit
+            $text = "bench_{0}={1} med={2:N2}ms p95={3:N2}ms limits={4}/{5}ms" -f $check.Label, $state, $med, $p95, $check.Limit, $p95Limit
             if ($ok) {
                 Write-Host $text -ForegroundColor Green
             } else {

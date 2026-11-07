@@ -1087,6 +1087,13 @@ std::vector<FileHit> FileIndex::Search(const std::wstring& query, size_t limit,
   std::vector<FileHit> results;
   if (query.empty()) return results;
   const std::wstring needle = ToLower(query);
+  const std::vector<std::wstring> words = SplitQueryWords(needle);
+  const bool multiWord = words.size() > 1;
+  std::vector<uint64_t> wordMasks;
+  if (multiWord) {
+    wordMasks.reserve(words.size());
+    for (const std::wstring& word : words) wordMasks.push_back(QueryMask(word));
+  }
   std::lock_guard<std::mutex> lock(entriesMutex_);
 
   struct Scored {
@@ -1118,43 +1125,66 @@ std::vector<FileHit> FileIndex::Search(const std::wstring& query, size_t limit,
 
   std::vector<Scored> scored;
   scored.reserve(1024);
-  const uint64_t required = QueryMask(needle);
+  const uint64_t required = multiWord ? 0 : QueryMask(needle);
   for (size_t i = 0; i < storage_.entries.size(); ++i) {
     const Entry& entry = storage_.entries[i];
-    const std::wstring_view name = LowerNameOf(entry);
-    size_t score = 0;
-    if (required == 0 || (entry.charMask & required) == required) {
-      if (needle.size() < 3) {
-        if (name.find(needle) != std::wstring_view::npos) {
-          score = ScoreLowerText(name, needle);
+    if (multiWord) {
+      // 多词：每个词的关键字符都必须出现在文件名里（顺序不限），作为廉价预筛。
+      bool maskOk = true;
+      for (const uint64_t mask : wordMasks) {
+        if (mask != 0 && (entry.charMask & mask) != mask) {
+          maskOk = false;
+          break;
         }
-      } else {
-        score = ScoreLowerText(name, needle);
       }
+      if (!maskOk) continue;
+    } else if (required != 0 && (entry.charMask & required) != required) {
+      continue;
     }
-    if (score > 0) {
-      // 筛选只在命中后判断：不影响全表扫描的字符位图预筛与打分开销。
-      if (filter && !FilterMatchesPath(*filter, name, entry.isDirectory)) continue;
-      score += 40;
-      scored.push_back({score, i, false, NameQuality(name, needle)});
+    const std::wstring_view name = LowerNameOf(entry);
+    size_t nameScoreValue = 0;
+    uint8_t nameQuality = 0;
+    if (multiWord) {
+      const FileNameScore nameScore = ScoreNameForQuery(name, needle);
+      nameScoreValue = nameScore.score;
+      nameQuality = nameScore.quality;
+    } else if (needle.size() < 3) {
+      // 短查询只做子串，内联 find 保持热路径速度；单字符额外要求前缀或词首。
+      const size_t found = name.find(needle);
+      if (found == std::wstring_view::npos) continue;
+      if (needle.size() == 1 && found != 0 && !IsPathBoundary(name[found - 1])) continue;
+      nameScoreValue = ScoreLowerText(name, needle);
+      nameQuality = NameQuality(name, needle);
+    } else {
+      // 单词查询是热路径：不分配分词数组，直接打分 + 判定质量。
+      nameScoreValue = ScoreLowerText(name, needle);
+      if (nameScoreValue > 0) nameQuality = NameQuality(name, needle);
     }
+    if (nameScoreValue == 0) continue;
+    // 筛选只在命中后判断：不影响全表扫描的字符位图预筛与打分开销。
+    if (filter && !FilterMatchesPath(*filter, name, entry.isDirectory)) continue;
+    scored.push_back({nameScoreValue + 40, i, false, nameQuality});
   }
 
-  // 只有文件名完全没有结果时才用路径兜底：路径命中优先级最低，也避免精确查询被全盘路径扫描拖慢。
-  if (scored.empty()) {
-    std::vector<uint8_t> nameMatched(storage_.entries.size(), 0);
-    for (const Scored& item : scored) nameMatched[item.index] = 1;
-    constexpr size_t kMaxPathHits = 2000;
+  // 文件名命中很少时补路径命中（优先级最低）。路径扫描开销明显，只在候选不足时做，
+  // 这样常见的文件名查询不会多付一次全表路径扫描。
+  constexpr size_t kPathFallbackBelow = 5;
+  constexpr size_t kMaxPathHits = 500;
+  if (needle.size() >= 3 && scored.size() < kPathFallbackBelow) {
+    std::vector<uint8_t> nameMatched;
+    if (!scored.empty()) {
+      nameMatched.assign(storage_.entries.size(), 0);
+      for (const Scored& item : scored) nameMatched[item.index] = 1;
+    }
     size_t pathHits = 0;
     for (size_t i = 0; i < storage_.entries.size() && pathHits < kMaxPathHits; ++i) {
-      if (nameMatched[i]) continue;
+      if (!nameMatched.empty() && nameMatched[i]) continue;
       const Entry& entry = storage_.entries[i];
       const size_t score = ScorePathOnly(storage_.directories[entry.directory].lowerPath, needle);
-      if (score > 0) {
-        if (filter && !FilterMatchesPath(*filter, LowerNameOf(entry), entry.isDirectory)) continue;
-        scored.push_back({score, i, true, 0});
-        ++pathHits;
-      }
+      if (score == 0) continue;
+      if (filter && !FilterMatchesPath(*filter, LowerNameOf(entry), entry.isDirectory)) continue;
+      scored.push_back({score, i, true, 0});
+      ++pathHits;
     }
   }
 
@@ -1176,6 +1206,21 @@ std::vector<FileHit> FileIndex::Search(const std::wstring& query, size_t limit,
     results.push_back(std::move(hit));
   }
   return results;
+}
+
+void FileIndex::LoadPathsForTest(const std::vector<std::wstring>& paths) {
+  std::lock_guard<std::mutex> lock(entriesMutex_);
+  storage_ = Storage{};
+  for (const std::wstring& raw : paths) {
+    if (raw.empty()) continue;
+    const bool isDirectory = raw.back() == L'\\' || raw.back() == L'/';
+    std::wstring path = raw;
+    while (!path.empty() && (path.back() == L'\\' || path.back() == L'/')) path.pop_back();
+    const size_t slash = path.find_last_of(L'\\');
+    if (slash == std::wstring::npos || slash + 1 >= path.size()) continue;
+    AddEntryLocked(path, isDirectory);
+  }
+  version_.fetch_add(1);
 }
 
 size_t FileIndex::RebuildSynchronously() {

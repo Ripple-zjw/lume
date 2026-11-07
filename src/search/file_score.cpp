@@ -1,6 +1,7 @@
 #include "search/file_score.h"
 
 #include <algorithm>
+#include <vector>
 
 #include "search/app_entry.h"
 
@@ -44,33 +45,40 @@ size_t ScorePathOnly(const std::wstring& lowerPath, const std::wstring& needle) 
   return std::max<size_t>(1, score) / 6;
 }
 
-FileNameScore ScoreFileName(std::wstring_view lowerName, const std::wstring& queryLower) {
+FileNameScore ScoreNameForQuery(std::wstring_view lowerName, const std::wstring& queryLower) {
   FileNameScore result;
   if (lowerName.empty() || queryLower.empty()) return result;
 
-  // 单词查询：和本地索引走完全相同的评分与质量判定。
-  if (queryLower.find(L' ') == std::wstring::npos) {
-    result.score = ScoreLowerText(lowerName, queryLower);
+  const std::vector<std::wstring> words = SplitQueryWords(queryLower);
+  if (words.empty()) return result;
+
+  if (words.size() == 1) {
+    const size_t score = ScoreLowerText(lowerName, queryLower);
+    if (score == 0) return result;
+    result.score = score;
     result.quality = NameQuality(lowerName, queryLower);
     return result;
   }
 
-  // 多词查询：Everything 已保证每个词都出现在文件名里，取各词最高分再降权一半，
-  // 避免"词越多分数越高"破坏与应用结果的相对排序。
-  std::wstring_view query(queryLower);
-  size_t best = 0;
-  size_t start = 0;
-  while (start < query.size()) {
-    const size_t space = query.find(L' ', start);
-    const size_t end = space == std::wstring_view::npos ? query.size() : space;
-    if (end > start) best = std::max(best, ScoreLowerText(lowerName, query.substr(start, end - start)));
-    if (space == std::wstring_view::npos) break;
-    start = space + 1;
+  // 多词查询：每个词都必须命中，顺序不限；分数取各词平均，避免"词越多分越高"。
+  size_t total = 0;
+  bool allContiguous = true;
+  for (const std::wstring& word : words) {
+    TextMatch match;
+    const size_t score = ScoreLowerText(lowerName, word, &match);
+    if (score == 0) return result;
+    total += score;
+    allContiguous = allContiguous && match.contiguous;
   }
-  if (best == 0) return result;
-  result.score = std::max<size_t>(1, best / 2);
-  // 整串连续命中时保留更高等级，否则按"分词命中"记为子串。
-  result.quality = NameQuality(lowerName, queryLower);
-  if (result.quality == 0) result.quality = 1;
+  result.score = total / words.size();
+
+  const std::wstring_view whole(queryLower);
+  if (lowerName.find(whole) != std::wstring_view::npos) {
+    // 整串连续命中（例如 "visual studio" 命中 "Visual Studio Code"）：质量按整串算，分数混合。
+    result.quality = NameQuality(lowerName, queryLower);
+    result.score = (result.score + ScoreLowerText(lowerName, queryLower)) / 2;
+  } else {
+    result.quality = allContiguous ? 1 : 0;
+  }
   return result;
 }
