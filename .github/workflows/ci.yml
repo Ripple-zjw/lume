@@ -66,6 +66,25 @@ jobs:
           }
           Write-Host "cli smoke: OK"
 
+      # 设置页（ms-settings）目录与命中：只验证目录完整性和搜索命中，不真的打开页面。
+      - name: Settings pages smoke test
+        shell: pwsh
+        run: |
+          cmd /c "build\Lume.exe --list-settings > build\settings-list.txt 2>&1"
+          if (-not (Select-String -Path 'build\settings-list.txt' -Pattern '^available=1 pages=\d+$' -Quiet)) {
+            throw '--list-settings 冒烟失败：ms-settings 协议不可用'
+          }
+          $pages = (Select-String -Path 'build\settings-list.txt' -Pattern 'ms-settings:' | Measure-Object).Count
+          if ($pages -lt 50) { throw "设置页条目过少: $pages" }
+          if (-not (Select-String -Path 'build\settings-list.txt' -Pattern 'ms-settings:startupapps' -Quiet)) {
+            throw '设置页目录缺少 startupapps'
+          }
+          cmd /c "build\Lume.exe --filter=1 --search-rows=startup > build\settings-rows.txt 2>&1"
+          if (-not (Select-String -Path 'build\settings-rows.txt' -Pattern 'action=settings ' -Quiet)) {
+            throw '搜索未命中设置页：startup'
+          }
+          Write-Host "settings pages smoke: OK ($pages pages)"
+
       # 用固定夹具验证搜索质量：真实命中在前、松散模糊被丢弃、多词顺序无关。
       - name: Search quality smoke test
         shell: pwsh

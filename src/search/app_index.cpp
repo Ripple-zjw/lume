@@ -16,6 +16,7 @@
 
 #include "core/com_ptr.h"
 #include "core/log.h"
+#include "search/settings_pages.h"
 
 namespace {
 
@@ -424,6 +425,17 @@ std::vector<AppEntry> CollectAppEntries() {
   return collector.entries;
 }
 
+std::vector<AppEntry> CollectAllEntries() {
+  std::vector<AppEntry> entries = CollectAppEntries();
+  const size_t appCount = entries.size();
+  std::vector<AppEntry> pages = CollectSettingsPages();
+  entries.reserve(appCount + pages.size());
+  for (AppEntry& page : pages) entries.push_back(std::move(page));
+  Log(L"搜索条目: %zu（应用 %zu + 设置页 %zu）", entries.size(), appCount,
+      entries.size() - appCount);
+  return entries;
+}
+
 std::vector<ResultRow> BuildRowsFromEntries(const std::vector<const AppEntry*>& entries,
                                             bool withPlaceholder) {
   std::vector<ResultRow> rows;
@@ -436,7 +448,11 @@ std::vector<ResultRow> BuildRowsFromEntries(const std::vector<const AppEntry*>& 
     row.iconKey = entry->iconKey;
     row.color = entry->color;
     row.target = entry->launchTarget;
-    row.action = entry->IsUwp() ? RowAction::LaunchUwp : RowAction::LaunchApp;
+    if (entry->IsSettings()) {
+      row.action = RowAction::OpenSettings;
+    } else {
+      row.action = entry->IsUwp() ? RowAction::LaunchUwp : RowAction::LaunchApp;
+    }
     rows.push_back(std::move(row));
   }
   if (rows.empty() && withPlaceholder) {

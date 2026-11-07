@@ -191,6 +191,7 @@ if ($Config -eq 'Test') {
       'src\search\file_score.cpp',
       'src\search\merge.cpp',
       'src\search\usage.cpp',
+      'src\search\settings_pages.cpp',
       'src\search\file_index.cpp')) {
     $testSources += Get-Item -LiteralPath (Join-Path $Root $relative)
   }

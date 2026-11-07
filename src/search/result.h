@@ -12,7 +12,27 @@ enum class RowAction {
   LaunchUwp,   // 商店应用（AUMID）
   OpenFile,    // 文件
   OpenFolder,  // 文件夹
+  OpenSettings,  // Windows 设置页（ms-settings 深链）；加在末尾，保持既有枚举数值稳定
 };
+
+// 诊断输出用的动作名（--search-rows 打印 action=...）。
+inline const wchar_t* RowActionName(RowAction action) {
+  switch (action) {
+    case RowAction::LaunchApp:
+      return L"app";
+    case RowAction::LaunchUwp:
+      return L"uwp";
+    case RowAction::OpenFile:
+      return L"file";
+    case RowAction::OpenFolder:
+      return L"folder";
+    case RowAction::OpenSettings:
+      return L"settings";
+    case RowAction::None:
+      break;
+  }
+  return L"none";
+}
 
 // 显示层结果行（应用与文件共用）。
 struct ResultRow {

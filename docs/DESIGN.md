@@ -302,6 +302,18 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 7. **实测**：100 万条合成数据 `report` 10.25 ms / `a` 12.17 ms / `2024` 3.99 ms / `文档` 10.47 ms；800 万条 `report` 76.43 ms、`a` 94.15 ms，吞吐 85–105 M 条/秒；内存仍约 76 B/条。真实夹具上 `steam` 不再带出 `Uninstall Telegram`，`studio visual` 与 `chrome setup` 能正确命中。
 8. **诊断**：`--search-live` / `--search-files` 输出增加 `q=<quality>`，`--search-rows` 仍打印 tier/quality/score；`--filter=all` 现在与 README / 包内说明一致。
 
+## 15. 系统设置页搜索（2026-11-08）
+
+1. **为什么是静态表**：Windows 没有公开的「枚举设置页」API——Settings 的页面只能通过 `ms-settings:` 协议打开，页面清单藏在应用内部。权威来源是 Microsoft Learn 的 ms-settings URI 表，因此目录写成代码内的 `constexpr` 表（55 条），不解析 `SystemSettings.exe` 的资源、也不做运行时探测。
+2. **条目表示**：复用 `AppEntry`，新增 `LaunchKind::SettingsUri` 与 `keywords`（普通应用为空，评分对旧行为零影响）。设置页**不进** `apps.idx` 缓存（静态数据，进缓存只会跟着开始菜单时间戳无谓失效），由 `CollectAllEntries()` = `CollectAppEntries()` + `CollectSettingsPages()` 在启动时拼接；`CollectAllEntries()` 放在 `app_index.cpp`，单测只链接 `settings_pages.cpp`，不会把 COM/Shell 枚举拉进测试二进制。
+3. **评分**：标题分支原样复用；标题没命中时才进「设置页关键词分支」——关键词只接受连续命中（精确 3 / 前缀 2 / 包含 1，分数 780 / 720 / 700 递减），不做模糊，避免「启动」这类短词把整张表拽出来。设置页不参与 detail/启动目标的兜底：所有条目 URI 都含 `ms-settings`，否则输入 `settings` 会全表命中。
+4. **命名空间词**：查询 ≥2 个词时剥掉「设置 / settings」，剥空则回退原查询；整条查询只有命名空间词时设置页一律 0 分——「设置」这个词属于「设置」应用本身，不该被设置页抢走。
+5. **排序**：设置页按 tier 0（与应用同档）参与既有 quality → tier → score → 标题长度 → 标题 → 目标 的全序比较；关键词命中（600–780）低于标题连续命中（≈1200），常见查询不会被设置页淹没。
+6. **展示与图标**：副标题 `设置 · <分类>`，图标统一取 `%SystemRoot%\ImmersiveControlPanel\SystemSettings.exe`（与开始菜单里的「设置」同源，缺失时回退首字色块），分类配色只在回退块上看得见。
+7. **启动与降级**：`OpenSettingsPage()` 先 `ShellExecuteEx(open)`，失败再 `explorer.exe "<uri>"`（管理员运行时 Settings 常拒绝被提权进程激活）；`Shift` / `Ctrl+Enter` 对设置页没有对应语义，降级为普通打开并记日志。URI 不是 `ms-settings:` 开头直接报错，避免把任意协议交给 shell。
+8. **可用性**：`SettingsProtocolAvailable()` 读 `HKCR\ms-settings`（结果缓存）；精简镜像没有该协议时整组不出现、Warn 一次，`--list-settings` 打印 `available=0`。硬件专属页（`batterysaver*`、`devices-touchpad`、`wheel`、`pen-button`、`maps` 等）不收录，避免在没有该硬件的机器上落到设置首页。
+9. **验证**：单测 13 例（目录唯一性、硬件页黑名单、标题精确、关键词命中、命名空间剥离、剥离保护、关键词不模糊、URI 不兜底、合并动作、排序）；`--list-settings` 打印标题/URI/关键词，`--search-rows` 增加 `action=`；CI 与 `regression.ps1` 各加一组设置页检查。真机用 `--open=ms-settings:startupapps` 逐个确认落页。
+
 ## 14. 后续方向
 
 - （已完成，P7）子序列 gap 惩罚与质量分层；下一步可考虑对长查询要求更严格的连续片段。
@@ -310,4 +322,5 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 - 筛选组后续：多组同时生效（AND/OR 组合）、按大小/修改时间过滤、每组自定义快捷键；芯片行放不下时加一枚「更多」溢出芯片（现在是裁剪 + 键盘可达）。
 - 鼠标后续：输入框的拖选/双击选词/右键菜单（当前鼠标覆盖芯片、结果行点击、滚轮），结果行的右键「打开所在位置 / 复制路径」，以及按下态的视觉反馈。
 - USN 全盘索引；文件内容搜索。
+- 设置页后续：经典控制面板工具（`appwiz.cpl` / `msconfig` 等）需要 `AppEntry`/`ResultRow` 支持 `command + arguments`，排在 P8.2；`ms-settings` 页面清单随 Windows 版本变化，可按 build 号裁剪或降级。
 - 打包后续：代码签名（自签或正式证书）、便携模式、自动更新检查、卸载器；图标资源与真实会话回归已完成（`tools\regression.ps1` 全 PASS）。

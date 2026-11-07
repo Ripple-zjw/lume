@@ -21,6 +21,7 @@
 #include "search/file_index.h"
 #include "search/filter.h"
 #include "search/merge.h"
+#include "search/settings_pages.h"
 #include "ui/theme.h"
 
 #include <psapi.h>
@@ -41,6 +42,7 @@ struct CliOptions {
   std::wstring shotMatrix;
   float scale = 0.0f;
   bool listApps = false;
+  bool listSettings = false;
   bool listFiles = false;
   bool fileStats = false;
   bool selfCheck = false;
@@ -88,12 +90,13 @@ void PrintUsage() {
       "  --compose=<text>                 Inject IME composition string (render test)\n"
       "  --capture-ms=<n>                 Capture delay in ms (default 450, use 30 for fade)\n"
       "  --list-apps                      Print the collected app index and exit\n"
+      "  --list-settings                  Print the ms-settings page catalog (title, uri, keywords)\n"
       "  --list-files                     Rebuild the file index, print stats and sample paths\n"
       "  --file-stats                     Rebuild the file index and print stats only\n"
       "  --index-size-mb=<n>              Override max index file size in MB (64–262144)\n"
       "  --index-dir=<dir>                Override the index snapshot directory\n"
       "  --search-files=<query>           Search the file index and print top results with scores\n"
-      "  --search-rows=<query>            Print merged app/file rows with tier and score\n"
+      "  --search-rows=<query>            Print merged app/file rows with tier, quality, action\n"
       "  --file-search=local|everything   File search source (default: local index)\n"
       "  --filter=<name|index|all|off>    Select a filter group chip (1 = all)\n"
       "  --list-filters                   Print the filter groups and exit\n"
@@ -101,7 +104,7 @@ void PrintUsage() {
       "  --bench-iters=<n>                Iterations per bench case (default 5)\n"
       "  --everything-check[=<query>]     Probe Everything, run one query, print hits and merged rows\n"
       "  --search-live=<query>            Rebuild index now and search it (diagnostics)\n"
-      "  --open=<path>                    Verify opening a file/path directly\n"
+      "  --open=<path|uri>                Verify opening a file, path or protocol URI (ms-settings:...)\n"
       "  --set-autostart=1|0              Enable/disable autostart and print state\n"
       "  --hotkey=<combo>                 Override hotkey for this run (e.g. Ctrl+Alt+K)\n"
       "  --settings                       Open the settings window at startup\n"
@@ -244,6 +247,8 @@ CliOptions Parse(int argc, wchar_t** argv) {
       cli.app.noHotkey = true;
     } else if (arg == L"--list-apps") {
       cli.listApps = true;
+    } else if (arg == L"--list-settings") {
+      cli.listSettings = true;
     } else if (arg == L"--list-files") {
       cli.listFiles = true;
     } else if (arg == L"--file-stats") {
@@ -572,6 +577,24 @@ int RunMain(int argc, wchar_t** argv) {
     CoUninitialize();
     return 0;
   }
+  if (cli.listSettings) {
+    LogInit(cli.app.logPath);
+    const std::vector<AppEntry> pages = CollectSettingsPages();
+    printf("available=%d pages=%zu\n", SettingsProtocolAvailable() ? 1 : 0, pages.size());
+    for (const AppEntry& entry : pages) {
+      std::string line = WideToUtf8(entry.title) + "\t" + WideToUtf8(entry.launchTarget) + "\t";
+      for (size_t i = 0; i < entry.keywords.size(); ++i) {
+        if (i > 0) line += " ";
+        line += WideToUtf8(entry.keywords[i]);
+      }
+      line += "\n";
+      fputs(line.c_str(), stdout);
+    }
+    fflush(stdout);
+    LogShutdown();
+    CoUninitialize();
+    return pages.empty() ? 2 : 0;
+  }
   if (cli.listFiles || cli.fileStats) {
     FileIndex files;
     if (cli.indexSizeMB > 0) files.SetMaxIndexBytes(cli.indexSizeMB * 1024ull * 1024ull);
@@ -711,14 +734,15 @@ int RunMain(int argc, wchar_t** argv) {
       fputs(WideToUtf8(line).c_str(), stdout);
     }
     // 同一批 hits 过一遍合并层：验证换来源后 tier/quality/score 口径一致。
-    const std::vector<AppEntry> apps = CollectAppEntries();
+    const std::vector<AppEntry> apps = CollectAllEntries();
     const std::vector<ResultRow> rows = BuildMergedRows(apps, hits, nullptr, cli.everythingQuery,
                                                         20, false, ActiveFilterGroup(filter.set));
     printf("apps=%zu merged_rows=%zu\n", apps.size(), rows.size());
     for (const ResultRow& row : rows) {
       wchar_t line[1024];
-      swprintf(line, ARRAYSIZE(line), L"tier=%u quality=%u score=%zu %ls | %ls\n", row.tier,
-               row.quality, row.score, row.title.c_str(), row.subtitle.c_str());
+      swprintf(line, ARRAYSIZE(line), L"tier=%u quality=%u score=%zu action=%ls %ls | %ls\n",
+               row.tier, row.quality, row.score, RowActionName(row.action), row.title.c_str(),
+               row.subtitle.c_str());
       fputs(WideToUtf8(line).c_str(), stdout);
     }
     fflush(stdout);
@@ -741,7 +765,7 @@ int RunMain(int argc, wchar_t** argv) {
     if (!cli.app.fileRoot.empty()) roots = {cli.app.fileRoot};
     if (!roots.empty()) index.SetRoots(roots);
     index.LoadCachedSnapshot();
-    const std::vector<AppEntry> apps = CollectAppEntries();
+    const std::vector<AppEntry> apps = CollectAllEntries();
     const FilterGroup* group = ActiveFilterGroup(filter.set);
     const std::vector<FileHit> fileHits = index.Search(cli.searchRows, kMaxFileHits, group);
     const std::vector<ResultRow> rows =
@@ -750,8 +774,9 @@ int RunMain(int argc, wchar_t** argv) {
            index.size(), apps.size(), rows.size(), index.snapshotPath().c_str());
     for (const ResultRow& row : rows) {
       wchar_t line[1024];
-      swprintf(line, ARRAYSIZE(line), L"tier=%u quality=%u score=%zu %ls | %ls\n", row.tier,
-               row.quality, row.score, row.title.c_str(), row.subtitle.c_str());
+      swprintf(line, ARRAYSIZE(line), L"tier=%u quality=%u score=%zu action=%ls %ls | %ls\n",
+               row.tier, row.quality, row.score, RowActionName(row.action), row.title.c_str(),
+               row.subtitle.c_str());
       fputs(WideToUtf8(line).c_str(), stdout);
     }
     fflush(stdout);

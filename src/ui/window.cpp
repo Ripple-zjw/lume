@@ -132,7 +132,7 @@ bool LauncherWindow::Create(HINSTANCE instance, Renderer* renderer, Scene* scene
 
   LARGE_INTEGER indexStart{};
   QueryPerformanceCounter(&indexStart);
-  apps_ = CollectAppEntries();
+  apps_ = CollectAllEntries();
   Log(L"应用索引耗时: %.1f ms", ElapsedMs(indexStart));
   Log(L"文件搜索来源: %ls", FileSearchIsEverything() ? L"everything" : L"local");
   if (!FileSearchIsEverything()) {
@@ -1100,7 +1100,14 @@ void LauncherWindow::ActivateRow(int index, bool shift, bool ctrl) {
   }
   std::wstring error;
   bool ok = false;
-  if (row.action == RowAction::LaunchApp || row.action == RowAction::LaunchUwp) {
+  if (row.action == RowAction::OpenSettings) {
+    ok = OpenSettingsPage(row.target, &error);
+    if (ok) {
+      Log(L"设置页: %ls", row.target.c_str());
+    } else {
+      LogError(L"设置页打开失败: %ls -> %ls", row.target.c_str(), error.c_str());
+    }
+  } else if (row.action == RowAction::LaunchApp || row.action == RowAction::LaunchUwp) {
     AppEntry entry;
     entry.title = row.title;
     entry.detail = row.subtitle;

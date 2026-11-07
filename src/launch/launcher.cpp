@@ -83,10 +83,19 @@ bool RevealTarget(const AppEntry& entry, std::wstring* error) {
 
 }  // namespace
 
-bool LaunchEntry(const AppEntry& entry, LaunchMode mode, std::wstring* error) {  if (error) error->clear();
+bool LaunchEntry(const AppEntry& entry, LaunchMode mode, std::wstring* error) {
+  if (error) error->clear();
   if (entry.launchTarget.empty()) {
     if (error) *error = L"条目没有可启动目标";
     return false;
+  }
+
+  if (entry.IsSettings()) {
+    // 设置页是 shell 协议：不能定位（Shift）也不能提权（Ctrl），两种修饰键都退化成直接打开。
+    if (mode != LaunchMode::Normal) {
+      Log(L"系统设置页不支持定位/提权，改为直接打开: %ls", entry.launchTarget.c_str());
+    }
+    return OpenSettingsPage(entry.launchTarget, error);
   }
 
   if (mode == LaunchMode::Reveal) {
@@ -140,4 +149,24 @@ bool RevealPath(const std::wstring& path, std::wstring* error) {
     return false;
   }
   return RunShellExecute(L"explorer.exe", L"open", L"/select,\"" + path + L"\"", error);
+}
+
+bool OpenSettingsPage(const std::wstring& uri, std::wstring* error) {
+  if (error) error->clear();
+  if (uri.rfind(L"ms-settings:", 0) != 0) {
+    if (error) *error = L"不是系统设置页链接: " + uri;
+    return false;
+  }
+  if (RunShellExecute(uri, L"open", L"", error)) {
+    Log(L"已打开设置页: %ls", uri.c_str());
+    return true;
+  }
+  // 管理员身份运行时 Settings 常拒绝被提权进程激活，让中等完整性的 explorer 中转一次。
+  std::wstring fallbackError;
+  if (RunShellExecute(L"explorer.exe", L"open", L"\"" + uri + L"\"", &fallbackError)) {
+    Log(L"已通过 explorer 打开设置页: %ls", uri.c_str());
+    return true;
+  }
+  if (error) *error = L"系统设置页打开失败: " + fallbackError;
+  return false;
 }

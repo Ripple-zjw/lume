@@ -96,7 +96,7 @@ int RunScreenshot(const AppOptions& options, const std::wstring& path, float sca
     LogError(L"场景初始化失败");
     return 2;
   }
-  const std::vector<AppEntry> apps = CollectAppEntries();
+  const std::vector<AppEntry> apps = CollectAllEntries();
   // 截图/基线用默认筛选组；--filter 只影响本次运行（不写盘）。
   FilterSet filters = DefaultFilterSet();
   if (options.filterSpecified && !options.filterSpec.empty()) {

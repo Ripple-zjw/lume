@@ -79,6 +79,7 @@ Windows 11 上的高性能启动器（Spotlight / Raycast 风格）：按 `Alt+S
 - **单 exe、静态链接**：免安装、免管理员，无外部运行库依赖。
 - **低延迟唤出**：隐藏预热 + 同步出帧，显示到首帧实测 13–14 ms。
 - **统一搜索**：应用（开始菜单 / 商店应用 / App Paths）与文件一起搜；子串优先、子序列按间隙扣分，多词查询顺序无关（`chrome setup` 能命中 `ChromeSetup.exe`）。
+- **设置页直达**：输入「开机自启」「卸载」「蓝牙」直接打开对应的 Windows 设置页（55 条 `ms-settings:` 深链，关键词中英混排，`设置 蓝牙` 这类写法也能命中）。
 - **两种文件搜索口径**：本地索引（多线程枚举 + 快照 + 实时 watcher，实测 0.4–0.6 ms）或 Everything 全盘索引，可随时切换。
 - **筛选组**：搜索框下方一排芯片（全部 / 应用程序 / 图片 / 文档 / 音频 / 视频 / 压缩包），扩展名规则可自定义。
 - **MRU 推荐**：空查询按「最常用 + 最近」推荐应用与文件。
@@ -172,15 +173,16 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Recompile -Package
 | `--click-row=<n>` | 用合成的鼠标消息单击第 n 行（1 起），验证命中与启动链路 |
 | `--tray-click` | 模拟一次托盘左键（v4 的 NIN_SELECT + WM_LBUTTONUP 两条通知） |
 | `--list-apps` | 打印应用索引（UTF-8，每行一条） |
+| `--list-settings` | 打印 Windows 设置页目录（标题 / `ms-settings:` URI / 关键词；`available=0` 表示协议不可用） |
 | `--list-files` | 重建文件索引并打印统计与前 20 条路径 |
 | `--file-stats` | 重建文件索引并只打印统计 |
 | `--file-root=<dir>` | 覆盖文件索引根目录（测试用） |
-| `--open=<path>` | 单独验证打开文件/路径 |
+| `--open=<path\|uri>` | 单独验证打开文件/路径（也接受 `ms-settings:startupapps` 这类协议 URI） |
 | `--set-autostart=1\|0` | 设置开机自启并打印状态 |
 | `--hotkey=<combo>` | 临时覆盖热键（如 `Ctrl+Alt+K`） |
 | `--test-capture=<combo>` | 测试用：打开设置窗并合成组合键，验证捕获 |
 | `--search-files=<query>` | 搜索文件索引并打印耗时与前 20 条（分数+路径） |
-| `--search-rows=<query>` | 打印合并后的 tier/分数/标题/路径（验证排序） |
+| `--search-rows=<query>` | 打印合并后的 tier/质量/分数/动作/标题/副标题（验证排序） |
 | `--index-size-mb=<n>` | 覆盖索引大小上限（64–262144 MB，测试/调优） |
 | `--index-dir=<dir>` | 覆盖索引快照目录（默认 `%LOCALAPPDATA%\Lume`） |
 | `--search-live=<query>` | 现场重建索引并搜索（诊断上限/排序） |
@@ -251,6 +253,7 @@ src/platform/autostart.cpp 开机自启注册表读写
 src/platform/tray.cpp      托盘图标与右键菜单
 src/search/app_entry.h     应用条目模型与索引/过滤接口
 src/search/app_index.cpp   开始菜单/AppsFolder/App Paths 收集、去重、磁盘缓存
+src/search/settings_pages.* Windows 设置页目录（55 条 ms-settings 深链 + 中英关键词 + 协议探测）
 src/search/scorer.cpp      模糊评分与过滤
 src/search/file_index.cpp  文件枚举、快照、watcher、文件检索
 src/search/file_hit.h      文件命中模型（两个搜索来源共用）+ 单次上限
@@ -298,10 +301,11 @@ docs/images/p6/            P6 排序修复 / Everything / 关于页 / 筛选组 
 - **筛选组**：芯片行（40 DIP）会让面板比之前高一点；关掉设置 → 筛选 → 「在搜索框下方显示筛选组」就回到旧几何。芯片放不下时只做裁剪，没有横向滚动条——被裁掉的组用 `Tab` / `Ctrl+1..9` 仍能选中。
 - **筛选 + Everything**：含「文件夹 / 无扩展名」开关的组没法用 `ext:` 表达，只做本地后过滤，候选仍受「500 条、按名称升序」的上限影响，可能比预期少；纯扩展名组会下推，结果更全。
 - **鼠标操作范围**：芯片切组、结果行点击启动、滚轮滚动；输入框里的拖选/右键菜单还没做（仍靠键盘 + `Ctrl+V`）。单击是「按下记住行、抬起才启动」，所以按住左键拖到别的行不会误启动。
+- **设置页直达**：目录是代码里的静态表（Windows 没有公开的枚举 API），标题固定中文、英文靠关键词；硬件专属页（电池、触摸板、Surface Dial 等）不收录，避免在没有该硬件的机器上落到设置首页。`Shift/Ctrl+Enter` 对设置页只是普通打开（协议不支持定位/提权）；Lume 以管理员运行时先用 `ShellExecuteEx`、失败再让 explorer 中转。精简镜像没注册 `ms-settings` 时整组不出现（`--list-settings` 打印 `available=0`）。
 - 图标缓存位于 `%LOCALAPPDATA%\Lume\icons`（沙箱等不可写环境退回 exe 同目录 `icons\`），按解析名哈希存 PNG；删掉目录会重新取图。
 - 动态面板高度已实现（1–6 行）；文件内容搜索仍未做。
 - **真实会话回归**：`powershell -ExecutionPolicy Bypass -File tools\regression.ps1` 已跑通（exit=0，含 self-check、100 万条 `--bench-search` 的防退化阈值与日志等级检查）；后续改搜索/托盘/自启链路时重跑即可。人工项（托盘菜单、设置重启生效、注销后自启）仍建议过一遍。
-- **单元测试**：`build.ps1 -Config Test` 会编译并运行 `tests/`（29 个用例、162 个断言，覆盖评分/gap、多词、筛选编解码、排序合并、设置默认值）；`.github/workflows/ci.yml` 在 push / PR 上跑同一入口。CI 在云上跑不了托盘/热键这类真实桌面项，那部分仍靠 `regression.ps1` 人工会话。
+- **单元测试**：`build.ps1 -Config Test` 会编译并运行 `tests/`（42 个用例、3994 个断言，覆盖评分/gap、多词、筛选编解码、排序合并、设置页目录与关键词、设置默认值）；`.github/workflows/ci.yml` 在 push / PR 上跑同一入口。CI 在云上跑不了托盘/热键这类真实桌面项，那部分仍靠 `regression.ps1` 人工会话。
 - 唤出淡入通过场景整体 alpha 实现（mingw 的 `dcomp.h` 漏声明 `IDCompositionVisual::SetOpacity`，未用 ABI hack）。
 
 ## 实现进展（开发笔记）
@@ -477,6 +481,16 @@ docs/images/p6/            P6 排序修复 / Everything / 关于页 / 筛选组 
 - **实测**（100 万条合成数据）：`report` 10.25 ms、`2024` 3.99 ms、`a` 12.17 ms、CJK `文档` 10.47 ms；800 万条 `report` 76.43 ms、`a` 94.15 ms，吞吐 ~85–105 M 条/秒。
 - 仍待办：文件内容搜索与 USN 全盘索引（成本高，排后续）；自动更新、代码签名、输入框选区/右键菜单。
 
+**P8.1：搜索结果直达 Windows 设置页（2026-11-08）**
+
+- **静态目录**：新增 `src/search/settings_pages.{h,cpp}`，55 条 `ms-settings:` 深链（来源是 Microsoft Learn 的 URI 表），每条带中文标题、分类与 3–8 个中英关键词；`HKCR\ms-settings` 未注册时整组不出现并 Warn 一次。
+- **当应用条目搜索**：设置页 `kind = SettingsUri`，由 `CollectAllEntries()` 并进应用向量，复用现有评分、使用记录、空查询 MRU 与合并排序；图标统一用 `%SystemRoot%\ImmersiveControlPanel\SystemSettings.exe`（缺失时退回首字色块），副标题是 `设置 · <分类>`。
+- **质量分层**：标题精确 4 / 前缀 2 / 包含 1；关键词只认连续命中（精确 3、前缀 2、包含 1），不做模糊；设置页不参与 detail/URI 兜底，`ms-settings` 这类查询不会把整张表拽出来。
+- **命名空间词**：`设置 蓝牙`、`settings bluetooth` 先剥掉「设置 / settings」再匹配；只输入「设置」时仍然只出「设置」应用，不铺设置页。
+- **启动**：`OpenSettingsPage()` 走 `ShellExecuteEx(ms-settings:...)`，失败时让 `explorer.exe` 中转（管理员运行时 Settings 常拒绝被提权进程激活）；`Shift/Ctrl+Enter` 对设置页降级为普通打开。
+- **验证**：单测新增 13 个用例（目录唯一性、硬件页黑名单、标题精确、关键词命中、命名空间剥离、关键词不模糊、URI 不兜底、合并动作、排序），合计 42 用例 3994 断言；`--list-settings` 与 `--search-rows`（新增 `action=`）可手查；CI 与 `regression.ps1` 各加了设置页检查。
+
+
 ## 路线与进度
 
 | 阶段 | 内容 |
@@ -498,7 +512,8 @@ docs/images/p6/            P6 排序修复 / Everything / 关于页 / 筛选组 
 | P7.1 ✅ | 发布收口：版本 0.2.5 统一、CHANGELOG、CI 按 tag 构建与一致校验、包内 README 修正 |
 | P7.2 ✅ | 测试闸门：tests/ 29 个单测、`-Config Test` 恢复、push/PR CI 跑单测与构建、p95 阈值 |
 | P7.3 ✅ | 搜索质量：质量分层 + gap 惩罚、多词 AND、路径/目录命中、全序排序、短查询门槛 |
-| 下一步 | 代码签名与自动更新、输入框选区/右键菜单、文件内容搜索与 USN 全盘索引 |
+| P8.1 ✅ | 搜索结果直达 Windows 设置页：55 条 ms-settings 目录、关键词评分、命名空间词剥离、深链打开 |
+| 下一步 | 代码签名与自动更新、输入框选区/右键菜单、文件内容搜索与 USN 全盘索引（经典控制面板 .cpl/.msc 需要 command+args 模型，排在 P8.2） |
 
 ## 许可
 

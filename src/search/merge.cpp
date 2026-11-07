@@ -62,7 +62,11 @@ ResultRow MakeAppRow(const AppEntry& entry, size_t score, uint8_t tier, uint8_t 
   row.iconKey = entry.iconKey;
   row.color = entry.color;
   row.target = entry.launchTarget;
-  row.action = entry.IsUwp() ? RowAction::LaunchUwp : RowAction::LaunchApp;
+  if (entry.IsSettings()) {
+    row.action = RowAction::OpenSettings;
+  } else {
+    row.action = entry.IsUwp() ? RowAction::LaunchUwp : RowAction::LaunchApp;
+  }
   row.score = score;
   row.tier = tier;
   row.quality = quality;
@@ -152,8 +156,9 @@ std::vector<ResultRow> BuildMergedRows(const std::vector<AppEntry>& apps,
       bool titleHit = false;
       uint8_t quality = 0;
       const size_t score = ScoreEntry(*entry, query, &titleHit, &quality);
-      // 标题命中=应用优先级；只有详情/启动路径命中时按“路径命中”处理（UWP 的 AUMID 除外）。
-      const uint8_t tier = (titleHit || entry->IsUwp()) ? kTierApplication : kTierPathOnly;
+      // 标题命中=应用优先级；只有详情/启动路径命中时按“路径命中”处理（UWP 的 AUMID 与设置页除外）。
+      const uint8_t tier = (titleHit || entry->IsUwp() || entry->IsSettings()) ? kTierApplication
+                                                                              : kTierPathOnly;
       rows.push_back(MakeAppRow(*entry, score + bonus, tier, quality));
     }
   }

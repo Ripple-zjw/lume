@@ -19,6 +19,48 @@ bool IsWordStart(wchar_t previous) {
          previous == L'\\' || previous == L'/';
 }
 
+// 设置页查询里的命名空间词：用户常写成「设置 蓝牙」「settings bluetooth」。
+bool IsNamespaceWord(const std::wstring& word) {
+  return word == L"设置" || word == L"settings";
+}
+
+// 整条查询只有命名空间词（「设置」「settings」）：那是「设置」应用自己的查询，不该出设置页。
+bool IsOnlyNamespaceWords(const std::wstring& query) {
+  const std::vector<std::wstring> words = SplitQueryWords(query);
+  if (words.empty()) return false;
+  for (const std::wstring& word : words) {
+    if (!IsNamespaceWord(word)) return false;
+  }
+  return true;
+}
+
+struct KeywordHit {
+  size_t score = 0;
+  uint8_t quality = 0;
+};
+
+// 关键词命中：只接受连续命中（子串），不做模糊——「启动」这类短词做模糊会把整张表拽出来。
+KeywordHit MatchKeyword(std::wstring_view keyword, std::wstring_view needle) {
+  KeywordHit hit;
+  if (keyword.empty() || needle.empty() || needle.size() > keyword.size()) return hit;
+  const size_t position = keyword.find(needle);
+  if (position == std::wstring_view::npos) return hit;
+  if (keyword == needle) {
+    hit.score = 780;
+    hit.quality = 3;
+    return hit;
+  }
+  if (needle.size() == 1) return hit;  // 单字符只认完整命中的关键词
+  if (position == 0) {
+    hit.score = 720 - std::min<size_t>(needle.size(), 40);
+    hit.quality = 2;
+    return hit;
+  }
+  hit.score = 700 - std::min<size_t>(position * 4, 200);
+  hit.quality = 1;
+  return hit;
+}
+
 bool IsWordStartAt(std::wstring_view text, size_t index) {
   return index == 0 || IsWordStart(text[index - 1]);
 }
@@ -128,6 +170,21 @@ std::vector<std::wstring> SplitQueryWords(const std::wstring& queryLower) {
   return words;
 }
 
+std::wstring StripNamespaceWords(const std::wstring& query) {
+  const std::vector<std::wstring> words = SplitQueryWords(query);
+  if (words.size() < 2) return query;
+  std::wstring stripped;
+  size_t kept = 0;
+  for (const std::wstring& word : words) {
+    if (IsNamespaceWord(word)) continue;
+    if (kept > 0) stripped.push_back(L' ');
+    stripped += word;
+    ++kept;
+  }
+  // 全被剥掉（「设置 settings」）时回退原查询，否则一次列出整张表。
+  return kept == 0 ? query : stripped;
+}
+
 size_t ScoreLowerText(std::wstring_view text, std::wstring_view queryLower, TextMatch* match) {
   if (match) *match = TextMatch{};
   if (text.empty() || queryLower.empty()) return 0;
@@ -178,6 +235,9 @@ size_t ScoreEntry(const AppEntry& entry, const std::wstring& query, bool* matche
   if (quality) *quality = 0;
   if (query.empty()) return 1;
   const std::wstring needle = ToLower(query);
+  // 只输入「设置 / settings」时交给「设置」应用那一条，不在结果里铺设置页
+  // （标题里带「设置」的页面也不出，避免同一个查询被设置页和应用抢）。
+  if (entry.IsSettings() && IsOnlyNamespaceWords(needle)) return 0;
   const std::wstring title = ToLower(entry.title);
   TextMatch match;
   const size_t titleScore = ScoreLowerText(title, needle, &match);
@@ -217,6 +277,68 @@ size_t ScoreEntry(const AppEntry& entry, const std::wstring& query, bool* matche
       if (quality) *quality = allContiguous ? 1 : 0;
       return total / words.size();
     }
+  }
+
+  // 系统设置页：标题没命中时看关键词（中英别名）。「设置 蓝牙」这类写法先剥命名空间词。
+  // 设置页不参与下面的 detail/URI 兜底，否则 URI 里的 ms-settings 会把整张表拽出来。
+  if (entry.IsSettings()) {
+    const std::wstring settingsNeedle = StripNamespaceWords(needle);
+    const std::vector<std::wstring> settingsWords = SplitQueryWords(settingsNeedle);
+    if (settingsWords.size() == 1) {
+      const std::wstring& field = settingsWords.front();
+      size_t bestScore = ScoreLowerText(title, field, &match);
+      uint8_t bestQuality = 0;
+      if (bestScore > 0) {
+        if (title == field) {
+          bestQuality = 4;
+        } else if (title.size() >= field.size() && title.compare(0, field.size(), field) == 0) {
+          bestQuality = 2;
+        } else {
+          bestQuality = match.contiguous ? 1 : 0;
+        }
+      }
+      for (const std::wstring& keyword : entry.keywords) {
+        const KeywordHit hit = MatchKeyword(ToLower(keyword), field);
+        if (hit.score > bestScore) {
+          bestScore = hit.score;
+          bestQuality = hit.quality;
+        }
+      }
+      if (bestScore > 0) {
+        if (matchedTitle) *matchedTitle = true;
+        if (quality) *quality = bestQuality;
+        return bestScore;
+      }
+    } else if (settingsWords.size() > 1) {
+      // 多词：每个词都要在「标题或某个关键词」里连续命中，顺序无关。
+      size_t total = 0;
+      uint8_t minQuality = 3;
+      bool allMatched = true;
+      for (const std::wstring& word : settingsWords) {
+        TextMatch wordMatch;
+        size_t wordScore = ScoreLowerText(title, word, &wordMatch);
+        uint8_t wordQuality = wordScore > 0 ? (wordMatch.contiguous ? 1 : 0) : 0;
+        for (const std::wstring& keyword : entry.keywords) {
+          const KeywordHit hit = MatchKeyword(ToLower(keyword), word);
+          if (hit.score > wordScore) {
+            wordScore = hit.score;
+            wordQuality = hit.quality;
+          }
+        }
+        if (wordScore == 0) {
+          allMatched = false;
+          break;
+        }
+        total += wordScore;
+        if (wordQuality < minQuality) minQuality = wordQuality;
+      }
+      if (allMatched) {
+        if (matchedTitle) *matchedTitle = true;
+        if (quality) *quality = std::min<uint8_t>(minQuality, 2);
+        return 600 + std::min<size_t>(total / settingsWords.size() / 10, 60);
+      }
+    }
+    return 0;
   }
 
   // 标题未命中时回退到详情/AUMID（例如 "calc" 命中 WindowsCalculator 的 AUMID），

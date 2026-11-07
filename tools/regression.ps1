@@ -153,6 +153,38 @@ foreach ($path in @($logInfo, $logDebug, $logError)) {
 }
 if ($logFailures -gt 0 -and $code -eq 0) { $code = 2 }
 
+# Windows 设置页目录：协议可用性、条目数量，以及「搜索能命中设置页」。
+Write-Host ''
+Write-Host 'Settings pages:' -ForegroundColor Cyan
+$settingsLog = Join-Path $env:TEMP 'lume-settings-list.txt'
+$settingsRowsLog = Join-Path $env:TEMP 'lume-settings-rows.txt'
+foreach ($path in @($settingsLog, $settingsRowsLog)) {
+    if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+}
+cmd /c "`"$exe`" --list-settings > `"$settingsLog`" 2>&1"
+$listCode = $LASTEXITCODE
+cmd /c "`"$exe`" --filter=1 --search-rows=startup > `"$settingsRowsLog`" 2>&1"
+$listLines = @(Get-Content -LiteralPath $settingsLog -Encoding UTF8 -ErrorAction SilentlyContinue)
+$rowLines = @(Get-Content -LiteralPath $settingsRowsLog -Encoding UTF8 -ErrorAction SilentlyContinue)
+$pageLines = @($listLines -match '^[^\t]+\tms-settings:')
+$settingsFailures = 0
+$settingsChecks = @(
+    @{ Label = 'settings_list'; Ok = ($listCode -eq 0 -and [bool]($listLines -match '^available=1 pages=\d+$') -and $pageLines.Count -ge 50) },
+    @{ Label = 'settings_rows'; Ok = [bool]($rowLines -match 'action=settings ') }
+)
+foreach ($check in $settingsChecks) {
+    if ($check.Ok) {
+        Write-Host ("{0}=PASS (pages={1})" -f $check.Label, $pageLines.Count) -ForegroundColor Green
+    } else {
+        Write-Host ("{0}=FAIL" -f $check.Label) -ForegroundColor Red
+        $settingsFailures++
+    }
+}
+foreach ($path in @($settingsLog, $settingsRowsLog)) {
+    if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+}
+if ($settingsFailures -gt 0 -and $code -eq 0) { $code = 2 }
+
 Write-Host ''
 Write-Host 'Manual checks (not covered by self-check):' -ForegroundColor Yellow
 Write-Host '  1. Tray: a Lume icon appears; right-click shows Show / Autostart / Settings / Exit;'
@@ -180,6 +212,10 @@ Write-Host '     read-only); each run starts with a "===== Lume ... =====" banne
 Write-Host '     info only; tick 设置 → 常规 → 详细日志（开发排查用）or pass --debug to get per-keystroke'
 Write-Host '     and Everything round-trip lines. Over 2 MB the file rotates to Lume.log.1 on next start.'
 Write-Host '     `Lume.exe --log-level=error` keeps only failures; --log=<path> writes elsewhere.'
+Write-Host ' 11. Settings pages: `Lume.exe --open=ms-settings:startupapps` should open 设置 → 应用 → 启动,'
+Write-Host '     not the Settings home page. Try ms-settings:appsfeatures / bluetooth / windowsupdate too.'
+Write-Host '     In the launcher, searching 开机自启 / 卸载 / 蓝牙 shows a 设置 · <分类> row; Enter opens that'
+Write-Host '     page, Shift/Ctrl+Enter just open it (no reveal, no elevation).'
 Write-Host ''
 $status = "self-check exit=$code"
 if ($benchFailures -gt 0) {
